@@ -316,4 +316,3 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		}
 	}
 }
-
