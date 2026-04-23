@@ -53,6 +53,22 @@ func (s *Services) MeAppointments(ctx context.Context, patientID int64, now time
 	return s.Repos.Me.Appointments(ctx, patientID, now, kind)
 }
 
+func (s *Services) MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (motconsuID int64, restored bool, err error) {
+	res, err := repo.BookMe(ctx, s.MSSQL, s.Repos.Planning, s.Repos.Motconsu, planningID, patientID, s.DefaultModelsID, now)
+	if err != nil {
+		return 0, false, err
+	}
+	return res.MotconsuID, res.Restored, nil
+}
+
+func (s *Services) MeCancelAppointment(ctx context.Context, patientID int64, motconsuID int64, now time.Time) error {
+	minH := s.Config.CancelMinHoursBefore
+	if minH <= 0 {
+		minH = 24
+	}
+	return repo.CancelMe(ctx, s.MSSQL, motconsuID, patientID, time.Duration(minH)*time.Hour, now)
+}
+
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
 	return s.Repos.Patient.SearchByPhone(ctx, repo.CleanPhoneLast10(phone))
 }

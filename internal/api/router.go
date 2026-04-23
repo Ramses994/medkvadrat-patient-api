@@ -46,6 +46,8 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("GET /api/catalog/slots", catalogH.Slots)
 	mux.HandleFunc("GET /api/me/profile", meH.Profile)
 	mux.HandleFunc("GET /api/me/appointments", meH.Appointments)
+	mux.HandleFunc("POST /api/me/appointments", meH.BookAppointment)
+	mux.HandleFunc("DELETE /api/me/appointments/{motconsu_id}", meH.CancelAppointment)
 	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
 
 	auth := middleware.Auth{Token: cfg.APIToken}
