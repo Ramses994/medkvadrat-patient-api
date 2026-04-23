@@ -49,8 +49,11 @@ WHERE PATIENTS_ID = @id`,
 		return Profile{}, err
 	}
 	if birthText.Valid {
-		// Best-effort: some installs store full date, others store only year.
-		// Supported: YYYY-MM-DD, YYYY.MM.DD, YYYY.
+		// Medialog: GOD_ROGDENIQ is a varchar (year-of-birth in Russian UI text); dev DB
+		// shows almost only four-digit years. No separate DATE_NAISSANCE in PATIENTS
+		// (date-like columns are registration/audit/death, etc.). Expose as calendar date
+		// for the API: full dates if ever stored, else YYYY-01-01.
+		// Best-effort: YYYY, or first 10 chars as YYYY-MM-DD after normalizing .-/
 		s := strings.TrimSpace(birthText.String)
 		if len(s) >= 10 {
 			// normalize separator
