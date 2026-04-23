@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -32,23 +34,36 @@ type MeRepo struct {
 func (r *MeRepo) Profile(ctx context.Context, patientID int64) (Profile, error) {
 	var p Profile
 	p.PatientID = patientID
-	var bd sql.NullTime
+	var birthText sql.NullString
 	err := r.db.QueryRowContext(ctx, `
 SELECT
   ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
   ISNULL(MOBIL_TELEFON, ISNULL(TEL, ISNULL(RAB_TEL,''))) AS PHONE,
-  CAST(NULL AS datetime) AS BIRTH_DATE,
+  GOD_ROGDENIQ AS BIRTH_TEXT,
   ISNULL(EMAIL,'') AS EMAIL
 FROM PATIENTS
 WHERE PATIENTS_ID = @id`,
 		sql.Named("id", patientID),
-	).Scan(&p.FullName, &p.Phone, &bd, &p.Email)
+	).Scan(&p.FullName, &p.Phone, &birthText, &p.Email)
 	if err != nil {
 		return Profile{}, err
 	}
-	if bd.Valid {
-		t := bd.Time
-		p.BirthDate = &t
+	if birthText.Valid {
+		// Best-effort: some installs store full date, others store only year.
+		// Supported: YYYY-MM-DD, YYYY.MM.DD, YYYY.
+		s := strings.TrimSpace(birthText.String)
+		if len(s) >= 10 {
+			// normalize separator
+			s = strings.NewReplacer(".", "-", "/", "-").Replace(s)
+			if t, err := time.Parse("2006-01-02", s[:10]); err == nil {
+				p.BirthDate = &t
+			}
+		} else if len(s) == 4 {
+			if y, err := strconv.Atoi(s); err == nil && y > 1900 && y < 2100 {
+				t := time.Date(y, 1, 1, 0, 0, 0, 0, time.Local)
+				p.BirthDate = &t
+			}
+		}
 	}
 	return p, nil
 }
