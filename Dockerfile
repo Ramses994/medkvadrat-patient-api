@@ -9,7 +9,7 @@ RUN go mod download
 COPY . .
 
 # Собираем статически слинкованный бинарник без CGO
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o api-gateway main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o api-gateway ./cmd/api
 
 # Этап 2: Релизный образ
 FROM alpine:latest
