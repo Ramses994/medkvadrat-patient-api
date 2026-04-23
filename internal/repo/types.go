@@ -34,6 +34,14 @@ type PatientInfo struct {
 	BirthDate *time.Time
 }
 
+type OTPPatient struct {
+	PatientID         int64
+	FullName          string
+	Email             string
+	NotSendMailingSMS bool
+	SendAutoEmail     bool
+}
+
 type LabResult struct {
 	ResultID    int
 	PatdirecID  int

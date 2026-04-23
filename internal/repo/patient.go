@@ -14,6 +14,42 @@ type PatientRepo struct {
 	db *sql.DB
 }
 
+func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, phoneLast10 string) ([]OTPPatient, error) {
+	query := `
+		SELECT
+			PATIENTS_ID,
+			ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
+			ISNULL(EMAIL,'') AS EMAIL,
+			ISNULL(NOT_SEND_MAILING_SMS,0) AS NOT_SEND_MAILING_SMS,
+			ISNULL(SEND_AUTO_EMAIL,0) AS SEND_AUTO_EMAIL
+		FROM PATIENTS
+		WHERE REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(MOBIL_TELEFON,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
+		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
+		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(RAB_TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'`
+
+	rows, err := r.db.QueryContext(ctx, query, sql.Named("phone", phoneLast10))
+	if err != nil {
+		return nil, fmt.Errorf("query otp patients: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OTPPatient
+	for rows.Next() {
+		var p OTPPatient
+		var notSend, sendAuto bool
+		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Email, &notSend, &sendAuto); err != nil {
+			return nil, fmt.Errorf("scan otp patients: %w", err)
+		}
+		p.NotSendMailingSMS = notSend
+		p.SendAutoEmail = sendAuto
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows otp patients: %w", err)
+	}
+	return out, nil
+}
+
 func (r *PatientRepo) SearchByPhone(ctx context.Context, phoneLast10 string) ([]PatientInfo, error) {
 	query := `
 		SELECT PATIENTS_ID,
