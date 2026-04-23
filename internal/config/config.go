@@ -88,7 +88,11 @@ func Load() (Config, error) {
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
 		SQLite: SQLiteConfig{
-			Path: strings.TrimSpace(getEnv("SQLITE_PATH", "./gateway.db")),
+			// GATEWAY_DB_PATH is preferred in Docker (/app/data/gateway.db); SQLITE_PATH is the legacy name.
+			Path: firstNonEmpty(
+				strings.TrimSpace(os.Getenv("GATEWAY_DB_PATH")),
+				strings.TrimSpace(getEnv("SQLITE_PATH", "./gateway.db")),
+			),
 		},
 		MSSQL: MSSQLConfig{
 			Server:   strings.TrimSpace(os.Getenv("DB_SERVER")),
@@ -208,6 +212,13 @@ func getEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 func mustDuration(s string) time.Duration {

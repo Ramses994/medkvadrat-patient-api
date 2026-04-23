@@ -4,12 +4,22 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 func OpenSQLite(path string) (*sql.DB, error) {
+	if path == "" {
+		return nil, fmt.Errorf("sqlite: database path is empty (set GATEWAY_DB_PATH or SQLITE_PATH)")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("sqlite: create directory %q: %w", dir, err)
+		}
+	}
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
