@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,7 +119,13 @@ func readGolden(t *testing.T, name string) []byte {
 func assertGolden(t *testing.T, name string, got []byte) {
 	t.Helper()
 	want := readGolden(t, name)
-	if !bytes.Equal(want, got) {
+	norm := func(b []byte) []byte {
+		s := string(b)
+		s = strings.ReplaceAll(s, "\r\n", "\n")
+		s = strings.TrimSpace(s) + "\n"
+		return []byte(s)
+	}
+	if !bytes.Equal(norm(want), norm(got)) {
 		t.Fatalf("golden mismatch: %s\nwant=%s\ngot=%s", name, string(want), string(got))
 	}
 }

@@ -71,15 +71,6 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	for _, p := range pats {
 		email := strings.TrimSpace(p.Email)
 		if email == "" {
-			// In dev mode we still allow OTP to proceed without email to unblock local testing.
-			// In pilot whitelist we also allow to proceed without email delivery.
-			if s.Config.Auth.Mode == "dev" || (s.Config.Auth.Mode == "pilot" && inList(s.Config.Auth.PilotWhitelist, phone)) {
-				candidates = append(candidates, otp.CandidatesItem{
-					PatientID:   p.PatientID,
-					FullName:    p.FullName,
-					MaskedEmail: "no-email",
-				})
-			}
 			continue
 		}
 		masked := otp.MaskEmail(email)
@@ -104,12 +95,16 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	whitelisted := s.Config.Auth.Mode == "pilot" && inList(s.Config.Auth.PilotWhitelist, phone)
 
 	if len(maskedDest) == 0 {
-		if s.Config.Auth.Mode == "dev" && len(candidates) > 0 {
-			s.Logger.Warn("otp request in dev without patient email", "phone", phone)
-			maskedDest = []string{"dev-no-email"}
-		} else if whitelisted && len(pats) > 0 {
+		if whitelisted && len(pats) > 0 {
 			maskedDest = []string{"pilot-whitelist"}
 		} else {
+			if s.Config.Auth.Mode == "dev" {
+				s.Logger.Warn(
+					"otp request blocked: patient email missing",
+					"phone", phone,
+					"hint", "set PATIENTS.EMAIL on dev MSSQL or use AUTH_MODE=pilot with AUTH_PILOT_WHITELIST for happy-path testing",
+				)
+			}
 			return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "EMAIL_NOT_SET", "Для входа в личный кабинет обратитесь в регистратуру, чтобы добавить email в карточку пациента. Телефон: +7 (499) 288-88-14")
 		}
 	}
