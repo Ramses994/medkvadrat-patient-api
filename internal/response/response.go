@@ -27,7 +27,7 @@ func OK(w http.ResponseWriter, data interface{}) {
 }
 
 func NoContent(w http.ResponseWriter) {
-	writeJSON(w, http.StatusNoContent, ResponseOK{Success: true, Data: nil})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func Error(w http.ResponseWriter, status int, code, msg string) {

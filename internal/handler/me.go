@@ -239,5 +239,5 @@ func (h MeHandler) CancelAppointment(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	response.NoContent(w)
+	response.OK(w, struct{}{})
 }
