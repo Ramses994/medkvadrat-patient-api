@@ -62,6 +62,11 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		s.Logger.Error("otp patients query failed", "err", err)
 		return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "INTERNAL", "Не получилось связаться с клиникой, попробуйте ещё раз через минуту")
 	}
+	if len(pats) == 0 {
+		return handler.OTPRequestResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
+	}
+
+	whitelisted := s.Config.Auth.Mode == "pilot" && inList(s.Config.Auth.PilotWhitelist, phone)
 
 	// Filter to recipients with EMAIL
 	var candidates []otp.CandidatesItem
@@ -71,6 +76,15 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	for _, p := range pats {
 		email := strings.TrimSpace(p.Email)
 		if email == "" {
+			// In pilot whitelist mode we still need candidates for verify/select flow,
+			// even if EMAIL is missing (delivery is bypassed).
+			if whitelisted {
+				candidates = append(candidates, otp.CandidatesItem{
+					PatientID:   p.PatientID,
+					FullName:    p.FullName,
+					MaskedEmail: "",
+				})
+			}
 			continue
 		}
 		masked := otp.MaskEmail(email)
@@ -91,11 +105,18 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 			"send_auto_email", p.SendAutoEmail,
 		)
 	}
-
-	whitelisted := s.Config.Auth.Mode == "pilot" && inList(s.Config.Auth.PilotWhitelist, phone)
+	if whitelisted && len(candidates) == 0 {
+		for _, p := range pats {
+			candidates = append(candidates, otp.CandidatesItem{
+				PatientID:   p.PatientID,
+				FullName:    p.FullName,
+				MaskedEmail: "",
+			})
+		}
+	}
 
 	if len(maskedDest) == 0 {
-		if whitelisted && len(pats) > 0 {
+		if whitelisted {
 			maskedDest = []string{"pilot-whitelist"}
 		} else {
 			if s.Config.Auth.Mode == "dev" {
