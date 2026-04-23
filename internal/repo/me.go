@@ -37,7 +37,7 @@ func (r *MeRepo) Profile(ctx context.Context, patientID int64) (Profile, error) 
 SELECT
   ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
   ISNULL(MOBIL_TELEFON, ISNULL(TEL, ISNULL(RAB_TEL,''))) AS PHONE,
-  BIRTH_DATE,
+  CAST(NULL AS datetime) AS BIRTH_DATE,
   ISNULL(EMAIL,'') AS EMAIL
 FROM PATIENTS
 WHERE PATIENTS_ID = @id`,
