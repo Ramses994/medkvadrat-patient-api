@@ -33,8 +33,10 @@ type OTPRequestResult struct {
 }
 
 type Tokens struct {
-	Access  string `json:"access"`
-	Refresh string `json:"refresh"`
+	Access           string `json:"access"`
+	Refresh          string `json:"refresh"`
+	AccessExpiresIn  int    `json:"access_expires_in"`
+	RefreshExpiresIn int    `json:"refresh_expires_in"`
 }
 
 type Candidate struct {
@@ -46,8 +48,11 @@ type Candidate struct {
 type OTPVerifyResult struct {
 	// If tokens are present -> login complete (single candidate).
 	// If candidates present -> client must call select-patient.
-	Tokens     *Tokens     `json:"tokens,omitempty"`
-	Candidates []Candidate `json:"patient_candidates,omitempty"`
+	Access           string      `json:"access,omitempty"`
+	Refresh          string      `json:"refresh,omitempty"`
+	AccessExpiresIn  int         `json:"access_expires_in,omitempty"`
+	RefreshExpiresIn int         `json:"refresh_expires_in,omitempty"`
+	Candidates       []Candidate `json:"patient_candidates,omitempty"`
 }
 
 func (h AuthHandler) OTPRequest(w http.ResponseWriter, r *http.Request) {

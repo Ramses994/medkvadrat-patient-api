@@ -231,7 +231,12 @@ func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handl
 		if err != nil {
 			return handler.OTPVerifyResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		}
-		return handler.OTPVerifyResult{Tokens: &tok}, nil
+		return handler.OTPVerifyResult{
+			Access:           tok.Access,
+			Refresh:          tok.Refresh,
+			AccessExpiresIn:  tok.AccessExpiresIn,
+			RefreshExpiresIn: tok.RefreshExpiresIn,
+		}, nil
 	}
 	out := make([]handler.Candidate, 0, len(cands))
 	for _, c := range cands {
@@ -352,7 +357,12 @@ func (s *Services) issueTokens(ctx context.Context, patientID int64, phone strin
 	if err := store.Put(ctx, jti, patientID, auth.HashToken(refresh), now.Add(refreshTTL)); err != nil {
 		return handler.Tokens{}, err
 	}
-	return handler.Tokens{Access: access, Refresh: refresh}, nil
+	return handler.Tokens{
+		Access:           access,
+		Refresh:          refresh,
+		AccessExpiresIn:  int(accessTTL.Seconds()),
+		RefreshExpiresIn: int(refreshTTL.Seconds()),
+	}, nil
 }
 
 func inList(list []string, phone string) bool {
