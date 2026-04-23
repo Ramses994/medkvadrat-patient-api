@@ -1,0 +1,1 @@
+{"success":true,"data":[{"patdirec_id":2,"panel_name":"Биохимия","ordered_at":"2026-04-21 10:00","ready_at":"2026-04-22 08:00","tests_count":1,"has_out_of_range":false,"tests":[{"result_id":1,"patdirec_id":2,"name":"Глюкоза","value":"5.1","unit":"ммоль/л","norms":"3.9-5.5","ready_at":"2026-04-22 08:00"}]}]}
