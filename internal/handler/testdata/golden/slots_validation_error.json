@@ -1,0 +1,1 @@
+{"success":false,"error":"Нужны doctor_id и date (YYYY-MM-DD)","error_details":{"code":"VALIDATION","message":"Нужны doctor_id и date (YYYY-MM-DD)"}}
