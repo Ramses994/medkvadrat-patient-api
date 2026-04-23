@@ -19,6 +19,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	doctorH := handler.DoctorHandler{Svc: svc, Logger: logger}
 	patientH := handler.PatientHandler{Svc: svc, Logger: logger}
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger}
+	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
 
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
@@ -36,6 +37,12 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("/api/patients/search", patientH.Search)
 	mux.HandleFunc("/api/patients/lab-results", patientH.LabResults)
 	mux.HandleFunc("/api/patients/lab-panels", patientH.LabPanels)
+
+	// Patient JWT-protected (step 3)
+	mux.HandleFunc("GET /api/catalog/specialties", catalogH.Specialties)
+	mux.HandleFunc("GET /api/catalog/departments", catalogH.Departments)
+	mux.HandleFunc("GET /api/catalog/doctors", catalogH.Doctors)
+	mux.HandleFunc("GET /api/catalog/slots", catalogH.Slots)
 
 	auth := middleware.Auth{Token: cfg.APIToken}
 	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}

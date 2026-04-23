@@ -29,6 +29,22 @@ func (s *Services) Doctors(ctx context.Context) ([]repo.Doctor, error) {
 	return s.Repos.Doctor.List(ctx)
 }
 
+func (s *Services) CatalogSpecialties(ctx context.Context) ([]repo.Specialty, error) {
+	return s.Repos.Catalog.Specialties(ctx)
+}
+
+func (s *Services) CatalogDepartments(ctx context.Context) ([]repo.Department, error) {
+	return s.Repos.Catalog.Departments(ctx)
+}
+
+func (s *Services) CatalogDoctors(ctx context.Context, specialtyID *int, meddepID *int) ([]repo.CatalogDoctor, error) {
+	return s.Repos.Catalog.Doctors(ctx, specialtyID, meddepID)
+}
+
+func (s *Services) CatalogSlots(ctx context.Context, doctorID int, dateFrom, dateTo time.Time) ([]repo.Slot, error) {
+	return s.Repos.Catalog.Slots(ctx, doctorID, dateFrom, dateTo)
+}
+
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
 	return s.Repos.Patient.SearchByPhone(ctx, repo.CleanPhoneLast10(phone))
 }
