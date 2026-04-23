@@ -13,7 +13,9 @@ type Profile struct {
 	PatientID int64
 	FullName  string
 	Phone     string
-	BirthDate *time.Time
+	// BirthYear from Medialog GOD_ROGDENIQ (year string); nil if missing/unparseable.
+	// When a real DOB column is found, add birth_date in a follow-up and keep this as fallback.
+	BirthYear *int
 	Email     string
 }
 
@@ -49,23 +51,9 @@ WHERE PATIENTS_ID = @id`,
 		return Profile{}, err
 	}
 	if birthText.Valid {
-		// Medialog: GOD_ROGDENIQ is a varchar (year-of-birth in Russian UI text); dev DB
-		// shows almost only four-digit years. No separate DATE_NAISSANCE in PATIENTS
-		// (date-like columns are registration/audit/death, etc.). Expose as calendar date
-		// for the API: full dates if ever stored, else YYYY-01-01.
-		// Best-effort: YYYY, or first 10 chars as YYYY-MM-DD after normalizing .-/
-		s := strings.TrimSpace(birthText.String)
-		if len(s) >= 10 {
-			// normalize separator
-			s = strings.NewReplacer(".", "-", "/", "-").Replace(s)
-			if t, err := time.Parse("2006-01-02", s[:10]); err == nil {
-				p.BirthDate = &t
-			}
-		} else if len(s) == 4 {
-			if y, err := strconv.Atoi(s); err == nil && y > 1900 && y < 2100 {
-				t := time.Date(y, 1, 1, 0, 0, 0, 0, time.Local)
-				p.BirthDate = &t
-			}
+		// See issue: GOD_ROGDENIQ is a varchar; we expose only the year, never a synthetic date.
+		if y, ok := parseBirthYear(birthText.String); ok {
+			p.BirthYear = &y
 		}
 	}
 	return p, nil
@@ -127,4 +115,31 @@ ORDER BY m.DATE_CONSULTATION`,
 		return nil, fmt.Errorf("rows appointments: %w", err)
 	}
 	return out, nil
+}
+
+// parseBirthYear extracts a calendar year from Medialog varchar (most often "YYYY";
+// if a full date is ever stored, uses that date's year).
+func parseBirthYear(raw string) (int, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	if len(s) >= 10 {
+		head := s[:10]
+		for _, layout := range []string{"2006-01-02", "02.01.2006", "02-01-2006", "02/01/2006", "2006.01.02"} {
+			if t, err := time.ParseInLocation(layout, head, time.Local); err == nil {
+				y := t.Year()
+				if y >= 1800 && y <= 2200 {
+					return y, true
+				}
+				return 0, false
+			}
+		}
+	}
+	if len(s) == 4 {
+		if y, err := strconv.Atoi(s); err == nil && y >= 1800 && y <= 2200 {
+			return y, true
+		}
+	}
+	return 0, false
 }

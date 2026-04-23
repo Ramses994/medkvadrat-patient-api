@@ -35,7 +35,7 @@ type meProfileDTO struct {
 	PatientID int64  `json:"patient_id"`
 	FullName  string `json:"full_name"`
 	Phone     string `json:"phone"`
-	BirthDate string `json:"birth_date,omitempty"`
+	BirthYear *int   `json:"birth_year,omitempty"`
 	Email     string `json:"email"`
 }
 
@@ -55,10 +55,7 @@ func (h MeHandler) Profile(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
-	out := meProfileDTO{PatientID: p.PatientID, FullName: p.FullName, Phone: p.Phone, Email: p.Email}
-	if p.BirthDate != nil {
-		out.BirthDate = p.BirthDate.Format("2006-01-02")
-	}
+	out := meProfileDTO{PatientID: p.PatientID, FullName: p.FullName, Phone: p.Phone, Email: p.Email, BirthYear: p.BirthYear}
 	response.OK(w, out)
 }
 
