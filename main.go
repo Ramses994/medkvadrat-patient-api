@@ -21,6 +21,7 @@ var (
 	db             *sql.DB
 	lastModifyDate time.Time
 	modifyDateMu   sync.RWMutex // Защита от гонки данных при поллинге
+	seenTalons     = make(map[int]struct{}) // <-- ДОБАВЛЕНО: память обработанных талонов
 )
 
 // ===== МОДЕЛИ =====
@@ -226,14 +227,18 @@ func pollMotconsu() {
 			continue
 		}
 
-		log.Printf("━━━ Талон %d | %s %s → %s %s | %s ━━━",
-			motID, patNom, patPrenom, docNom, docPrenom,
-			dateConsult.Format("02.01.2006 15:04"))
+// <-- ДОБАВЛЕНА ПРОВЕРКА НА СПАМ -->
+		if _, exists := seenTalons[motID]; !exists {
+			log.Printf("━━━ Талон %d | %s %s → %s %s | %s ━━━",
+				motID, patNom, patPrenom, docNom, docPrenom,
+				dateConsult.Format("02.01.2006 15:04"))
+			
+			seenTalons[motID] = struct{}{} // Запоминаем этот ID
+		}
 
 		if modifyDate.After(newLast) {
 			newLast = modifyDate
 		}
-	}
 
 	if newLast.After(currentLast) {
 		modifyDateMu.Lock()
