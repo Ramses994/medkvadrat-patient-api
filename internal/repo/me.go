@@ -13,10 +13,11 @@ type Profile struct {
 	PatientID int64
 	FullName  string
 	Phone     string
-	// BirthYear from Medialog GOD_ROGDENIQ (year string); nil if missing/unparseable.
-	// When a real DOB column is found, add birth_date in a follow-up and keep this as fallback.
+	// BirthDate from Medialog PATIENTS.NE_LE (datetime, «né le»).
+	BirthDate *time.Time
+	// BirthYear from GOD_ROGDENIQ when NE_LE is missing; omitted in JSON when BirthDate is set.
 	BirthYear *int
-	Email     string
+	Email string
 }
 
 type Appointment struct {
@@ -37,21 +38,29 @@ func (r *MeRepo) Profile(ctx context.Context, patientID int64) (Profile, error) 
 	var p Profile
 	p.PatientID = patientID
 	var birthText sql.NullString
+	var neLe sql.NullTime
 	err := r.db.QueryRowContext(ctx, `
 SELECT
   ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
   ISNULL(MOBIL_TELEFON, ISNULL(TEL, ISNULL(RAB_TEL,''))) AS PHONE,
+  NE_LE,
   GOD_ROGDENIQ AS BIRTH_TEXT,
   ISNULL(EMAIL,'') AS EMAIL
 FROM PATIENTS
 WHERE PATIENTS_ID = @id`,
 		sql.Named("id", patientID),
-	).Scan(&p.FullName, &p.Phone, &birthText, &p.Email)
+	).Scan(&p.FullName, &p.Phone, &neLe, &birthText, &p.Email)
 	if err != nil {
 		return Profile{}, err
 	}
-	if birthText.Valid {
-		// See issue: GOD_ROGDENIQ is a varchar; we expose only the year, never a synthetic date.
+	if neLe.Valid {
+		t := neLe.Time
+		if y := t.Year(); y >= 1800 && y <= 2200 {
+			tt := time.Date(y, t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+			p.BirthDate = &tt
+		}
+	}
+	if p.BirthDate == nil && birthText.Valid {
 		if y, ok := parseBirthYear(birthText.String); ok {
 			p.BirthYear = &y
 		}
