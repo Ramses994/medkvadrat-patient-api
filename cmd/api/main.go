@@ -16,6 +16,7 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/poll"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 )
 
 func main() {
@@ -33,9 +34,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	sqlite, err := db.OpenSQLite(cfg.SQLite.Path)
+	if err != nil {
+		logger.Error("sqlite connect failed", "err", err)
+		os.Exit(1)
+	}
+
+	if err := store.Migrate(ctxBackground(), sqlite); err != nil {
+		logger.Error("sqlite migrate failed", "err", err)
+		os.Exit(1)
+	}
+
 	repos := repo.New(mssql)
 	defaultModelsID := service.ParseDefaultModelsID(os.Getenv("DEFAULT_MODELS_ID"))
-	services := service.New(mssql, repos, logger, defaultModelsID)
+	services := service.New(mssql, sqlite, repos, logger, defaultModelsID, cfg)
 	router := api.NewRouter(cfg, services, logger)
 
 	server := &http.Server{
@@ -75,4 +87,7 @@ func main() {
 	poller.Stop()
 	logger.Info("db closing")
 	_ = mssql.Close()
+	_ = sqlite.Close()
 }
+
+func ctxBackground() context.Context { return context.Background() }

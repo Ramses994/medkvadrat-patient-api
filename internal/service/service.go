@@ -7,19 +7,22 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 )
 
 type Services struct {
-	DB     *sql.DB
+	MSSQL  *sql.DB
+	SQLite *sql.DB
 	Repos  repo.Repos
 	Logger *slog.Logger
 
 	DefaultModelsID int
+	Config          config.Config
 }
 
-func New(db *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int) *Services {
-	return &Services{DB: db, Repos: repos, Logger: logger, DefaultModelsID: defaultModelsID}
+func New(mssql *sql.DB, sqlite *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int, cfg config.Config) *Services {
+	return &Services{MSSQL: mssql, SQLite: sqlite, Repos: repos, Logger: logger, DefaultModelsID: defaultModelsID, Config: cfg}
 }
 
 func (s *Services) Doctors(ctx context.Context) ([]repo.Doctor, error) {
@@ -39,7 +42,7 @@ func (s *Services) FreeSlots(ctx context.Context, doctorID, date string) ([]repo
 }
 
 func (s *Services) Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error) {
-	return repo.Book(ctx, s.DB, s.Repos.Planning, s.Repos.Motconsu, in, s.DefaultModelsID)
+	return repo.Book(ctx, s.MSSQL, s.Repos.Planning, s.Repos.Motconsu, in, s.DefaultModelsID)
 }
 
 func (s *Services) LabResults(ctx context.Context, patientID string, daysBack int) ([]repo.LabResult, error) {
