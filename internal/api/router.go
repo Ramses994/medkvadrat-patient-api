@@ -38,9 +38,14 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("/api/patients/lab-panels", patientH.LabPanels)
 
 	auth := middleware.Auth{Token: cfg.APIToken}
+	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}
 	var base http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/auth/") || r.URL.Path == "/api/health" {
 			mux.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/me/") || strings.HasPrefix(r.URL.Path, "/api/catalog/") {
+			reqPatient.Wrap(mux).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
