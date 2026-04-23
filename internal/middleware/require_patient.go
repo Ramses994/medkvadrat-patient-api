@@ -17,6 +17,10 @@ func PatientIDFromContext(ctx context.Context) (int64, bool) {
 	return id, ok && id > 0
 }
 
+func WithPatientID(ctx context.Context, patientID int64) context.Context {
+	return context.WithValue(ctx, ctxKeyPatientID{}, patientID)
+}
+
 type RequirePatient struct {
 	JWTSecret []byte
 }

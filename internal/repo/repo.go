@@ -9,6 +9,7 @@ type Repos struct {
 	Motconsu *MotconsuRepo
 	Health   *HealthRepo
 	Catalog  *CatalogRepo
+	Me       *MeRepo
 }
 
 func New(db *sql.DB) Repos {
@@ -19,5 +20,6 @@ func New(db *sql.DB) Repos {
 		Motconsu: &MotconsuRepo{db: db},
 		Health:   &HealthRepo{db: db},
 		Catalog:  &CatalogRepo{db: db},
+		Me:       &MeRepo{db: db},
 	}
 }

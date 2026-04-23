@@ -45,6 +45,14 @@ func (s *Services) CatalogSlots(ctx context.Context, doctorID int, dateFrom, dat
 	return s.Repos.Catalog.Slots(ctx, doctorID, dateFrom, dateTo)
 }
 
+func (s *Services) MeProfile(ctx context.Context, patientID int64) (repo.Profile, error) {
+	return s.Repos.Me.Profile(ctx, patientID)
+}
+
+func (s *Services) MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.Appointment, error) {
+	return s.Repos.Me.Appointments(ctx, patientID, now, kind)
+}
+
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
 	return s.Repos.Patient.SearchByPhone(ctx, repo.CleanPhoneLast10(phone))
 }

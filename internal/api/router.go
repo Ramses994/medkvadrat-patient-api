@@ -20,6 +20,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	patientH := handler.PatientHandler{Svc: svc, Logger: logger}
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger}
 	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
+	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore}
 
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
@@ -43,6 +44,9 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("GET /api/catalog/departments", catalogH.Departments)
 	mux.HandleFunc("GET /api/catalog/doctors", catalogH.Doctors)
 	mux.HandleFunc("GET /api/catalog/slots", catalogH.Slots)
+	mux.HandleFunc("GET /api/me/profile", meH.Profile)
+	mux.HandleFunc("GET /api/me/appointments", meH.Appointments)
+	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
 
 	auth := middleware.Auth{Token: cfg.APIToken}
 	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}
