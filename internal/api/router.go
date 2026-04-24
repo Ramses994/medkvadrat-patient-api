@@ -19,6 +19,8 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	doctorH := handler.DoctorHandler{Svc: svc, Logger: logger}
 	patientH := handler.PatientHandler{Svc: svc, Logger: logger}
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger}
+	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
+	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore}
 
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
@@ -37,10 +39,26 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("/api/patients/lab-results", patientH.LabResults)
 	mux.HandleFunc("/api/patients/lab-panels", patientH.LabPanels)
 
+	// Patient JWT-protected (step 3)
+	mux.HandleFunc("GET /api/catalog/specialties", catalogH.Specialties)
+	mux.HandleFunc("GET /api/catalog/departments", catalogH.Departments)
+	mux.HandleFunc("GET /api/catalog/doctors", catalogH.Doctors)
+	mux.HandleFunc("GET /api/catalog/slots", catalogH.Slots)
+	mux.HandleFunc("GET /api/me/profile", meH.Profile)
+	mux.HandleFunc("GET /api/me/appointments", meH.Appointments)
+	mux.HandleFunc("POST /api/me/appointments", meH.BookAppointment)
+	mux.HandleFunc("DELETE /api/me/appointments/{motconsu_id}", meH.CancelAppointment)
+	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
+
 	auth := middleware.Auth{Token: cfg.APIToken}
+	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}
 	var base http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/auth/") || r.URL.Path == "/api/health" {
 			mux.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/me/") || strings.HasPrefix(r.URL.Path, "/api/catalog/") {
+			reqPatient.Wrap(mux).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {

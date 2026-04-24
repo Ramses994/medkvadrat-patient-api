@@ -29,6 +29,46 @@ func (s *Services) Doctors(ctx context.Context) ([]repo.Doctor, error) {
 	return s.Repos.Doctor.List(ctx)
 }
 
+func (s *Services) CatalogSpecialties(ctx context.Context) ([]repo.Specialty, error) {
+	return s.Repos.Catalog.Specialties(ctx)
+}
+
+func (s *Services) CatalogDepartments(ctx context.Context) ([]repo.Department, error) {
+	return s.Repos.Catalog.Departments(ctx)
+}
+
+func (s *Services) CatalogDoctors(ctx context.Context, specialtyID *int, meddepID *int) ([]repo.CatalogDoctor, error) {
+	return s.Repos.Catalog.Doctors(ctx, specialtyID, meddepID)
+}
+
+func (s *Services) CatalogSlots(ctx context.Context, doctorID int, dateFrom, dateTo time.Time) ([]repo.Slot, error) {
+	return s.Repos.Catalog.Slots(ctx, doctorID, dateFrom, dateTo)
+}
+
+func (s *Services) MeProfile(ctx context.Context, patientID int64) (repo.Profile, error) {
+	return s.Repos.Me.Profile(ctx, patientID)
+}
+
+func (s *Services) MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.Appointment, error) {
+	return s.Repos.Me.Appointments(ctx, patientID, now, kind)
+}
+
+func (s *Services) MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (motconsuID int64, restored bool, err error) {
+	res, err := repo.BookMe(ctx, s.MSSQL, s.Repos.Planning, s.Repos.Motconsu, planningID, patientID, s.DefaultModelsID, now)
+	if err != nil {
+		return 0, false, err
+	}
+	return res.MotconsuID, res.Restored, nil
+}
+
+func (s *Services) MeCancelAppointment(ctx context.Context, patientID int64, motconsuID int64, now time.Time) error {
+	minH := s.Config.CancelMinHoursBefore
+	if minH <= 0 {
+		minH = 24
+	}
+	return repo.CancelMe(ctx, s.MSSQL, motconsuID, patientID, time.Duration(minH)*time.Hour, now)
+}
+
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
 	return s.Repos.Patient.SearchByPhone(ctx, repo.CleanPhoneLast10(phone))
 }

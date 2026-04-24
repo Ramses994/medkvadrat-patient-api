@@ -69,3 +69,23 @@ type BookInput struct {
 	ModelsID   int
 	MeddepID   int
 }
+
+type Specialty struct {
+	SpecialtyID int
+	Code        string
+	Label       string
+}
+
+type Department struct {
+	DepartmentID int
+	Code         string
+	Label        string
+}
+
+type CatalogDoctor struct {
+	DoctorID    int
+	FullName    string
+	SpecialtyID int
+	Specialty   string
+	MeddepID    int
+}

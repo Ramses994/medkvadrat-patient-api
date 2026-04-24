@@ -16,6 +16,9 @@ type Config struct {
 	LogLevel     string
 	APIToken     string
 	PollInterval time.Duration
+	// CancelMinHoursBefore defines the minimum time before appointment start
+	// when patient cancellation is allowed.
+	CancelMinHoursBefore int
 
 	HTTP   HTTPConfig
 	MSSQL  MSSQLConfig
@@ -80,10 +83,11 @@ func Load() (Config, error) {
 	_ = godotenv.Load()
 
 	cfg := Config{
-		Env:          strings.TrimSpace(getEnv("ENV", "dev")),
-		LogLevel:     strings.TrimSpace(getEnv("LOG_LEVEL", "info")),
-		APIToken:     strings.TrimSpace(os.Getenv("API_TOKEN")),
-		PollInterval: mustDuration(getEnv("POLL_INTERVAL", "5s")),
+		Env:                  strings.TrimSpace(getEnv("ENV", "dev")),
+		LogLevel:             strings.TrimSpace(getEnv("LOG_LEVEL", "info")),
+		APIToken:             strings.TrimSpace(os.Getenv("API_TOKEN")),
+		PollInterval:         mustDuration(getEnv("POLL_INTERVAL", "5s")),
+		CancelMinHoursBefore: mustInt(getEnv("CANCEL_MIN_HOURS_BEFORE", "24"), 24),
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},

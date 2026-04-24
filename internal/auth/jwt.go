@@ -80,3 +80,20 @@ func ParseRefresh(secret []byte, tokenStr string) (RefreshClaims, error) {
 	}
 	return claims, nil
 }
+
+func ParseAccess(secret []byte, tokenStr string) (AccessClaims, error) {
+	var claims AccessClaims
+	_, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (interface{}, error) {
+		if t.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected alg")
+		}
+		return secret, nil
+	})
+	if err != nil {
+		return AccessClaims{}, err
+	}
+	if claims.Typ != "access" || claims.Sub == 0 {
+		return AccessClaims{}, fmt.Errorf("invalid access claims")
+	}
+	return claims, nil
+}
