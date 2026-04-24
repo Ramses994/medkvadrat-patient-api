@@ -18,13 +18,16 @@ import (
 )
 
 // Concurrency: 10 different patients race for one free planning row.
-// Expect: exactly 1 success; others get SLOT_TAKEN (or ALREADY_BOOKED if a patient is duplicated — we use distinct patients).
+// Expect: exactly 1 success; losers should fail (slot taken, etc).
+// Note: CreateMotconsu is a clinic-side SP and may create rows even for losers;
+// production code compensates by marking them REC_STATUS='D'. This test is here
+// to catch race conditions, not to assert exact side effects in Medialog.
 // Requires a live Medialog MSSQL; point env DB_* to it (e.g. dev) or a local
 //
 //	docker run: mcr.microsoft.com/mssql/server:2022-latest
 //
 //	go test -tags=integration ./internal/integration/...
-func TestBookMe_SerializableConcurrent(t *testing.T) {
+func TestBookMe_ConcurrentRace(t *testing.T) {
 	if os.Getenv("INTEGRATION_MSSQL") == "" {
 		t.Skip("set INTEGRATION_MSSQL=1 and DB_* to run")
 	}

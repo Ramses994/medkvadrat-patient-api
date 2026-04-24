@@ -13,21 +13,17 @@ type BookMeResult struct {
 }
 
 func BookMe(ctx context.Context, db *sql.DB, planning *PlanningRepo, motconsu *MotconsuRepo, planningID int, patientID int64, defaultModelsID int, now time.Time) (BookMeResult, error) {
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-	if err != nil {
-		return BookMeResult{}, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Lock + read slot (allow already held by same patient).
+	// Important: do NOT wrap clinic-side CreateMotconsu SP into our own transaction.
+	// Some installations have triggers that abort the outer transaction.
+	// Read slot (allow already held by same patient).
 	var plSubjID int
 	var dateCons time.Time
 	var heure int
 	var duree int
 	var slotPat sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `
+	if err := db.QueryRowContext(ctx, `
 SELECT PL_SUBJ_ID, DATE_CONS, HEURE, DUREE, PATIENTS_ID
-FROM PLANNING WITH (UPDLOCK, ROWLOCK)
+FROM PLANNING
 WHERE PLANNING_ID = @id`,
 		sql.Named("id", planningID),
 	).Scan(&plSubjID, &dateCons, &heure, &duree, &slotPat); err != nil {
@@ -46,7 +42,7 @@ WHERE PLANNING_ID = @id`,
 	// Existing appointment?
 	var existingID sql.NullInt64
 	var existingStatus sql.NullString
-	_ = tx.QueryRowContext(ctx, `
+	_ = db.QueryRowContext(ctx, `
 SELECT TOP 1 MOTCONSU_ID, REC_STATUS
 FROM MOTCONSU
 WHERE PLANNING_ID = @pid AND PATIENTS_ID = @pat
@@ -58,15 +54,18 @@ ORDER BY MOTCONSU_ID DESC`,
 	if existingID.Valid && existingStatus.Valid {
 		switch existingStatus.String {
 		case "D":
-			if _, err := tx.ExecContext(ctx, `
+			res, err := db.ExecContext(ctx, `
 UPDATE MOTCONSU SET REC_STATUS='W', KRN_MODIFY_DATE=GETDATE()
-WHERE MOTCONSU_ID=@id`,
+WHERE MOTCONSU_ID=@id AND PATIENTS_ID=@pat AND REC_STATUS='D'`,
 				sql.Named("id", existingID.Int64),
+				sql.Named("pat", patientID),
 			); err != nil {
 				return BookMeResult{}, fmt.Errorf("restore motconsu: %w", err)
 			}
-			if err := tx.Commit(); err != nil {
-				return BookMeResult{}, fmt.Errorf("commit: %w", err)
+			ra, _ := res.RowsAffected()
+			if ra == 0 {
+				// Someone changed status between our read and restore.
+				return BookMeResult{}, fmt.Errorf("ALREADY_BOOKED")
 			}
 			return BookMeResult{MotconsuID: existingID.Int64, Restored: true}, nil
 		case "W":
@@ -77,7 +76,7 @@ WHERE MOTCONSU_ID=@id`,
 	// Determine doctor + dep data from slot.
 	var medecinsID, fmDepID int
 	var meddepID sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `
+	if err := db.QueryRowContext(ctx, `
 SELECT ps.MEDECINS_ID,
   ISNULL((SELECT FM_DEP_ID FROM MEDDEP WHERE MEDDEP_ID = ps.MEDDEP_ID), 0),
   ps.MEDDEP_ID
@@ -97,12 +96,12 @@ FROM PL_SUBJ ps WHERE ps.PL_SUBJ_ID = @id`,
 	}
 
 	var patNom, patPrenom string
-	_ = tx.QueryRowContext(ctx, `SELECT ISNULL(NOM,''), ISNULL(PRENOM,'') FROM PATIENTS WHERE PATIENTS_ID=@id`,
+	_ = db.QueryRowContext(ctx, `SELECT ISNULL(NOM,''), ISNULL(PRENOM,'') FROM PATIENTS WHERE PATIENTS_ID=@id`,
 		sql.Named("id", patientID),
 	).Scan(&patNom, &patPrenom)
 
 	var motconsuID int
-	if err := tx.QueryRowContext(ctx, `
+	if err := db.QueryRowContext(ctx, `
 DECLARE @NewID int = 0;
 EXEC CreateMotconsu
   @PatientID = @patID, @ModelsID = @modID,
@@ -123,34 +122,57 @@ SELECT @NewID;`,
 	}
 
 	if !slotPat.Valid {
-		if err := planning.FillSlot(tx, ctx, planningID, int(patientID), patNom, patPrenom); err != nil {
+		// Guarded UPDATE: either we fill the slot, or someone else already did.
+		res, err := db.ExecContext(ctx, `
+UPDATE PLANNING
+SET PATIENTS_ID=@patID, NOM=@nom, PRENOM=@prenom
+WHERE PLANNING_ID=@planID AND PATIENTS_ID IS NULL`,
+			sql.Named("patID", patientID),
+			sql.Named("nom", patNom),
+			sql.Named("prenom", patPrenom),
+			sql.Named("planID", planningID),
+		)
+		if err != nil {
 			return BookMeResult{}, fmt.Errorf("update planning: %w", err)
 		}
+		ra, _ := res.RowsAffected()
+		if ra == 0 {
+			// Compensate: booking row exists, but slot was taken concurrently.
+			_, _ = db.ExecContext(ctx, `
+UPDATE MOTCONSU SET REC_STATUS='D', KRN_MODIFY_DATE=GETDATE()
+WHERE MOTCONSU_ID=@id AND PATIENTS_ID=@pat`,
+				sql.Named("id", motconsuID),
+				sql.Named("pat", patientID),
+			)
+			return BookMeResult{}, fmt.Errorf("SLOT_TAKEN")
+		}
 	}
-	if err := motconsu.SetPlanningAndStatus(tx, ctx, motconsuID, planningID, "W"); err != nil {
+	res, err := db.ExecContext(ctx, `
+UPDATE MOTCONSU SET PLANNING_ID=@planID, REC_STATUS=@st
+WHERE MOTCONSU_ID=@motID AND PATIENTS_ID=@pat`,
+		sql.Named("planID", planningID),
+		sql.Named("st", "W"),
+		sql.Named("motID", motconsuID),
+		sql.Named("pat", patientID),
+	)
+	if err != nil {
 		return BookMeResult{}, fmt.Errorf("update motconsu: %w", err)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return BookMeResult{}, fmt.Errorf("commit: %w", err)
+	ra, _ := res.RowsAffected()
+	if ra == 0 {
+		return BookMeResult{}, fmt.Errorf("update motconsu: %w", sql.ErrNoRows)
 	}
 	return BookMeResult{MotconsuID: int64(motconsuID)}, nil
 }
 
 func CancelMe(ctx context.Context, db *sql.DB, motconsuID int64, patientID int64, cancelMinBefore time.Duration, now time.Time) error {
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	var patID int64
 	var dt time.Time
 	var st string
 	var planningID sql.NullInt64
-	err = tx.QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
 SELECT PATIENTS_ID, DATE_CONSULTATION, ISNULL(REC_STATUS,''), PLANNING_ID
-FROM MOTCONSU WITH (UPDLOCK, ROWLOCK)
+FROM MOTCONSU
 WHERE MOTCONSU_ID=@id`,
 		sql.Named("id", motconsuID),
 	).Scan(&patID, &dt, &st, &planningID)
@@ -172,12 +194,17 @@ WHERE MOTCONSU_ID=@id`,
 	if dt.Before(now.Add(cancelMinBefore)) {
 		return fmt.Errorf("CANCEL_TOO_LATE")
 	}
-	if _, err := tx.ExecContext(ctx, `
+	res, err := db.ExecContext(ctx, `
 UPDATE MOTCONSU SET REC_STATUS='D', KRN_MODIFY_DATE=GETDATE()
-WHERE MOTCONSU_ID=@id`,
+WHERE MOTCONSU_ID=@id AND PATIENTS_ID=@pat AND REC_STATUS<>'D'`,
 		sql.Named("id", motconsuID),
+		sql.Named("pat", patientID),
 	); err != nil {
 		return fmt.Errorf("cancel: %w", err)
 	}
-	return tx.Commit()
+	ra, _ := res.RowsAffected()
+	if ra == 0 {
+		return fmt.Errorf("ALREADY_CANCELLED")
+	}
+	return nil
 }
