@@ -12,6 +12,31 @@ The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OT
 
 `GET /api/me/profile` exposes `birth_date` (`YYYY-MM-DD`) from Medialog `PATIENTS.NE_LE` when set, otherwise `birth_year` from `GOD_ROGDENIQ`. Clients should show one or the other, not both.
 
+## Integration tests (MSSQL)
+
+Integration tests verify behavior against a real dev MSSQL instance. They cover write paths (book/cancel/restore) that mocks can't simulate — clinic-side triggers and stored procedures.
+
+Prerequisites:
+- Docker installed.
+- `medkvadrat-internal` network exists (created by `docker compose up` on the deploy host).
+- `.env` with `DB_SERVER`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` (same as api-gateway).
+
+Run:
+
+```sh
+./scripts/integration-test.sh
+```
+
+The script runs `go test -tags=integration ./internal/integration/... -v` inside a throwaway `golang:1.22-alpine` container on `medkvadrat-internal` network and cleans up.
+
+Override network if running outside compose context:
+
+```sh
+DOCKER_NETWORK=host ./scripts/integration-test.sh
+```
+
+See also: `docs/MEDIALOG_RULES.md`.
+
 ## Ad-hoc SQL tools (Medialog read-only)
 
 From repo root with `.env` / env vars for MSSQL (same as the API):
