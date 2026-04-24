@@ -51,7 +51,9 @@ do_curl() {
   )
   LAST_CODE=$(printf '%s' "$LAST_CODE" | tr -d '\n')
   local preview
-  preview=$(head -c 500 <"$BODY" 2>/dev/null || true)
+  preview=$(
+    head -c 500 <"$BODY" 2>/dev/null | sed -E 's/"(access|refresh)":"[^"]{10,}/"\1":"<REDACTED>/g' || true
+  )
   echo "----- step ${step}: ${name} -----"
   echo "  ${method} ${url}"
   echo "  status: ${LAST_CODE}"
