@@ -59,7 +59,8 @@ UPDATE MOTCONSU SET REC_STATUS='W', KRN_MODIFY_DATE=GETDATE()
 WHERE MOTCONSU_ID=@id AND PATIENTS_ID=@pat AND REC_STATUS='D'`,
 				sql.Named("id", existingID.Int64),
 				sql.Named("pat", patientID),
-			); err != nil {
+			)
+			if err != nil {
 				return BookMeResult{}, fmt.Errorf("restore motconsu: %w", err)
 			}
 			ra, _ := res.RowsAffected()
@@ -199,7 +200,8 @@ UPDATE MOTCONSU SET REC_STATUS='D', KRN_MODIFY_DATE=GETDATE()
 WHERE MOTCONSU_ID=@id AND PATIENTS_ID=@pat AND REC_STATUS<>'D'`,
 		sql.Named("id", motconsuID),
 		sql.Named("pat", patientID),
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("cancel: %w", err)
 	}
 	ra, _ := res.RowsAffected()
