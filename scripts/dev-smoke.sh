@@ -24,9 +24,11 @@ BODY="${TMP}/body"
 
 if date -u -d "today" +%F >/dev/null 2>&1; then
   DF=$(date -u -d "today" +%F)
+  DT14=$(date -u -d "today + 14 days" +%F)
   DT=$(date -u -d "today + 45 days" +%F)
 else
   DF=$(date -u +%F)
+  DT14=$(date -u -v+14d +%F 2>/dev/null || date -u +%F)
   DT=$(date -u -v+45d +%F 2>/dev/null || date -u +%F)
 fi
 
@@ -109,9 +111,30 @@ do_curl "me appointments upcoming" "GET" "${BASE_URL}/api/me/appointments?status
 # 5) Catalog doctors
 do_curl "catalog doctors" "GET" "${BASE_URL}/api/catalog/doctors" "${AUTH[@]}"
 [[ "$LAST_CODE" =~ ^2 ]] || exit 1
-DOCTOR_ID=$(jq -r '.data[0].doctor_id // empty' <"$BODY")
-if [[ -z "$DOCTOR_ID" || "$DOCTOR_ID" == "null" ]]; then
-  echo "catalog/doctors: empty list" >&2
+DOCTOR_IDS=$(jq -r '.data[]? | select((.full_name // "") | test("test|expert|docexpert"; "i") | not) | .doctor_id // empty' <"$BODY" | awk 'NF')
+if [[ -z "${DOCTOR_IDS}" ]]; then
+  echo "catalog/doctors: empty list (or all filtered out)" >&2
+  exit 1
+fi
+
+DOCTOR_ID=
+PLAN_ID=
+for DOC_ID in ${DOCTOR_IDS}; do
+  do_curl "catalog slots (probe)" "GET" \
+    "${BASE_URL}/api/catalog/slots?doctor_id=${DOC_ID}&date_from=${DF}&date_to=${DT14}" \
+    "${AUTH[@]}"
+  [[ "$LAST_CODE" =~ ^2 ]] || continue
+  PID=$(jq -r '.data[0].planning_id // empty' <"$BODY")
+  if [[ -n "$PID" && "$PID" != "null" ]]; then
+    DOCTOR_ID="$DOC_ID"
+    PLAN_ID="$PID"
+    echo "Picked doctor_id=${DOCTOR_ID}, planning_id=${PLAN_ID} (window ${DF}..${DT14})"
+    echo
+    break
+  fi
+done
+if [[ -z "$PLAN_ID" || "$PLAN_ID" == "null" ]]; then
+  echo "FAIL: no doctor with slots in ${DF}..${DT14} (filtered by name: test|expert|docexpert)" >&2
   exit 1
 fi
 
@@ -120,9 +143,9 @@ do_curl "catalog slots" "GET" \
   "${BASE_URL}/api/catalog/slots?doctor_id=${DOCTOR_ID}&date_from=${DF}&date_to=${DT}" \
   "${AUTH[@]}"
 [[ "$LAST_CODE" =~ ^2 ]] || exit 1
-PLAN_ID=$(jq -r '.data[0].planning_id // empty' <"$BODY")
+PLAN_ID=$(jq -r --argjson fallback "$PLAN_ID" '.data[0].planning_id // $fallback' <"$BODY")
 if [[ -z "$PLAN_ID" || "$PLAN_ID" == "null" ]]; then
-  echo "No slot in ${DF}..${DT} for doctor ${DOCTOR_ID} (widen range in script)" >&2
+  echo "catalog/slots: empty list for picked doctor ${DOCTOR_ID} in ${DF}..${DT}" >&2
   exit 1
 fi
 
