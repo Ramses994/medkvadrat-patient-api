@@ -138,7 +138,7 @@ SELECT @NewID;`,
 }
 
 func CancelMe(ctx context.Context, db *sql.DB, motconsuID int64, patientID int64, cancelMinBefore time.Duration, now time.Time) error {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
