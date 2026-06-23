@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   PRIMARY KEY(scope, rl_key, window_sec, limit_count)
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_rate_expires ON rate_limits(expires_at);`,
+		`
+CREATE TABLE IF NOT EXISTS appointment_confirmations (
+  motconsu_id INTEGER PRIMARY KEY,
+  patient_id  INTEGER NOT NULL,
+  status      TEXT NOT NULL,
+  source      TEXT NOT NULL DEFAULT 'max_bot',
+  updated_at  DATETIME NOT NULL
+);`,
 	}
 
 	for i, s := range stmts {
