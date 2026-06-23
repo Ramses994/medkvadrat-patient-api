@@ -21,6 +21,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger}
 	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
 	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore}
+	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
 
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
@@ -38,6 +39,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("/api/patients/search", patientH.Search)
 	mux.HandleFunc("/api/patients/lab-results", patientH.LabResults)
 	mux.HandleFunc("/api/patients/lab-panels", patientH.LabPanels)
+	mux.HandleFunc("GET /api/reminders/due", remindersH.Due)
 
 	// Patient JWT-protected (step 3)
 	mux.HandleFunc("GET /api/catalog/specialties", catalogH.Specialties)
