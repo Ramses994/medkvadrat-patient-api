@@ -43,7 +43,7 @@ func (h RemindersHandler) now() time.Time {
 	if h.Now != nil {
 		return h.Now()
 	}
-	return time.Now()
+	return time.Now().In(moscowLocation())
 }
 
 func moscowLocation() *time.Location {

@@ -18,7 +18,15 @@ type DueReminder struct {
 	DateConsultation time.Time
 }
 
+const mssqlLocalDateTimeLayout = "2006-01-02 15:04:05"
+
 func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time) ([]DueReminder, error) {
+	// Bind window edges as naive local datetime strings so go-mssqldb does not
+	// convert time.Time to UTC when comparing with Medialog DATE_CONSULTATION.
+	loc := moscowLocation()
+	fromBound := from.In(loc).Format(mssqlLocalDateTimeLayout)
+	toBound := to.In(loc).Format(mssqlLocalDateTimeLayout)
+
 	rows, err := db.QueryContext(ctx, `
 SELECT
   m.MOTCONSU_ID,
@@ -41,8 +49,8 @@ WHERE m.REC_STATUS = 'W'
   AND m.DATE_CONSULTATION >= @from
   AND m.DATE_CONSULTATION <= @to
 ORDER BY m.DATE_CONSULTATION`,
-		sql.Named("from", from),
-		sql.Named("to", to),
+		sql.Named("from", fromBound),
+		sql.Named("to", toBound),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query due reminders: %w", err)
@@ -72,4 +80,12 @@ ORDER BY m.DATE_CONSULTATION`,
 		return nil, fmt.Errorf("rows due reminders: %w", err)
 	}
 	return out, nil
+}
+
+func moscowLocation() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*3600)
+	}
+	return loc
 }
