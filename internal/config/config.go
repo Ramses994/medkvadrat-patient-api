@@ -15,7 +15,6 @@ type Config struct {
 	Env          string
 	LogLevel     string
 	APIToken         string
-	InternalAPIToken string
 	PollInterval time.Duration
 	// CancelMinHoursBefore defines the minimum time before appointment start
 	// when patient cancellation is allowed.
@@ -87,7 +86,6 @@ func Load() (Config, error) {
 		Env:                  strings.TrimSpace(getEnv("ENV", "dev")),
 		LogLevel:             strings.TrimSpace(getEnv("LOG_LEVEL", "info")),
 		APIToken:             strings.TrimSpace(os.Getenv("API_TOKEN")),
-		InternalAPIToken:     strings.TrimSpace(os.Getenv("INTERNAL_API_TOKEN")),
 		PollInterval:         mustDuration(getEnv("POLL_INTERVAL", "5s")),
 		CancelMinHoursBefore: mustInt(getEnv("CANCEL_MIN_HOURS_BEFORE", "24"), 24),
 		HTTP: HTTPConfig{

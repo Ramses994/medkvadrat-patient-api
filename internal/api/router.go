@@ -51,17 +51,12 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("DELETE /api/me/appointments/{motconsu_id}", meH.CancelAppointment)
 	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
 
-	// Internal (bot-only, INTERNAL_API_TOKEN)
+	// Server-to-server (API_TOKEN), same as /api/reminders/due
 	mux.HandleFunc("POST /api/internal/confirmations", confirmationsH.Upsert)
 
 	auth := middleware.Auth{Token: cfg.APIToken}
-	internalAuth := middleware.Auth{Token: cfg.InternalAPIToken}
 	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}
 	var base http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/internal/") {
-			internalAuth.RequireBearer(mux).ServeHTTP(w, r)
-			return
-		}
 		if strings.HasPrefix(r.URL.Path, "/api/auth/") || r.URL.Path == "/api/health" {
 			mux.ServeHTTP(w, r)
 			return
