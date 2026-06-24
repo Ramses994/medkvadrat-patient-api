@@ -27,15 +27,15 @@ func TestRepo_UpsertLastWriteWins(t *testing.T) {
 	r := NewRepo(db)
 	ctx := context.Background()
 
-	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max_bot")
+	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Status != "confirmed" || rec.MotconsuID != 100 {
+	if rec.Status != "confirmed" || rec.PlanningID != 100 {
 		t.Fatalf("first upsert: %+v", rec)
 	}
 
-	rec2, err := r.Upsert(ctx, 100, 200, "declined", "max_bot")
+	rec2, err := r.Upsert(ctx, 100, 200, "declined", "max")
 	if err != nil {
 		t.Fatal(err)
 	}

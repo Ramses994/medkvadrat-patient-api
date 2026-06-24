@@ -46,10 +46,10 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 		`CREATE INDEX IF NOT EXISTS idx_rate_expires ON rate_limits(expires_at);`,
 		`
 CREATE TABLE IF NOT EXISTS appointment_confirmations (
-  motconsu_id INTEGER PRIMARY KEY,
-  patient_id  INTEGER NOT NULL,
+  planning_id INTEGER PRIMARY KEY,
   status      TEXT NOT NULL,
-  source      TEXT NOT NULL DEFAULT 'max_bot',
+  source      TEXT NOT NULL DEFAULT 'max',
+  patient_id  INTEGER,
   updated_at  DATETIME NOT NULL
 );`,
 	}

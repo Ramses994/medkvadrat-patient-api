@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-const defaultSource = "max_bot"
+const defaultSource = "max"
 
 // Record is the persisted confirmation overlay in gateway.db.
 type Record struct {
-	MotconsuID int64
+	PlanningID int64
 	PatientID  int64
 	Status     string
 	Source     string
@@ -26,27 +26,27 @@ func NewRepo(db *sql.DB) *Repo {
 	return &Repo{db: db}
 }
 
-// Upsert stores confirmation with last-write-wins semantics per motconsu_id.
-func (r *Repo) Upsert(ctx context.Context, motconsuID, patientID int64, status, source string) (Record, error) {
+// Upsert stores confirmation with last-write-wins semantics per planning_id.
+func (r *Repo) Upsert(ctx context.Context, planningID, patientID int64, status, source string) (Record, error) {
 	if source == "" {
 		source = defaultSource
 	}
 	status = NormalizeStatus(status)
 
 	const q = `
-INSERT INTO appointment_confirmations (motconsu_id, patient_id, status, source, updated_at)
+INSERT INTO appointment_confirmations (planning_id, status, source, patient_id, updated_at)
 VALUES (?, ?, ?, ?, datetime('now'))
-ON CONFLICT(motconsu_id) DO UPDATE SET
-  patient_id = excluded.patient_id,
+ON CONFLICT(planning_id) DO UPDATE SET
   status = excluded.status,
   source = excluded.source,
+  patient_id = excluded.patient_id,
   updated_at = excluded.updated_at
-RETURNING motconsu_id, patient_id, status, source, updated_at`
+RETURNING planning_id, status, source, patient_id, updated_at`
 
 	var rec Record
 	var updatedAt string
-	err := r.db.QueryRowContext(ctx, q, motconsuID, patientID, status, source).Scan(
-		&rec.MotconsuID, &rec.PatientID, &rec.Status, &rec.Source, &updatedAt,
+	err := r.db.QueryRowContext(ctx, q, planningID, status, source, patientID).Scan(
+		&rec.PlanningID, &rec.Status, &rec.Source, &rec.PatientID, &updatedAt,
 	)
 	if err != nil {
 		return Record{}, fmt.Errorf("upsert confirmation: %w", err)
