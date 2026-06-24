@@ -34,8 +34,8 @@ type dueReminderDTO struct {
 	PatientPhone     string `json:"patient_phone"`
 	PatientName      string `json:"patient_name"`
 	DoctorName       string `json:"doctor_name"`
-	DepartmentID     int    `json:"department_id"`
-	DepartmentLabel  string `json:"department_label"`
+	BranchID         int    `json:"branch_id"`
+	BranchCode       string `json:"branch_code"`
 	DateConsultation string `json:"date_consultation"`
 	Status           int    `json:"status"`
 }
@@ -148,8 +148,8 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
 			DoctorName:       abbrevDoctorName(row.DoctorName),
-			DepartmentID:     row.DepartmentID,
-			DepartmentLabel:  row.DepartmentLabel,
+			BranchID:         row.BranchID,
+			BranchCode:       row.BranchCode,
 			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
 			Status:           row.Status,
 		})

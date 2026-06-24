@@ -15,8 +15,8 @@ type DueReminder struct {
 	PatientPhone     string
 	PatientName      string
 	DoctorName       string
-	DepartmentID     int
-	DepartmentLabel  string
+	BranchID         int
+	BranchCode       string
 	DateConsultation time.Time
 	Status           int
 }
@@ -31,14 +31,14 @@ SELECT
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
   ISNULL(ps.NAME,'') AS DOCTOR_NAME,
-  ISNULL(fd.FM_DEP_ID,0) AS DEPARTMENT_ID,
-  ISNULL(fd.LABEL,'')    AS DEPARTMENT_LABEL,
+  ISNULL(o.FM_ORG_ID,0) AS BRANCH_ID,
+  ISNULL(o.CODE,'')     AS BRANCH_CODE,
   CONVERT(varchar(16), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 120) AS DATE_CONSULTATION,
   ISNULL(p.STATUS,-1) AS STATUS
 FROM PLANNING p
 JOIN PATIENTS pt ON pt.PATIENTS_ID = p.PATIENTS_ID
-LEFT JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
-LEFT JOIN FM_DEP fd ON fd.FM_DEP_ID = p.CREATE_FM_DEP_ID
+JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
+LEFT JOIN FM_ORG o ON o.FM_ORG_ID = ps.FM_INTORG_ID
 WHERE p.PATIENTS_ID IS NOT NULL
   AND ISNULL(p.CANCELLED,0) = 0
   AND p.DATE_CONS >= CAST(@from AS date)
@@ -137,8 +137,8 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 			&r.PatientPhone,
 			&r.PatientName,
 			&r.DoctorName,
-			&r.DepartmentID,
-			&r.DepartmentLabel,
+			&r.BranchID,
+			&r.BranchCode,
 			&dateConsStr,
 			&r.Status,
 		); err != nil {
