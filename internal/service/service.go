@@ -109,6 +109,10 @@ func (s *Services) PollAfter(ctx context.Context, last time.Time) ([]repo.PollRo
 	return s.Repos.Motconsu.PollAfter(ctx, last)
 }
 
+func (s *Services) RemindersDue(ctx context.Context, from, to time.Time, patientIDs []int64) ([]repo.DueReminder, error) {
+	return repo.DueReminders(ctx, s.MSSQL, from, to, patientIDs)
+}
+
 func ParseDefaultModelsID(v string) int {
 	n, _ := strconv.Atoi(v)
 	return n
