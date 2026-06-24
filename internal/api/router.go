@@ -21,6 +21,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger}
 	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
 	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore}
+	confirmationsH := handler.ConfirmationsHandler{Svc: svc, Logger: logger}
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
 
 	// Public
@@ -51,6 +52,9 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("POST /api/me/appointments", meH.BookAppointment)
 	mux.HandleFunc("DELETE /api/me/appointments/{motconsu_id}", meH.CancelAppointment)
 	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
+
+	// Server-to-server (API_TOKEN), same as /api/reminders/due
+	mux.HandleFunc("POST /api/internal/confirmations", confirmationsH.Upsert)
 
 	auth := middleware.Auth{Token: cfg.APIToken}
 	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}

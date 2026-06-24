@@ -14,7 +14,7 @@ import (
 type Config struct {
 	Env          string
 	LogLevel     string
-	APIToken     string
+	APIToken         string
 	PollInterval time.Duration
 	// CancelMinHoursBefore defines the minimum time before appointment start
 	// when patient cancellation is allowed.
