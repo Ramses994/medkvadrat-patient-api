@@ -181,13 +181,17 @@ func (r *PatientRepo) LabPanels(ctx context.Context, patientID string, daysBack 
 	return out, nil
 }
 
-func CleanPhoneLast10(phone string) string {
-	clean := strings.Map(func(r rune) rune {
+func CleanPhoneDigits(phone string) string {
+	return strings.Map(func(r rune) rune {
 		if r >= '0' && r <= '9' {
 			return r
 		}
 		return -1
 	}, phone)
+}
+
+func CleanPhoneLast10(phone string) string {
+	clean := CleanPhoneDigits(phone)
 	if len(clean) > 10 {
 		clean = clean[len(clean)-10:]
 	}
