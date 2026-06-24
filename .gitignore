@@ -3,3 +3,4 @@
 /api-gateway
 *.db
 *.db-*
+tools/planningdiag/
