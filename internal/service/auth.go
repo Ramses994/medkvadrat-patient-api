@@ -122,7 +122,6 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 			if s.Config.Auth.Mode == "dev" {
 				s.Logger.Warn(
 					"otp request blocked: patient email missing",
-					"phone", phone,
 					"hint", "set PATIENTS.EMAIL on dev MSSQL or use AUTH_MODE=pilot with AUTH_PILOT_WHITELIST for happy-path testing",
 				)
 			}

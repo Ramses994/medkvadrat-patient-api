@@ -39,3 +39,25 @@ Golden/unit тесты через моки **не ловят**:
 
 Каждый write‑эндпоинт в Medialog должен иметь integration‑тест под build‑tag `integration` и прогоняться на dev MSSQL через `./scripts/integration-test.sh`.
 
+## Персональные данные в логах
+
+Правило того же уровня, что read-only по Medialog. Применяется ко **всем** PR и окружениям (prod, стенд, локально).
+
+### Обязательно
+
+- В логи (`slog`, stdout, middleware) — **только идентификаторы**: `patient_id`, `planning_id`, `motconsu_id`, `doctor_id`, `branch_id`, `request_id`, `status`, `latency_ms`, `err`.
+- ФИО (`NOM`/`PRENOM`, `patient_name`, `doctor_name`, `full_name`), телефон, email, адрес, дата рождения — **никогда** в логах.
+- ПДн допустимы **только в теле HTTP-ответа** авторизованному клиенту по контракту эндпоинта (staff/S2S, JWT пациента).
+- Handler-ошибки логировать как `err` + id из контекста запроса, **без** сериализации DTO/`data`.
+- Read-path SQL не джойнить `PATIENTS`/`MEDECINS` ради имён, если имена нужны только для логов или отладки — убрать данные из выборки, а не из формата лога.
+- **Не запускать** `patient-api` и diag-утилиты против боевого Medialog (`192.168.2.229`) из облачных агентов (Cursor Cloud и т.п.) — риск утечки ПДн в лог агента.
+
+### Исключения
+
+- Маскированные значения, если без них нельзя отладить (например `masked_email` в OTP audit).
+- `AUTH_MODE=dev`: OTP-код в лог допустим только на изолированном dev-инстансе.
+
+### Локальные diag-утилиты
+
+`tools/planningdiag/` — read-only (`SELECT` only), не в git (`.gitignore`). Вывод в stdout может содержать ПДн; не коммитить, не гонять на проде.
+

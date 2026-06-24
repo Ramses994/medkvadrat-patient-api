@@ -93,8 +93,8 @@ func (p *MotconsuPoller) tick(ctx context.Context) {
 			p.logger.Info(
 				"motconsu changed",
 				"motconsu_id", r.MotconsuID,
-				"patient", r.PatientNom+" "+r.PatientPrenom,
-				"doctor", r.DoctorNom+" "+r.DoctorPrenom,
+				"patient_id", r.PatientID,
+				"doctor_id", r.DoctorID,
 				"date", r.DateConsult.Format("02.01.2006 15:04"),
 			)
 			p.seenTalons[r.MotconsuID] = struct{}{}

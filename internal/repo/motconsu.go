@@ -53,26 +53,18 @@ func (r *MotconsuRepo) ChangesSince(ctx context.Context, since time.Time) ([]Sch
 }
 
 type PollRow struct {
-	MotconsuID    int
-	PatientID     int
-	DoctorID      int
-	DateConsult   time.Time
-	ModifyDate    time.Time
-	PatientNom    string
-	PatientPrenom string
-	DoctorNom     string
-	DoctorPrenom  string
+	MotconsuID  int
+	PatientID   int
+	DoctorID    int
+	DateConsult time.Time
+	ModifyDate  time.Time
 }
 
 func (r *MotconsuRepo) PollAfter(ctx context.Context, last time.Time) ([]PollRow, error) {
 	query := `
 		SELECT m.MOTCONSU_ID, m.PATIENTS_ID, m.MEDECINS_ID,
-			m.DATE_CONSULTATION, m.KRN_MODIFY_DATE,
-			ISNULL(p.NOM,'') AS PAT_NOM, ISNULL(p.PRENOM,'') AS PAT_PRENOM,
-			ISNULL(d.NOM,'') AS DOC_NOM, ISNULL(d.PRENOM,'') AS DOC_PRENOM
+			m.DATE_CONSULTATION, m.KRN_MODIFY_DATE
 		FROM MOTCONSU m
-		LEFT JOIN PATIENTS p ON p.PATIENTS_ID = m.PATIENTS_ID
-		LEFT JOIN MEDECINS d ON d.MEDECINS_ID = m.MEDECINS_ID
 		WHERE m.KRN_MODIFY_DATE > @lastDate
 		ORDER BY m.KRN_MODIFY_DATE ASC`
 
@@ -85,7 +77,7 @@ func (r *MotconsuRepo) PollAfter(ctx context.Context, last time.Time) ([]PollRow
 	var out []PollRow
 	for rows.Next() {
 		var pr PollRow
-		if err := rows.Scan(&pr.MotconsuID, &pr.PatientID, &pr.DoctorID, &pr.DateConsult, &pr.ModifyDate, &pr.PatientNom, &pr.PatientPrenom, &pr.DoctorNom, &pr.DoctorPrenom); err != nil {
+		if err := rows.Scan(&pr.MotconsuID, &pr.PatientID, &pr.DoctorID, &pr.DateConsult, &pr.ModifyDate); err != nil {
 			return nil, fmt.Errorf("scan poll: %w", err)
 		}
 		out = append(out, pr)
