@@ -21,7 +21,8 @@ type DueReminder struct {
 	Status           int
 }
 
-const mssqlLocalDateTimeLayout = "2006-01-02 15:04:05"
+const mssqlReminderBoundLayout = "2006-01-02T15:04:05"
+const consultationWallClockLayout = "2006-01-02 15:04"
 
 const dueRemindersBaseSQL = `
 SELECT
@@ -32,19 +33,34 @@ SELECT
   ISNULL(ps.NAME,'') AS DOCTOR_NAME,
   ISNULL(fd.FM_DEP_ID,0) AS DEPARTMENT_ID,
   ISNULL(fd.LABEL,'')    AS DEPARTMENT_LABEL,
-  DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS) AS DATE_CONSULTATION,
+  CONVERT(varchar(16), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 120) AS DATE_CONSULTATION,
   ISNULL(p.STATUS,-1) AS STATUS
 FROM PLANNING p
 JOIN PATIENTS pt ON pt.PATIENTS_ID = p.PATIENTS_ID
 LEFT JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
-LEFT JOIN MEDDEP md  ON md.MEDDEP_ID  = ps.MEDDEP_ID
-LEFT JOIN FM_DEP fd  ON fd.FM_DEP_ID  = md.FM_DEP_ID
+LEFT JOIN FM_DEP fd ON fd.FM_DEP_ID = p.CREATE_FM_DEP_ID
 WHERE p.PATIENTS_ID IS NOT NULL
   AND ISNULL(p.CANCELLED,0) = 0
   AND p.DATE_CONS >= CAST(@from AS date)
   AND p.DATE_CONS <= CAST(@to AS date)
   AND DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS) >= @from
   AND DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS) <= @to`
+
+// ParseConsultationWallClock parses MSSQL CONVERT(varchar(16), …, 120) as MSK wall-clock.
+func ParseConsultationWallClock(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty consultation time")
+	}
+	if len(s) > len(consultationWallClockLayout) {
+		s = s[:len(consultationWallClockLayout)]
+	}
+	t, err := time.ParseInLocation(consultationWallClockLayout, s, moscowLocation())
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse consultation time %q: %w", s, err)
+	}
+	return t, nil
+}
 
 // ParsePatientIDsCSV parses optional comma-separated patient ids (empty → nil, no filter).
 func ParsePatientIDsCSV(raw string) ([]int64, error) {
@@ -92,11 +108,12 @@ func patientFilterClause(patientIDs []int64) (string, []any) {
 
 func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time, patientIDs []int64) ([]DueReminder, error) {
 	loc := moscowLocation()
-	fromBound := from.In(loc).Format(mssqlLocalDateTimeLayout)
-	toBound := to.In(loc).Format(mssqlLocalDateTimeLayout)
+	fromBound := from.In(loc).Format(mssqlReminderBoundLayout)
+	toBound := to.In(loc).Format(mssqlReminderBoundLayout)
 
 	filterSQL, filterArgs := patientFilterClause(patientIDs)
-	query := dueRemindersBaseSQL + filterSQL + "\nORDER BY DATE_CONSULTATION"
+	query := dueRemindersBaseSQL + filterSQL + `
+ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 
 	args := []any{
 		sql.Named("from", fromBound),
@@ -113,6 +130,7 @@ func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time, patientID
 	var out []DueReminder
 	for rows.Next() {
 		var r DueReminder
+		var dateConsStr string
 		if err := rows.Scan(
 			&r.PlanningID,
 			&r.PatientID,
@@ -121,9 +139,13 @@ func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time, patientID
 			&r.DoctorName,
 			&r.DepartmentID,
 			&r.DepartmentLabel,
-			&r.DateConsultation,
+			&dateConsStr,
 			&r.Status,
 		); err != nil {
+			return nil, fmt.Errorf("scan due reminders: %w", err)
+		}
+		r.DateConsultation, err = ParseConsultationWallClock(dateConsStr)
+		if err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
 		out = append(out, r)

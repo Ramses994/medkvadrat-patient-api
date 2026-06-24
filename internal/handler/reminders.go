@@ -140,7 +140,6 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loc := moscowLocation()
 	out := make([]dueReminderDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, dueReminderDTO{
@@ -151,7 +150,7 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 			DoctorName:       abbrevDoctorName(row.DoctorName),
 			DepartmentID:     row.DepartmentID,
 			DepartmentLabel:  row.DepartmentLabel,
-			DateConsultation: row.DateConsultation.In(loc).Format(reminderOutLayout),
+			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
 			Status:           row.Status,
 		})
 	}
