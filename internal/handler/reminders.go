@@ -19,7 +19,7 @@ const (
 )
 
 type RemindersService interface {
-	RemindersDue(ctx context.Context, from, to time.Time) ([]repo.DueReminder, error)
+	RemindersDue(ctx context.Context, from, to time.Time, patientIDs []int64) ([]repo.DueReminder, error)
 }
 
 type RemindersHandler struct {
@@ -29,7 +29,7 @@ type RemindersHandler struct {
 }
 
 type dueReminderDTO struct {
-	MotconsuID       int64  `json:"motconsu_id"`
+	PlanningID       int64  `json:"planning_id"`
 	PatientID        int64  `json:"patient_id"`
 	PatientPhone     string `json:"patient_phone"`
 	PatientName      string `json:"patient_name"`
@@ -37,6 +37,7 @@ type dueReminderDTO struct {
 	DepartmentID     int    `json:"department_id"`
 	DepartmentLabel  string `json:"department_label"`
 	DateConsultation string `json:"date_consultation"`
+	Status           int    `json:"status"`
 }
 
 func (h RemindersHandler) now() time.Time {
@@ -89,9 +90,10 @@ func parseReminderWindow(fromStr, toStr string, now time.Time) (time.Time, time.
 }
 
 var (
-	errReminderRange   = errValidation("from должен быть раньше to")
-	errReminderWindow  = errValidation("окно не больше 14 дней")
-	errReminderFormat  = errValidation("from/to: формат 2006-01-02T15:04:05")
+	errReminderRange          = errValidation("from должен быть раньше to")
+	errReminderWindow         = errValidation("окно не больше 14 дней")
+	errReminderFormat         = errValidation("from/to: формат 2006-01-02T15:04:05")
+	errReminderPatientIDs     = errValidation("patient_ids: ожидается CSV положительных целых")
 )
 
 type errValidation string
@@ -125,7 +127,13 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.Svc.RemindersDue(r.Context(), from, to)
+	patientIDs, err := repo.ParsePatientIDsCSV(r.URL.Query().Get("patient_ids"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", errReminderPatientIDs.Error())
+		return
+	}
+
+	rows, err := h.Svc.RemindersDue(r.Context(), from, to, patientIDs)
 	if err != nil {
 		h.Logger.Error("reminders due failed", "err", err)
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
@@ -136,7 +144,7 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 	out := make([]dueReminderDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, dueReminderDTO{
-			MotconsuID:       row.MotconsuID,
+			PlanningID:       row.PlanningID,
 			PatientID:        row.PatientID,
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
@@ -144,6 +152,7 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 			DepartmentID:     row.DepartmentID,
 			DepartmentLabel:  row.DepartmentLabel,
 			DateConsultation: row.DateConsultation.In(loc).Format(reminderOutLayout),
+			Status:           row.Status,
 		})
 	}
 	response.OK(w, out)
