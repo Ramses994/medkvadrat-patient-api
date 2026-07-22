@@ -12,6 +12,19 @@ The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OT
 
 `GET /api/me/profile` exposes `birth_date` (`YYYY-MM-DD`) from Medialog `PATIENTS.NE_LE` when set, otherwise `birth_year` from `GOD_ROGDENIQ`. Clients should show one or the other, not both.
 
+## Staff dashboard
+
+Internal schedule board for three branches (staff session, not `API_TOKEN`):
+
+- Page: `GET /dashboard` (login at `/dashboard/login`)
+- Data: `GET /dashboard/data?date=YYYY-MM-DD` (same JSON as `GET /api/dashboard/schedule`)
+
+Env: `DASHBOARD_PASSWORD`, `DASHBOARD_SECRET` (`openssl rand -hex 32`), optional `DASHBOARD_SESSION_TTL` (default `12h`), `DASHBOARD_COOKIE_SECURE` (default `false` for LAN HTTP), `DASHBOARD_ALLOWED_CIDRS` (default `192.168.0.0/16,127.0.0.1/32`).
+
+Stand (LAN): `http://192.168.2.104:<API_PORT>/dashboard`. `API_TOKEN` must never appear in the page/JS — the browser uses the `mk_staff` cookie only.
+
+S2S clients keep using `GET /api/dashboard/schedule` with `Authorization: Bearer <API_TOKEN>`.
+
 ## Integration tests (MSSQL)
 
 Integration tests verify behavior against a real dev MSSQL instance. They cover write paths (book/cancel/restore) that mocks can't simulate — clinic-side triggers and stored procedures.

@@ -72,6 +72,16 @@ func TestGolden_Dashboard_Schedule_OK(t *testing.T) {
 	}
 }
 
+func TestGolden_Dashboard_Data_SameShapeAsSchedule(t *testing.T) {
+	// GET /dashboard/data reuses DashboardHandler.Schedule (staff cookie in router).
+	svc := &fakeDashboardSvc{}
+	h := DashboardHandler{Svc: svc, Now: dashboardNow}
+	r := httptest.NewRequest(http.MethodGet, "/dashboard/data?date=2026-06-26", nil)
+	w := httptest.NewRecorder()
+	h.Schedule(w, r)
+	assertGolden(t, "dashboard_schedule_ok", w.Body.Bytes())
+}
+
 func TestGolden_Dashboard_Schedule_EmptyDay(t *testing.T) {
 	h := DashboardHandler{Svc: &fakeDashboardSvcEmpty{}, Now: dashboardNow}
 	r := httptest.NewRequest(http.MethodGet, "/api/dashboard/schedule?date=2026-06-27", nil)
