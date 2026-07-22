@@ -14,7 +14,7 @@ import (
 type Config struct {
 	Env          string
 	LogLevel     string
-	APIToken         string
+	APIToken     string
 	PollInterval time.Duration
 	// CancelMinHoursBefore defines the minimum time before appointment start
 	// when patient cancellation is allowed.
@@ -26,13 +26,22 @@ type Config struct {
 	MotconsuPollEnabled        bool
 	CORSAllowedOrigins         []string
 
-	HTTP   HTTPConfig
-	MSSQL  MSSQLConfig
-	Auth   AuthConfig
-	OTP    OTPConfig
-	JWT    JWTConfig
-	SMTP   SMTPConfig
-	SQLite SQLiteConfig
+	HTTP      HTTPConfig
+	MSSQL     MSSQLConfig
+	Auth      AuthConfig
+	OTP       OTPConfig
+	JWT       JWTConfig
+	SMTP      SMTPConfig
+	SQLite    SQLiteConfig
+	Dashboard DashboardConfig
+}
+
+type DashboardConfig struct {
+	Password     string
+	Secret       string
+	SessionTTL   time.Duration
+	CookieSecure bool
+	AllowedCIDRs []string
 }
 
 type HTTPConfig struct {
@@ -40,11 +49,11 @@ type HTTPConfig struct {
 }
 
 type MSSQLConfig struct {
-	Server   string
-	Port     string
-	Database string
-	User     string
-	Password string
+	Server     string
+	Port       string
+	Database   string
+	User       string
+	Password   string
 	RWUser     string
 	RWPassword string
 	AppName    string
@@ -92,12 +101,12 @@ func Load() (Config, error) {
 	_ = godotenv.Load()
 
 	cfg := Config{
-		Env:                  strings.TrimSpace(getEnv("ENV", "dev")),
-		LogLevel:             strings.TrimSpace(getEnv("LOG_LEVEL", "info")),
-		APIToken:             strings.TrimSpace(os.Getenv("API_TOKEN")),
-		PollInterval:         mustDuration(getEnv("POLL_INTERVAL", "5s")),
-		CancelMinHoursBefore: mustInt(getEnv("CANCEL_MIN_HOURS_BEFORE", "24"), 24),
-		MedialogWriteEnabled: mustBool(getEnv("MEDIALOG_WRITE_ENABLED", "false")),
+		Env:                        strings.TrimSpace(getEnv("ENV", "dev")),
+		LogLevel:                   strings.TrimSpace(getEnv("LOG_LEVEL", "info")),
+		APIToken:                   strings.TrimSpace(os.Getenv("API_TOKEN")),
+		PollInterval:               mustDuration(getEnv("POLL_INTERVAL", "5s")),
+		CancelMinHoursBefore:       mustInt(getEnv("CANCEL_MIN_HOURS_BEFORE", "24"), 24),
+		MedialogWriteEnabled:       mustBool(getEnv("MEDIALOG_WRITE_ENABLED", "false")),
 		MedialogWriteAllowPatients: mustInt64CSV(os.Getenv("MEDIALOG_WRITE_ALLOW_PATIENTS")),
 		MedialogWriteAllowPlSubj:   mustInt64CSV(os.Getenv("MEDIALOG_WRITE_ALLOW_PL_SUBJ")),
 		MotconsuPollEnabled:        mustBool(getEnv("MOTCONSU_POLL_ENABLED", "false")),
@@ -113,10 +122,10 @@ func Load() (Config, error) {
 			),
 		},
 		MSSQL: MSSQLConfig{
-			Server:   strings.TrimSpace(os.Getenv("DB_SERVER")),
-			Port:     strings.TrimSpace(getEnv("DB_PORT", "1433")),
-			Database: strings.TrimSpace(os.Getenv("DB_NAME")),
-			User:     strings.TrimSpace(os.Getenv("DB_USER")),
+			Server:     strings.TrimSpace(os.Getenv("DB_SERVER")),
+			Port:       strings.TrimSpace(getEnv("DB_PORT", "1433")),
+			Database:   strings.TrimSpace(os.Getenv("DB_NAME")),
+			User:       strings.TrimSpace(os.Getenv("DB_USER")),
 			Password:   os.Getenv("DB_PASSWORD"),
 			RWUser:     strings.TrimSpace(os.Getenv("DB_RW_USER")),
 			RWPassword: os.Getenv("DB_RW_PASSWORD"),
@@ -150,6 +159,13 @@ func Load() (Config, error) {
 			FromName:  strings.TrimSpace(getEnv("SMTP_FROM_NAME", "МедКвадрат")),
 			FromEmail: strings.TrimSpace(getEnv("SMTP_FROM_EMAIL", "")),
 			TLSMode:   strings.ToLower(strings.TrimSpace(getEnv("SMTP_TLS", "starttls"))),
+		},
+		Dashboard: DashboardConfig{
+			Password:     os.Getenv("DASHBOARD_PASSWORD"),
+			Secret:       strings.TrimSpace(os.Getenv("DASHBOARD_SECRET")),
+			SessionTTL:   mustDuration(getEnv("DASHBOARD_SESSION_TTL", "12h")),
+			CookieSecure: mustBool(getEnv("DASHBOARD_COOKIE_SECURE", "false")),
+			AllowedCIDRs: splitCSV(getEnv("DASHBOARD_ALLOWED_CIDRS", "192.168.0.0/16,127.0.0.1/32")),
 		},
 	}
 
