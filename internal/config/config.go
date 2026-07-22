@@ -20,13 +20,22 @@ type Config struct {
 	// when patient cancellation is allowed.
 	CancelMinHoursBefore int
 
-	HTTP   HTTPConfig
-	MSSQL  MSSQLConfig
-	Auth   AuthConfig
-	OTP    OTPConfig
-	JWT    JWTConfig
-	SMTP   SMTPConfig
-	SQLite SQLiteConfig
+	HTTP      HTTPConfig
+	MSSQL     MSSQLConfig
+	Auth      AuthConfig
+	OTP       OTPConfig
+	JWT       JWTConfig
+	SMTP      SMTPConfig
+	SQLite    SQLiteConfig
+	Dashboard DashboardConfig
+}
+
+type DashboardConfig struct {
+	Password     string
+	Secret       string
+	SessionTTL   time.Duration
+	CookieSecure bool
+	AllowedCIDRs []string
 }
 
 type HTTPConfig struct {
@@ -133,6 +142,13 @@ func Load() (Config, error) {
 			FromName:  strings.TrimSpace(getEnv("SMTP_FROM_NAME", "МедКвадрат")),
 			FromEmail: strings.TrimSpace(getEnv("SMTP_FROM_EMAIL", "")),
 			TLSMode:   strings.ToLower(strings.TrimSpace(getEnv("SMTP_TLS", "starttls"))),
+		},
+		Dashboard: DashboardConfig{
+			Password:     os.Getenv("DASHBOARD_PASSWORD"),
+			Secret:       strings.TrimSpace(os.Getenv("DASHBOARD_SECRET")),
+			SessionTTL:   mustDuration(getEnv("DASHBOARD_SESSION_TTL", "12h")),
+			CookieSecure: mustBool(getEnv("DASHBOARD_COOKIE_SECURE", "false")),
+			AllowedCIDRs: splitCSV(getEnv("DASHBOARD_ALLOWED_CIDRS", "192.168.0.0/16,127.0.0.1/32")),
 		},
 	}
 
