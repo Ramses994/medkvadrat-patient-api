@@ -42,7 +42,12 @@ func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logge
 }
 
 func (s *Services) WriteGuardDeps() medialogwrite.HTTPDeps {
-	return medialogwrite.HTTPDeps{Guard: s.WriteGuard, Lookup: medialogwrite.DBLookup{DB: s.MSSQL}, Log: s.WriteLog}
+	return medialogwrite.HTTPDeps{
+		Guard:  s.WriteGuard,
+		Lookup: medialogwrite.DBLookup{DB: s.MSSQL},
+		Log:    s.WriteLog,
+		Logger: s.Logger,
+	}
 }
 
 func (s *Services) Doctors(ctx context.Context) ([]repo.Doctor, error) {

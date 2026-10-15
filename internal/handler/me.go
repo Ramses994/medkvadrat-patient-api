@@ -191,6 +191,7 @@ func (h MeHandler) BookAppointment(w http.ResponseWriter, r *http.Request) {
 	mid, rest, err := h.Svc.MeBookAppointment(r.Context(), pid, req.PlanningID, time.Now())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "NOT_FOUND")
 			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Слот не найден")
 			return
 		}
@@ -207,8 +208,10 @@ func (h MeHandler) BookAppointment(w http.ResponseWriter, r *http.Request) {
 			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "conflict", "SLOT_TAKEN")
 			response.Error(w, http.StatusConflict, "SLOT_TAKEN", "Слот уже занят")
 		case "SLOT_IN_PAST":
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "SLOT_IN_PAST")
 			response.Error(w, http.StatusBadRequest, "SLOT_IN_PAST", "Нельзя записаться в прошлое")
 		case "ALREADY_BOOKED":
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "conflict", "ALREADY_BOOKED")
 			response.Error(w, http.StatusConflict, "ALREADY_BOOKED", "Вы уже записаны на этот слот")
 		default:
 			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "INTERNAL")
@@ -250,13 +253,17 @@ func (h MeHandler) CancelAppointment(w http.ResponseWriter, r *http.Request) {
 		}
 		switch err.Error() {
 		case "FORBIDDEN":
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "FORBIDDEN")
 			response.Error(w, http.StatusForbidden, "FORBIDDEN", "Forbidden")
 		case "ALREADY_CANCELLED":
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "conflict", "ALREADY_CANCELLED")
 			response.Error(w, http.StatusConflict, "ALREADY_CANCELLED", "Запись уже отменена")
 		case "CANCEL_NOT_SUPPORTED":
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "conflict", "CANCEL_NOT_SUPPORTED")
 			response.Error(w, http.StatusConflict, "CANCEL_NOT_SUPPORTED", "Эту запись можно отменить только через регистратуру +7 (499) 288-88-14")
 		case "CANCEL_TOO_LATE":
 			msg := fmt.Sprintf("Отмена доступна не позднее чем за %d ч. до приёма", minH)
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "conflict", "CANCEL_TOO_LATE")
 			response.Error(w, http.StatusConflict, "CANCEL_TOO_LATE", msg)
 		default:
 			if errors.Is(err, sql.ErrNoRows) {
