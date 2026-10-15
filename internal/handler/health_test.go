@@ -6,11 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/health"
 )
 
 type okHealthSvc struct{}
 
-func (okHealthSvc) Ping(ctx context.Context) error { return nil }
+func (okHealthSvc) HealthSnapshot(ctx context.Context) health.Snapshot {
+	return health.Snapshot{API: "ok", Medialog: "ok"}
+}
 
 func TestHealth_OK(t *testing.T) {
 	h := HealthHandler{Svc: okHealthSvc{}}
@@ -28,5 +32,9 @@ func TestHealth_OK(t *testing.T) {
 	}
 	if got["success"] != true {
 		t.Fatalf("success=%v", got["success"])
+	}
+	data, ok := got["data"].(map[string]any)
+	if !ok || data["api"] != "ok" {
+		t.Fatalf("data=%v", got["data"])
 	}
 }

@@ -34,8 +34,8 @@ WHERE PLANNING_ID = @id`,
 		return BookMeResult{}, err
 	}
 
-	if slotPat.Valid && slotPat.Int64 != patientID {
-		return BookMeResult{}, fmt.Errorf("SLOT_TAKEN")
+	if err := slotBookableForPatient(slotPat, patientID); err != nil {
+		return BookMeResult{}, err
 	}
 
 	dateConsultation := dateCons.Add(time.Duration(heure/100)*time.Hour + time.Duration(heure%100)*time.Minute)
@@ -96,11 +96,6 @@ FROM PL_SUBJ ps WHERE ps.PL_SUBJ_ID = @id`,
 		meddep = int(meddepID.Int64)
 	}
 
-	var patNom, patPrenom string
-	_ = tx.QueryRowContext(ctx, `SELECT ISNULL(NOM,''), ISNULL(PRENOM,'') FROM PATIENTS WHERE PATIENTS_ID=@id`,
-		sql.Named("id", patientID),
-	).Scan(&patNom, &patPrenom)
-
 	var motconsuID int
 	if err := tx.QueryRowContext(ctx, `
 DECLARE @NewID int = 0;
@@ -122,11 +117,6 @@ SELECT @NewID;`,
 		return BookMeResult{}, fmt.Errorf("CreateMotconsu: %w", err)
 	}
 
-	if !slotPat.Valid {
-		if err := planning.FillSlot(tx, ctx, planningID, int(patientID), patNom, patPrenom); err != nil {
-			return BookMeResult{}, fmt.Errorf("update planning: %w", err)
-		}
-	}
 	if err := motconsu.SetPlanningAndStatus(tx, ctx, motconsuID, planningID, "W"); err != nil {
 		return BookMeResult{}, fmt.Errorf("update motconsu: %w", err)
 	}
@@ -135,6 +125,16 @@ SELECT @NewID;`,
 		return BookMeResult{}, fmt.Errorf("commit: %w", err)
 	}
 	return BookMeResult{MotconsuID: int64(motconsuID)}, nil
+}
+
+func slotBookableForPatient(slotPat sql.NullInt64, patientID int64) error {
+	if !slotPat.Valid {
+		return fmt.Errorf("SLOT_NOT_FREE")
+	}
+	if slotPat.Int64 != patientID {
+		return fmt.Errorf("SLOT_TAKEN")
+	}
+	return nil
 }
 
 func CancelMe(ctx context.Context, db *sql.DB, motconsuID int64, patientID int64, cancelMinBefore time.Duration, now time.Time) error {

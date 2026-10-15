@@ -53,7 +53,7 @@ func TestGolden_Catalog_Slots_OK(t *testing.T) {
 	h := CatalogHandler{Svc: fakeCatalogSvc{}}
 	r := httptest.NewRequest(http.MethodGet, "/api/catalog/slots?doctor_id=7&date_from=2026-04-24&date_to=2026-04-24", nil)
 	w := httptest.NewRecorder()
-	h.Slots(w, r)
+	h.slotsLegacy(w, r)
 	assertGolden(t, "catalog_slots_ok", w.Body.Bytes())
 }
 
@@ -61,6 +61,6 @@ func TestGolden_Catalog_Slots_ValidationError(t *testing.T) {
 	h := CatalogHandler{Svc: fakeCatalogSvc{}}
 	r := httptest.NewRequest(http.MethodGet, "/api/catalog/slots?doctor_id=x", nil)
 	w := httptest.NewRecorder()
-	h.Slots(w, r)
+	h.slotsLegacy(w, r)
 	assertGolden(t, "catalog_slots_validation_error", w.Body.Bytes())
 }

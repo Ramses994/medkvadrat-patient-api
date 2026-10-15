@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
 )
@@ -117,6 +118,11 @@ type slotDTO struct {
 }
 
 func (h CatalogHandler) Slots(w http.ResponseWriter, r *http.Request) {
+	medialogwrite.RespondFeatureDisabled(w)
+}
+
+// slotsLegacy — Deprecated: wrong free-time model, see docs/lk/00 §3. Kept for LK-2a.
+func (h CatalogHandler) slotsLegacy(w http.ResponseWriter, r *http.Request) {
 	docStr := r.URL.Query().Get("doctor_id")
 	if docStr == "" {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "Нужен doctor_id")

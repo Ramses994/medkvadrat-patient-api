@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
@@ -25,9 +26,9 @@ type MeService interface {
 }
 
 type MeHandler struct {
-	Svc    MeService
-	Logger *slog.Logger
-
+	Svc         MeService
+	Logger      *slog.Logger
+	WriteGuard  medialogwrite.HTTPDeps
 	CancelMinHours int
 }
 
@@ -183,25 +184,40 @@ func (h MeHandler) BookAppointment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "planning_id обязателен")
 		return
 	}
+	logID, ok := h.WriteGuard.GuardBook(r.Context(), w, r, "POST /api/me/appointments", pid, int64(req.PlanningID))
+	if !ok {
+		return
+	}
 	mid, rest, err := h.Svc.MeBookAppointment(r.Context(), pid, req.PlanningID, time.Now())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Слот не найден")
 			return
 		}
+		if errors.Is(err, medialogwrite.ErrWriteNotConfigured) {
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "WRITE_NOT_CONFIGURED")
+			response.Error(w, http.StatusServiceUnavailable, "WRITE_NOT_CONFIGURED", medialogwrite.PatientForbiddenMessage)
+			return
+		}
 		switch err.Error() {
+		case "SLOT_NOT_FREE":
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "conflict", "SLOT_NOT_FREE")
+			response.Error(w, http.StatusConflict, "SLOT_NOT_FREE", "Слот недоступен для записи")
 		case "SLOT_TAKEN":
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "conflict", "SLOT_TAKEN")
 			response.Error(w, http.StatusConflict, "SLOT_TAKEN", "Слот уже занят")
 		case "SLOT_IN_PAST":
 			response.Error(w, http.StatusBadRequest, "SLOT_IN_PAST", "Нельзя записаться в прошлое")
 		case "ALREADY_BOOKED":
 			response.Error(w, http.StatusConflict, "ALREADY_BOOKED", "Вы уже записаны на этот слот")
 		default:
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "INTERNAL")
 			h.Logger.Error("me book failed", "err", err)
 			response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		}
 		return
 	}
+	medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "ok", "")
 	response.OK(w, MeBookResult{MotconsuID: mid, Restored: rest})
 }
 
@@ -221,8 +237,17 @@ func (h MeHandler) CancelAppointment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "motconsu_id должен быть числом")
 		return
 	}
+	logID, ok := h.WriteGuard.GuardCancel(r.Context(), w, r, "DELETE /api/me/appointments/{motconsu_id}", pid, id)
+	if !ok {
+		return
+	}
 	err = h.Svc.MeCancelAppointment(r.Context(), pid, id, time.Now())
 	if err != nil {
+		if errors.Is(err, medialogwrite.ErrWriteNotConfigured) {
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "WRITE_NOT_CONFIGURED")
+			response.Error(w, http.StatusServiceUnavailable, "WRITE_NOT_CONFIGURED", medialogwrite.PatientForbiddenMessage)
+			return
+		}
 		switch err.Error() {
 		case "FORBIDDEN":
 			response.Error(w, http.StatusForbidden, "FORBIDDEN", "Forbidden")
@@ -235,13 +260,16 @@ func (h MeHandler) CancelAppointment(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusConflict, "CANCEL_TOO_LATE", msg)
 		default:
 			if errors.Is(err, sql.ErrNoRows) {
+				medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "NOT_FOUND")
 				response.Error(w, http.StatusNotFound, "NOT_FOUND", "Запись не найдена")
 				return
 			}
+			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "INTERNAL")
 			h.Logger.Error("me cancel failed", "err", err)
 			response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		}
 		return
 	}
+	medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "ok", "")
 	response.OK(w, struct{}{})
 }

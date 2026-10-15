@@ -18,9 +18,10 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	authH := handler.AuthHandler{Svc: svc, Logger: logger}
 	doctorH := handler.DoctorHandler{Svc: svc, Logger: logger}
 	patientH := handler.PatientHandler{Svc: svc, Logger: logger}
-	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger}
+	wg := svc.WriteGuardDeps()
+	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger, WriteGuard: wg}
 	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
-	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore}
+	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WriteGuard: wg}
 	confirmationsH := handler.ConfirmationsHandler{Svc: svc, Logger: logger}
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
 	dashboardH := handler.DashboardHandler{Svc: svc, Logger: logger}
@@ -82,7 +83,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	h = middleware.RequestID(h)
 	h = middleware.Logging(logger, h)
 	h = middleware.Recover(logger, h)
-	h = middleware.CORS(h)
+	h = middleware.CORS(cfg.CORSAllowedOrigins, h)
 
 	return h
 }

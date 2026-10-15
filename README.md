@@ -1,5 +1,9 @@
 # medkvadrat-patient-api
 
+Документация ЛК и Medialog: в репозитории [medkvadrat-deploy](https://github.com/Ramses994/medkvadrat-deploy) каталог `docs/lk/`.
+
+Переменные LK-0 (см. `.env.example`): `MEDIALOG_WRITE_*`, `DB_RW_*`, `MOTCONSU_POLL_ENABLED`, `CORS_ALLOWED_ORIGINS`, `DB_APP_NAME`. Read-логин по умолчанию `svc_patient_api_ro`.
+
 ## Dev smoke test
 
 On the dev stand (with a test phone and dev OTP), run:

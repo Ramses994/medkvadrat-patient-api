@@ -33,6 +33,11 @@ func main() {
 		logger.Error("mssql connect failed", "err", err)
 		os.Exit(1)
 	}
+	mssqlWrite, err := db.OpenMSSQLRW(cfg.MSSQL)
+	if err != nil {
+		logger.Error("mssql rw connect failed", "err", err)
+		os.Exit(1)
+	}
 
 	sqlite, err := db.OpenSQLite(cfg.SQLite.Path)
 	if err != nil {
@@ -47,7 +52,7 @@ func main() {
 
 	repos := repo.New(mssql)
 	defaultModelsID := service.ParseDefaultModelsID(os.Getenv("DEFAULT_MODELS_ID"))
-	services := service.New(mssql, sqlite, repos, logger, defaultModelsID, cfg)
+	services := service.New(mssql, mssqlWrite, sqlite, repos, logger, defaultModelsID, cfg)
 	router := api.NewRouter(cfg, services, logger)
 
 	server := &http.Server{
@@ -64,9 +69,13 @@ func main() {
 
 	// Start polling (best-effort, logs only for now).
 	poller := poll.NewMotconsuPoller(services, logger, cfg.PollInterval)
-	if err := poller.Start(ctx); err != nil {
-		logger.Error("poller start failed", "err", err)
-		os.Exit(1)
+	if cfg.MotconsuPollEnabled {
+		if err := poller.Start(ctx); err != nil {
+			logger.Error("poller start failed", "err", err)
+			os.Exit(1)
+		}
+	} else {
+		logger.Info("motconsu poller disabled")
 	}
 
 	go func() {
@@ -87,6 +96,9 @@ func main() {
 	poller.Stop()
 	logger.Info("db closing")
 	_ = mssql.Close()
+	if mssqlWrite != nil {
+		_ = mssqlWrite.Close()
+	}
 	_ = sqlite.Close()
 }
 

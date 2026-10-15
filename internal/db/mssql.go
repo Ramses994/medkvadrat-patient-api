@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
@@ -11,15 +12,29 @@ import (
 )
 
 func OpenMSSQL(cfg config.MSSQLConfig) (*sql.DB, error) {
+	return openMSSQLWithCreds(cfg, cfg.User, cfg.Password)
+}
+
+// OpenMSSQLRW opens a write connection when DB_RW_USER is configured.
+func OpenMSSQLRW(cfg config.MSSQLConfig) (*sql.DB, error) {
+	user := cfg.RWUser
+	if user == "" {
+		return nil, nil
+	}
+	return openMSSQLWithCreds(cfg, user, cfg.RWPassword)
+}
+
+func openMSSQLWithCreds(cfg config.MSSQLConfig, user, password string) (*sql.DB, error) {
 	connString := fmt.Sprintf(
-		"server=%s;port=%s;database=%s;user id=%s;password=%s;encrypt=%s;trustservercertificate=%t",
+		"server=%s;port=%s;database=%s;user id=%s;password=%s;encrypt=%s;trustservercertificate=%t;app name=%s",
 		cfg.Server,
 		cfg.Port,
 		cfg.Database,
-		cfg.User,
-		cfg.Password,
+		user,
+		password,
 		cfg.Encrypt,
 		cfg.TrustServerCertificate,
+		escapeAppName(cfg.AppName),
 	)
 
 	db, err := sql.Open("sqlserver", connString)
@@ -39,4 +54,9 @@ func OpenMSSQL(cfg config.MSSQLConfig) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+func escapeAppName(name string) string {
+	// ODBC app name must not contain ';'
+	return strings.ReplaceAll(name, ";", "")
 }
