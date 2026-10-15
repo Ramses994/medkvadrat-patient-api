@@ -52,6 +52,20 @@ CREATE TABLE IF NOT EXISTS appointment_confirmations (
   patient_id  INTEGER,
   updated_at  DATETIME NOT NULL
 );`,
+		`
+CREATE TABLE IF NOT EXISTS medialog_write_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  request_id  TEXT,
+  route       TEXT NOT NULL,
+  patient_id  INTEGER,
+  planning_id INTEGER,
+  pl_subj_id  INTEGER,
+  decision    TEXT NOT NULL,
+  result      TEXT,
+  error_code  TEXT
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_medialog_write_log_created ON medialog_write_log(created_at);`,
 	}
 
 	for i, s := range stmts {

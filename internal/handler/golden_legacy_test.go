@@ -160,7 +160,7 @@ func TestGolden_ScheduleSlots_OK_LegacyShape(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots?doctor_id=1&date=2026-04-24", nil)
 
-	h.FreeSlots(rr, req)
+	h.freeSlotsLegacy(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d", rr.Code)
 	}
@@ -208,7 +208,7 @@ func TestGolden_Slots_ValidationError_LegacyShape(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots", nil)
 
-	h.FreeSlots(rr, req)
+	h.freeSlotsLegacy(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d", rr.Code)
 	}
@@ -220,7 +220,7 @@ func TestGolden_Book_InvalidJSON_LegacyShape(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/schedule/book", bytes.NewBufferString("{"))
 
-	h.Book(rr, req)
+	h.bookLegacy(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d", rr.Code)
 	}
@@ -256,7 +256,7 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots?doctor_id=1&date=2026-04-24", nil)
-		h.FreeSlots(rr, req)
+		h.freeSlotsLegacy(rr, req)
 		writeGolden(t, "slots_ok", rr.Body.Bytes())
 	}
 
@@ -292,7 +292,7 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots", nil)
-		h.FreeSlots(rr, req)
+		h.freeSlotsLegacy(rr, req)
 		writeGolden(t, "slots_validation_error", rr.Body.Bytes())
 	}
 
@@ -301,7 +301,7 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/schedule/book", bytes.NewBufferString("{"))
-		h.Book(rr, req)
+		h.bookLegacy(rr, req)
 		writeGolden(t, "book_invalid_json", rr.Body.Bytes())
 	}
 

@@ -8,21 +8,46 @@ import (
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/health"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 )
 
 type Services struct {
-	MSSQL  *sql.DB
-	SQLite *sql.DB
-	Repos  repo.Repos
-	Logger *slog.Logger
+	MSSQL      *sql.DB
+	MSSQLWrite *sql.DB
+	SQLite     *sql.DB
+	Repos      repo.Repos
+	Logger     *slog.Logger
 
 	DefaultModelsID int
 	Config          config.Config
+	WriteGuard      medialogwrite.Guard
+	WriteLog        *medialogwrite.LogRepo
 }
 
-func New(mssql *sql.DB, sqlite *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int, cfg config.Config) *Services {
-	return &Services{MSSQL: mssql, SQLite: sqlite, Repos: repos, Logger: logger, DefaultModelsID: defaultModelsID, Config: cfg}
+func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int, cfg config.Config) *Services {
+	rwOK := mssqlWrite != nil
+	guard := medialogwrite.NewGuard(
+		cfg.MedialogWriteEnabled,
+		rwOK,
+		cfg.MedialogWriteAllowPatients,
+		cfg.MedialogWriteAllowPlSubj,
+	)
+	return &Services{
+		MSSQL: mssql, MSSQLWrite: mssqlWrite, SQLite: sqlite,
+		Repos: repos, Logger: logger, DefaultModelsID: defaultModelsID, Config: cfg,
+		WriteGuard: guard, WriteLog: medialogwrite.NewLogRepo(sqlite),
+	}
+}
+
+func (s *Services) WriteGuardDeps() medialogwrite.HTTPDeps {
+	return medialogwrite.HTTPDeps{
+		Guard:  s.WriteGuard,
+		Lookup: medialogwrite.DBLookup{DB: s.MSSQL},
+		Log:    s.WriteLog,
+		Logger: s.Logger,
+	}
 }
 
 func (s *Services) Doctors(ctx context.Context) ([]repo.Doctor, error) {
@@ -54,7 +79,11 @@ func (s *Services) MeAppointments(ctx context.Context, patientID int64, now time
 }
 
 func (s *Services) MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (motconsuID int64, restored bool, err error) {
-	res, err := repo.BookMe(ctx, s.MSSQL, s.Repos.Planning, s.Repos.Motconsu, planningID, patientID, s.DefaultModelsID, now)
+	db := s.MSSQLWrite
+	if db == nil {
+		return 0, false, medialogwrite.ErrWriteNotConfigured
+	}
+	res, err := repo.BookMe(ctx, db, s.Repos.Planning, s.Repos.Motconsu, planningID, patientID, s.DefaultModelsID, now)
 	if err != nil {
 		return 0, false, err
 	}
@@ -66,7 +95,11 @@ func (s *Services) MeCancelAppointment(ctx context.Context, patientID int64, mot
 	if minH <= 0 {
 		minH = 24
 	}
-	return repo.CancelMe(ctx, s.MSSQL, motconsuID, patientID, time.Duration(minH)*time.Hour, now)
+	db := s.MSSQLWrite
+	if db == nil {
+		return medialogwrite.ErrWriteNotConfigured
+	}
+	return repo.CancelMe(ctx, db, motconsuID, patientID, time.Duration(minH)*time.Hour, now)
 }
 
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
@@ -82,7 +115,11 @@ func (s *Services) FreeSlots(ctx context.Context, doctorID, date string) ([]repo
 }
 
 func (s *Services) Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error) {
-	return repo.Book(ctx, s.MSSQL, s.Repos.Planning, s.Repos.Motconsu, in, s.DefaultModelsID)
+	db := s.MSSQLWrite
+	if db == nil {
+		return repo.BookResult{}, medialogwrite.ErrWriteNotConfigured
+	}
+	return repo.Book(ctx, db, s.Repos.Planning, s.Repos.Motconsu, in, s.DefaultModelsID)
 }
 
 func (s *Services) LabResults(ctx context.Context, patientID string, daysBack int) ([]repo.LabResult, error) {
@@ -97,8 +134,14 @@ func (s *Services) LabPanels(ctx context.Context, patientID string, daysBack int
 	return repo.BuildLabPanels(rows), nil
 }
 
-func (s *Services) Ping(ctx context.Context) error {
-	return s.Repos.Health.Ping(ctx)
+func (s *Services) HealthSnapshot(ctx context.Context) health.Snapshot {
+	out := health.Snapshot{API: "ok", Medialog: "ok"}
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := s.MSSQL.PingContext(pingCtx); err != nil {
+		out.Medialog = "unavailable"
+	}
+	return out
 }
 
 func (s *Services) MaxModifyDate(ctx context.Context) (time.Time, error) {

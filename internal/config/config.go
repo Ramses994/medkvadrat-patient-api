@@ -20,6 +20,12 @@ type Config struct {
 	// when patient cancellation is allowed.
 	CancelMinHoursBefore int
 
+	MedialogWriteEnabled       bool
+	MedialogWriteAllowPatients []int64
+	MedialogWriteAllowPlSubj   []int64
+	MotconsuPollEnabled        bool
+	CORSAllowedOrigins         []string
+
 	HTTP   HTTPConfig
 	MSSQL  MSSQLConfig
 	Auth   AuthConfig
@@ -39,6 +45,9 @@ type MSSQLConfig struct {
 	Database string
 	User     string
 	Password string
+	RWUser     string
+	RWPassword string
+	AppName    string
 
 	Encrypt                string
 	TrustServerCertificate bool
@@ -88,6 +97,11 @@ func Load() (Config, error) {
 		APIToken:             strings.TrimSpace(os.Getenv("API_TOKEN")),
 		PollInterval:         mustDuration(getEnv("POLL_INTERVAL", "5s")),
 		CancelMinHoursBefore: mustInt(getEnv("CANCEL_MIN_HOURS_BEFORE", "24"), 24),
+		MedialogWriteEnabled: mustBool(getEnv("MEDIALOG_WRITE_ENABLED", "false")),
+		MedialogWriteAllowPatients: mustInt64CSV(os.Getenv("MEDIALOG_WRITE_ALLOW_PATIENTS")),
+		MedialogWriteAllowPlSubj:   mustInt64CSV(os.Getenv("MEDIALOG_WRITE_ALLOW_PL_SUBJ")),
+		MotconsuPollEnabled:        mustBool(getEnv("MOTCONSU_POLL_ENABLED", "false")),
+		CORSAllowedOrigins:         splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "")),
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
@@ -103,7 +117,10 @@ func Load() (Config, error) {
 			Port:     strings.TrimSpace(getEnv("DB_PORT", "1433")),
 			Database: strings.TrimSpace(os.Getenv("DB_NAME")),
 			User:     strings.TrimSpace(os.Getenv("DB_USER")),
-			Password: os.Getenv("DB_PASSWORD"),
+			Password:   os.Getenv("DB_PASSWORD"),
+			RWUser:     strings.TrimSpace(os.Getenv("DB_RW_USER")),
+			RWPassword: os.Getenv("DB_RW_PASSWORD"),
+			AppName:    strings.TrimSpace(getEnv("DB_APP_NAME", "medkvadrat-patient-api")),
 			// Keep current default (LAN/dev). We will tighten in a later iteration.
 			Encrypt:                strings.TrimSpace(getEnv("DB_ENCRYPT", "disable")),
 			TrustServerCertificate: mustBool(getEnv("DB_TRUST_SERVER_CERT", "false")),
@@ -239,4 +256,25 @@ func mustBool(s string) bool {
 		return false
 	}
 	return v
+}
+
+func mustInt64CSV(s string) []int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]int64, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }

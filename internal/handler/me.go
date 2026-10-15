@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
@@ -25,9 +26,9 @@ type MeService interface {
 }
 
 type MeHandler struct {
-	Svc    MeService
-	Logger *slog.Logger
-
+	Svc         MeService
+	Logger      *slog.Logger
+	WriteGuard  medialogwrite.HTTPDeps
 	CancelMinHours int
 }
 
@@ -169,6 +170,11 @@ type MeBookResult struct {
 }
 
 func (h MeHandler) BookAppointment(w http.ResponseWriter, r *http.Request) {
+	medialogwrite.RespondFeatureDisabled(w)
+}
+
+// bookAppointmentLegacy — Deprecated: not an approved write path, see docs/lk/01 §4 stage 2. Kept for LK-2b.
+func (h MeHandler) bookAppointmentLegacy(w http.ResponseWriter, r *http.Request) {
 	pid, ok := middleware.PatientIDFromContext(r.Context())
 	if !ok {
 		response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized")
@@ -183,29 +189,55 @@ func (h MeHandler) BookAppointment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "planning_id обязателен")
 		return
 	}
-	mid, rest, err := h.Svc.MeBookAppointment(r.Context(), pid, req.PlanningID, time.Now())
+	writeCtx, cancel := context.WithTimeout(r.Context(), medialogwrite.MedialogQueryTimeout)
+	defer cancel()
+	logID, ok := h.WriteGuard.GuardBook(writeCtx, w, r, "POST /api/me/appointments", pid, int64(req.PlanningID))
+	if !ok {
+		return
+	}
+	mid, rest, err := h.Svc.MeBookAppointment(writeCtx, pid, req.PlanningID, time.Now())
+	rid := middleware.GetRequestID(r.Context())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "NOT_FOUND")
 			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Слот не найден")
 			return
 		}
+		if errors.Is(err, medialogwrite.ErrWriteNotConfigured) {
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "WRITE_NOT_CONFIGURED")
+			response.Error(w, http.StatusServiceUnavailable, "WRITE_NOT_CONFIGURED", medialogwrite.PatientForbiddenMessage)
+			return
+		}
 		switch err.Error() {
+		case "SLOT_NOT_FREE":
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "conflict", "SLOT_NOT_FREE")
+			response.Error(w, http.StatusConflict, "SLOT_NOT_FREE", "Слот недоступен для записи")
 		case "SLOT_TAKEN":
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "conflict", "SLOT_TAKEN")
 			response.Error(w, http.StatusConflict, "SLOT_TAKEN", "Слот уже занят")
 		case "SLOT_IN_PAST":
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "SLOT_IN_PAST")
 			response.Error(w, http.StatusBadRequest, "SLOT_IN_PAST", "Нельзя записаться в прошлое")
 		case "ALREADY_BOOKED":
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "conflict", "ALREADY_BOOKED")
 			response.Error(w, http.StatusConflict, "ALREADY_BOOKED", "Вы уже записаны на этот слот")
 		default:
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "INTERNAL")
 			h.Logger.Error("me book failed", "err", err)
 			response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		}
 		return
 	}
+	medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "ok", "")
 	response.OK(w, MeBookResult{MotconsuID: mid, Restored: rest})
 }
 
 func (h MeHandler) CancelAppointment(w http.ResponseWriter, r *http.Request) {
+	medialogwrite.RespondFeatureDisabled(w)
+}
+
+// cancelAppointmentLegacy — Deprecated: not an approved write path, see docs/lk/01 §4 stage 2. Kept for LK-2b.
+func (h MeHandler) cancelAppointmentLegacy(w http.ResponseWriter, r *http.Request) {
 	minH := h.CancelMinHours
 	if minH <= 0 {
 		minH = 24
@@ -221,27 +253,46 @@ func (h MeHandler) CancelAppointment(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "motconsu_id должен быть числом")
 		return
 	}
-	err = h.Svc.MeCancelAppointment(r.Context(), pid, id, time.Now())
+	writeCtx, cancel := context.WithTimeout(r.Context(), medialogwrite.MedialogQueryTimeout)
+	defer cancel()
+	logID, ok := h.WriteGuard.GuardCancel(writeCtx, w, r, "DELETE /api/me/appointments/{motconsu_id}", pid, id)
+	if !ok {
+		return
+	}
+	rid := middleware.GetRequestID(r.Context())
+	err = h.Svc.MeCancelAppointment(writeCtx, pid, id, time.Now())
 	if err != nil {
+		if errors.Is(err, medialogwrite.ErrWriteNotConfigured) {
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "WRITE_NOT_CONFIGURED")
+			response.Error(w, http.StatusServiceUnavailable, "WRITE_NOT_CONFIGURED", medialogwrite.PatientForbiddenMessage)
+			return
+		}
 		switch err.Error() {
 		case "FORBIDDEN":
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "FORBIDDEN")
 			response.Error(w, http.StatusForbidden, "FORBIDDEN", "Forbidden")
 		case "ALREADY_CANCELLED":
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "conflict", "ALREADY_CANCELLED")
 			response.Error(w, http.StatusConflict, "ALREADY_CANCELLED", "Запись уже отменена")
 		case "CANCEL_NOT_SUPPORTED":
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "conflict", "CANCEL_NOT_SUPPORTED")
 			response.Error(w, http.StatusConflict, "CANCEL_NOT_SUPPORTED", "Эту запись можно отменить только через регистратуру +7 (499) 288-88-14")
 		case "CANCEL_TOO_LATE":
 			msg := fmt.Sprintf("Отмена доступна не позднее чем за %d ч. до приёма", minH)
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "conflict", "CANCEL_TOO_LATE")
 			response.Error(w, http.StatusConflict, "CANCEL_TOO_LATE", msg)
 		default:
 			if errors.Is(err, sql.ErrNoRows) {
+				medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "NOT_FOUND")
 				response.Error(w, http.StatusNotFound, "NOT_FOUND", "Запись не найдена")
 				return
 			}
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "INTERNAL")
 			h.Logger.Error("me cancel failed", "err", err)
 			response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		}
 		return
 	}
+	medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "ok", "")
 	response.OK(w, struct{}{})
 }

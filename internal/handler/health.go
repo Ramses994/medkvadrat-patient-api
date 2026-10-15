@@ -4,11 +4,12 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/health"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
 )
 
 type HealthService interface {
-	Ping(ctx context.Context) error
+	HealthSnapshot(ctx context.Context) health.Snapshot
 }
 
 type HealthHandler struct {
@@ -16,9 +17,5 @@ type HealthHandler struct {
 }
 
 func (h HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
-	if err := h.Svc.Ping(r.Context()); err != nil {
-		response.Error(w, http.StatusInternalServerError, "INTERNAL", "DB unavailable")
-		return
-	}
-	response.OK(w, "OK")
+	response.OK(w, h.Svc.HealthSnapshot(r.Context()))
 }
