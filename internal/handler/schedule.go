@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
 )
@@ -145,12 +146,15 @@ func (h ScheduleHandler) bookLegacy(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "planning_id и patient_id обязательны")
 		return
 	}
-	logID, ok := h.WriteGuard.GuardBook(r.Context(), w, r, "POST /api/schedule/book", int64(req.PatientID), int64(req.PlanningID))
+	writeCtx, cancel := context.WithTimeout(r.Context(), medialogwrite.MedialogQueryTimeout)
+	defer cancel()
+	logID, ok := h.WriteGuard.GuardBook(writeCtx, w, r, "POST /api/schedule/book", int64(req.PatientID), int64(req.PlanningID))
 	if !ok {
 		return
 	}
+	rid := middleware.GetRequestID(r.Context())
 
-	res, err := h.Svc.Book(r.Context(), repo.BookInput{
+	res, err := h.Svc.Book(writeCtx, repo.BookInput{
 		PlanningID: req.PlanningID,
 		PatientID:  req.PatientID,
 		ModelsID:   req.ModelsID,
@@ -158,22 +162,22 @@ func (h ScheduleHandler) bookLegacy(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, medialogwrite.ErrWriteNotConfigured) {
-			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "WRITE_NOT_CONFIGURED")
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "WRITE_NOT_CONFIGURED")
 			response.Error(w, http.StatusServiceUnavailable, "WRITE_NOT_CONFIGURED", medialogwrite.PatientForbiddenMessage)
 			return
 		}
 		if errors.Is(err, sql.ErrNoRows) {
-			medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "NOT_FOUND")
+			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "NOT_FOUND")
 			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Слот не найден или уже занят")
 			return
 		}
-		medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "error", "INTERNAL")
+		medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "INTERNAL")
 		h.Logger.Error("book failed", "err", err)
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
 
-	medialogwrite.FinishWriteLog(r.Context(), h.WriteGuard.Log, logID, "ok", "")
+	medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "ok", "")
 	h.Logger.Info("booked", "motconsu_id", res.MotconsuID, "planning_id", req.PlanningID, "patient_id", req.PatientID)
 	response.OK(w, bookResponse{MotconsuID: res.MotconsuID})
 }

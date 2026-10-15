@@ -49,88 +49,88 @@ type errStr string
 func (e errStr) Error() string { return string(e) }
 
 func TestGolden_Me_Book_OK(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodPost, "/api/me/appointments", bytes.NewBufferString(`{"planning_id":9}`))
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.BookAppointment(w, r)
+	h.bookAppointmentLegacy(w, r)
 	assertGolden(t, "me_book_ok", w.Body.Bytes())
 }
 
 func TestGolden_Me_Book_SlotTaken(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodPost, "/api/me/appointments", bytes.NewBufferString(`{"planning_id":1}`))
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.BookAppointment(w, r)
+	h.bookAppointmentLegacy(w, r)
 	assertGolden(t, "me_book_slot_taken", w.Body.Bytes())
 }
 
 func TestGolden_Me_Book_InvalidJSON(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodPost, "/api/me/appointments", bytes.NewBufferString(`{`))
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.BookAppointment(w, r)
+	h.bookAppointmentLegacy(w, r)
 	assertGolden(t, "me_book_invalid_json", w.Body.Bytes())
 }
 
 func TestGolden_Me_Cancel_OK(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodDelete, "/api/me/appointments/10", nil)
 	r.SetPathValue("motconsu_id", "10")
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.CancelAppointment(w, r)
+	h.cancelAppointmentLegacy(w, r)
 	assertGolden(t, "me_cancel_ok", w.Body.Bytes())
 }
 
 func TestGolden_Me_Cancel_TooLate(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodDelete, "/api/me/appointments/4", nil)
 	r.SetPathValue("motconsu_id", "4")
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.CancelAppointment(w, r)
+	h.cancelAppointmentLegacy(w, r)
 	assertGolden(t, "me_cancel_too_late", w.Body.Bytes())
 }
 
 func TestGolden_Me_Cancel_Forbidden(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodDelete, "/api/me/appointments/1", nil)
 	r.SetPathValue("motconsu_id", "1")
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.CancelAppointment(w, r)
+	h.cancelAppointmentLegacy(w, r)
 	assertGolden(t, "me_cancel_forbidden", w.Body.Bytes())
 }
 
 func TestGolden_Me_Cancel_AlreadyCancelled(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodDelete, "/api/me/appointments/2", nil)
 	r.SetPathValue("motconsu_id", "2")
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.CancelAppointment(w, r)
+	h.cancelAppointmentLegacy(w, r)
 	assertGolden(t, "me_cancel_already_cancelled", w.Body.Bytes())
 }
 
 func TestGolden_Me_Cancel_NotSupported(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodDelete, "/api/me/appointments/3", nil)
 	r.SetPathValue("motconsu_id", "3")
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.CancelAppointment(w, r)
+	h.cancelAppointmentLegacy(w, r)
 	assertGolden(t, "me_cancel_not_supported", w.Body.Bytes())
 }
 
 func TestGolden_Me_Cancel_NotFound(t *testing.T) {
-	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard()}
+	h := MeHandler{Svc: fakeMeWriteSvc{}, CancelMinHours: 24, WriteGuard: permissiveWriteGuard(t)}
 	r := httptest.NewRequest(http.MethodDelete, "/api/me/appointments/5", nil)
 	r.SetPathValue("motconsu_id", "5")
 	r = r.WithContext(middleware.WithPatientID(r.Context(), 1))
 	w := httptest.NewRecorder()
-	h.CancelAppointment(w, r)
+	h.cancelAppointmentLegacy(w, r)
 	assertGolden(t, "me_cancel_not_found", w.Body.Bytes())
 }

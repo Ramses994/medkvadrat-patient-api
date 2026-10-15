@@ -3,7 +3,6 @@ package medialogwrite
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"net/http"
 )
 
@@ -145,7 +144,7 @@ SELECT PLANNING_ID FROM MOTCONSU WHERE MOTCONSU_ID = @mid AND PATIENTS_ID = @pid
 		return 0, err
 	}
 	if !planningID.Valid || planningID.Int64 <= 0 {
-		return 0, fmt.Errorf("no planning")
+		return 0, ErrNoPlanning
 	}
 	return planningID.Int64, nil
 }
