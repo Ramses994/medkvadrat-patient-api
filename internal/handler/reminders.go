@@ -91,15 +91,19 @@ func parseReminderWindow(fromStr, toStr string, now time.Time) (time.Time, time.
 }
 
 var (
-	errReminderRange          = errValidation("from должен быть раньше to")
-	errReminderWindow         = errValidation("окно не больше 14 дней")
-	errReminderFormat         = errValidation("from/to: формат 2006-01-02T15:04:05")
-	errReminderPatientIDs     = errValidation("patient_ids: ожидается CSV положительных целых")
+	errReminderRange      = errValidation("from должен быть раньше to")
+	errReminderWindow     = errValidation("окно не больше 14 дней")
+	errReminderFormat     = errValidation("from/to: формат 2006-01-02T15:04:05")
+	errReminderPatientIDs = errValidation("patient_ids: ожидается CSV положительных целых")
 )
 
 type errValidation string
 
 func (e errValidation) Error() string { return string(e) }
+
+func displayDoctorName(full string) string {
+	return abbrevDoctorName(repo.SanitizeScheduleLabel(full))
+}
 
 func abbrevDoctorName(full string) string {
 	parts := strings.Fields(strings.TrimSpace(full))
@@ -148,7 +152,7 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 			PatientID:        row.PatientID,
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
-			DoctorName:       abbrevDoctorName(row.DoctorName),
+			DoctorName:       displayDoctorName(row.DoctorName),
 			Specialty:        row.Specialty,
 			BranchID:         row.BranchID,
 			BranchCode:       row.BranchCode,

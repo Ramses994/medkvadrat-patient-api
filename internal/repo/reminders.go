@@ -31,7 +31,7 @@ SELECT
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
-  ISNULL(ps.NAME,'') AS DOCTOR_NAME,
+` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
 ` + specialtySelectSQL + ` AS SPECIALTY,
   ISNULL(o.FM_ORG_ID,0) AS BRANCH_ID,
   ISNULL(o.CODE,'')     AS BRANCH_CODE,
@@ -151,6 +151,7 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 		if err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
+		r.DoctorName = SanitizeScheduleLabel(r.DoctorName)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

@@ -58,7 +58,7 @@ SELECT TOP %d
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
-  ISNULL(ps.NAME,'') AS DOCTOR_NAME,
+%s AS DOCTOR_NAME,
 %s AS SPECIALTY,
   ISNULL(o.FM_ORG_ID,0) AS BRANCH_ID,
   ISNULL(o.CODE,'') AS BRANCH_CODE,
@@ -74,7 +74,7 @@ WHERE p.PATIENTS_ID IN (%s)
   AND ISNULL(p.CANCELLED,0) = 0
   AND ISNULL(p.STATUS,0) = 0
   AND p.DATE_START > @now
-ORDER BY p.CREATE_DATE_TIME`, maxNewBookingRows, specialtySelectSQL, in.String())
+ORDER BY p.CREATE_DATE_TIME`, maxNewBookingRows, doctorNameSelectSQL, specialtySelectSQL, in.String())
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -100,6 +100,7 @@ ORDER BY p.CREATE_DATE_TIME`, maxNewBookingRows, specialtySelectSQL, in.String()
 		if err != nil {
 			return nil, err
 		}
+		r.DoctorName = SanitizeScheduleLabel(r.DoctorName)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

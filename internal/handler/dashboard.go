@@ -32,9 +32,9 @@ type dashboardAppointmentDTO struct {
 }
 
 type dashboardBranchDTO struct {
-	BranchID     int     `json:"branch_id"`
-	BranchCode   string  `json:"branch_code"`
-	Name         string  `json:"name"`
+	BranchID     int                       `json:"branch_id"`
+	BranchCode   string                    `json:"branch_code"`
+	Name         string                    `json:"name"`
 	Appointments []dashboardAppointmentDTO `json:"appointments"`
 }
 
@@ -85,7 +85,7 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 				PlanningID:   a.PlanningID,
 				Time:         a.Time,
 				PatientName:  a.PatientName,
-				DoctorName:   abbrevDoctorName(a.DoctorName),
+				DoctorName:   displayDoctorName(a.DoctorName),
 				Status:       a.Status,
 				Confirmation: a.Confirmation,
 			})

@@ -1,21 +1,30 @@
 package repo
 
 // specialtySelectSQL is one expression for the doctor's specialty label (SQL Server 2008).
-// 1) department of the schedule line (PL_SUBJ.MEDDEP_ID → MEDDEP → FM_DEP_PROF.LABEL);
-// 2) otherwise the only non-archived MEDDEP profile of the line's doctor;
-// 3) otherwise empty. Source may be adjusted after owner check S24.
+// S24: MEDDEP.FM_DEP_PROF_ID is empty on doctor departments — use SPECIALISATION instead.
+// 1) non-archived MEDDEP rows of the line doctor (PL_SUBJ.MEDECINS_ID) joined to
+//    non-archived SPECIALISATION;
+// 2) if exactly one SPECIALISATION_ID — ISNULL(NULLIF(LTRIM(RTRIM(WEB_NAME)),''), NAME);
+// 3) if several or none — empty. Do not use FM_DEP_PROF or PL_SUBJ.MEDDEP_ID.
 const specialtySelectSQL = `
-ISNULL((
-  SELECT TOP 1 fp.LABEL
-  FROM MEDDEP md
-  INNER JOIN FM_DEP_PROF fp ON fp.FM_DEP_PROF_ID = md.FM_DEP_PROF_ID
-  WHERE md.MEDDEP_ID = ps.MEDDEP_ID
-    AND md.FM_DEP_PROF_ID IS NOT NULL
-), ISNULL((
-  SELECT CASE WHEN COUNT(DISTINCT md2.FM_DEP_PROF_ID) = 1 THEN MIN(fp2.LABEL) ELSE '' END
-  FROM MEDDEP md2
-  INNER JOIN FM_DEP_PROF fp2 ON fp2.FM_DEP_PROF_ID = md2.FM_DEP_PROF_ID
-  WHERE md2.MEDECINS_ID = ps.MEDECINS_ID
-    AND ISNULL(md2.ARCHIVE, 0) = 0
-    AND md2.FM_DEP_PROF_ID IS NOT NULL
-), ''))`
+CASE
+  WHEN (
+    SELECT COUNT(DISTINCT md.SPECIALISATION_ID)
+    FROM MEDDEP md
+    INNER JOIN SPECIALISATION sp ON sp.SPECIALISATION_ID = md.SPECIALISATION_ID
+    WHERE md.MEDECINS_ID = ps.MEDECINS_ID
+      AND ISNULL(md.ARCHIVE, 0) = 0
+      AND ISNULL(sp.ARCHIVE, 0) = 0
+      AND md.SPECIALISATION_ID IS NOT NULL
+  ) = 1
+  THEN (
+    SELECT TOP 1 ISNULL(NULLIF(LTRIM(RTRIM(ISNULL(sp.WEB_NAME, ''))), ''), sp.NAME)
+    FROM MEDDEP md
+    INNER JOIN SPECIALISATION sp ON sp.SPECIALISATION_ID = md.SPECIALISATION_ID
+    WHERE md.MEDECINS_ID = ps.MEDECINS_ID
+      AND ISNULL(md.ARCHIVE, 0) = 0
+      AND ISNULL(sp.ARCHIVE, 0) = 0
+      AND md.SPECIALISATION_ID IS NOT NULL
+  )
+  ELSE ''
+END`

@@ -72,7 +72,7 @@ func (h NotificationsHandler) NewBookings(w http.ResponseWriter, r *http.Request
 			PatientID:        row.PatientID,
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
-			DoctorName:       abbrevDoctorName(row.DoctorName),
+			DoctorName:       displayDoctorName(row.DoctorName),
 			Specialty:        row.Specialty,
 			BranchID:         row.BranchID,
 			BranchCode:       row.BranchCode,
