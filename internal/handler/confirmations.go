@@ -14,7 +14,7 @@ import (
 )
 
 type ConfirmationsService interface {
-	UpsertConfirmation(ctx context.Context, planningID, patientID int64, status, source string) (confirmations.Record, error)
+	UpsertConfirmation(ctx context.Context, planningID, patientID int64, status, source, apptVersion string) (confirmations.Record, error)
 }
 
 type ConfirmationsHandler struct {
@@ -23,10 +23,11 @@ type ConfirmationsHandler struct {
 }
 
 type confirmationRequest struct {
-	PlanningID int64  `json:"planning_id"`
-	PatientID  int64  `json:"patient_id"`
-	Status     string `json:"status"`
-	Source     string `json:"source,omitempty"`
+	PlanningID  int64  `json:"planning_id"`
+	PatientID   int64  `json:"patient_id"`
+	Status      string `json:"status"`
+	Source      string `json:"source,omitempty"`
+	ApptVersion string `json:"appt_version,omitempty"`
 }
 
 type confirmationDTO struct {
@@ -63,7 +64,7 @@ func (h ConfirmationsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 		source = "max"
 	}
 
-	rec, err := h.Svc.UpsertConfirmation(r.Context(), req.PlanningID, req.PatientID, req.Status, source)
+	rec, err := h.Svc.UpsertConfirmation(r.Context(), req.PlanningID, req.PatientID, req.Status, source, strings.TrimSpace(req.ApptVersion))
 	if err != nil {
 		var already *confirmations.AlreadyAnsweredError
 		switch {
@@ -75,6 +76,8 @@ func (h ConfirmationsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 				Source:     already.Record.Source,
 				UpdatedAt:  already.Record.UpdatedAt.Format("2006-01-02T15:04:05"),
 			})
+		case errors.Is(err, confirmations.ErrStaleReminder):
+			response.Error(w, http.StatusConflict, "STALE_REMINDER", "Запись изменилась")
 		case errors.Is(err, confirmations.ErrAppointmentNotFound):
 			response.Error(w, http.StatusNotFound, "APPOINTMENT_NOT_FOUND", "Запись на приём не найдена")
 		case errors.Is(err, confirmations.ErrPatientMismatch):

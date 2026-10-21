@@ -34,7 +34,10 @@ type dueReminderDTO struct {
 	PatientPhone     string `json:"patient_phone"`
 	PatientName      string `json:"patient_name"`
 	DoctorName       string `json:"doctor_name"`
-	Specialty        string `json:"specialty"`
+	Service          string `json:"service"`
+	MessengerNotify  *int   `json:"messenger_notify"`
+	NoSMSNotify      bool   `json:"no_sms_notify"`
+	ApptVersion      string `json:"appt_version"`
 	BranchID         int    `json:"branch_id"`
 	BranchCode       string `json:"branch_code"`
 	DateConsultation string `json:"date_consultation"`
@@ -102,7 +105,11 @@ type errValidation string
 func (e errValidation) Error() string { return string(e) }
 
 func displayDoctorName(full string) string {
-	return abbrevDoctorName(repo.SanitizeScheduleLabel(full))
+	full = strings.TrimSpace(full)
+	if full == "" {
+		return ""
+	}
+	return abbrevDoctorName(full)
 }
 
 func abbrevDoctorName(full string) string {
@@ -153,7 +160,10 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
 			DoctorName:       displayDoctorName(row.DoctorName),
-			Specialty:        row.Specialty,
+			Service:          row.Service,
+			MessengerNotify:  row.MessengerNotify,
+			NoSMSNotify:      row.NoSMSNotify,
+			ApptVersion:      row.ApptVersion,
 			BranchID:         row.BranchID,
 			BranchCode:       row.BranchCode,
 			DateConsultation: row.DateConsultation.Format(reminderOutLayout),

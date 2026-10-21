@@ -156,8 +156,8 @@ func (s *Services) RemindersDue(ctx context.Context, from, to time.Time, patient
 	return repo.DueReminders(ctx, s.MSSQL, from, to, patientIDs)
 }
 
-func (s *Services) NewBookings(ctx context.Context, since, now time.Time, patientIDs []int64) ([]repo.NewBooking, error) {
-	return repo.NewBookings(ctx, s.MSSQL, since, now, patientIDs)
+func (s *Services) NewBookings(ctx context.Context, now time.Time, patientIDs []int64, cursor *repo.BookingCursor, limit int) (repo.NewBookingsPage, error) {
+	return repo.NewBookings(ctx, s.MSSQL, now, patientIDs, cursor, limit)
 }
 
 func ParseDefaultModelsID(v string) int {

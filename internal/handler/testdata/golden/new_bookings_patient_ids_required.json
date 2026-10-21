@@ -1,1 +1,1 @@
-{"success":false,"error":"patient_ids: ожидается CSV положительных целых","error_details":{"code":"VALIDATION","message":"patient_ids: ожидается CSV положительных целых"}}
+{"success":false,"error":"patient_ids: ожидается список положительных целых","error_details":{"code":"VALIDATION","message":"patient_ids: ожидается список положительных целых"}}

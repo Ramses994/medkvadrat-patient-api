@@ -15,7 +15,10 @@ type DueReminder struct {
 	PatientPhone     string
 	PatientName      string
 	DoctorName       string
-	Specialty        string
+	Service          string
+	NoSMSNotify      bool
+	MessengerNotify  *int // 1 / 0 / nil (no questionnaire)
+	ApptVersion      string
 	BranchID         int
 	BranchCode       string
 	DateConsultation time.Time
@@ -32,7 +35,12 @@ SELECT
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
 ` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
-` + specialtySelectSQL + ` AS SPECIALTY,
+` + serviceRawSelectSQL + ` AS SERVICE_RAW,
+  ISNULL(ex.NO_SMS_NOTIFY, 0) AS NO_SMS_NOTIFY,
+  r.MESSENGER_NOTIFY AS MESSENGER_NOTIFY,
+  ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
+  ISNULL(p.PL_EXAM_ID, 0) AS PL_EXAM_ID,
+  CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START_FULL,
   ISNULL(o.FM_ORG_ID,0) AS BRANCH_ID,
   ISNULL(o.CODE,'')     AS BRANCH_CODE,
   CONVERT(varchar(16), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 120) AS DATE_CONSULTATION,
@@ -40,6 +48,8 @@ SELECT
 FROM PLANNING p
 JOIN PATIENTS pt ON pt.PATIENTS_ID = p.PATIENTS_ID
 JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
+LEFT JOIN PL_EXAM ex ON ex.PL_EXAM_ID = p.PL_EXAM_ID
+LEFT JOIN DATA_W3_RASSYLKA r ON r.PATIENTS_ID = p.PATIENTS_ID
 LEFT JOIN FM_ORG o ON o.FM_ORG_ID = ps.FM_INTORG_ID
 WHERE p.PATIENTS_ID IS NOT NULL
   AND ISNULL(p.CANCELLED,0) = 0
@@ -132,14 +142,22 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 	var out []DueReminder
 	for rows.Next() {
 		var r DueReminder
-		var dateConsStr string
+		var dateConsStr, serviceRaw, dateStart string
+		var noSMS int
+		var notify sql.NullInt64
+		var plSubj, plExam int64
 		if err := rows.Scan(
 			&r.PlanningID,
 			&r.PatientID,
 			&r.PatientPhone,
 			&r.PatientName,
 			&r.DoctorName,
-			&r.Specialty,
+			&serviceRaw,
+			&noSMS,
+			&notify,
+			&plSubj,
+			&plExam,
+			&dateStart,
 			&r.BranchID,
 			&r.BranchCode,
 			&dateConsStr,
@@ -151,13 +169,27 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 		if err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
-		r.DoctorName = SanitizeScheduleLabel(r.DoctorName)
+		fillReminderDerived(&r, serviceRaw, noSMS, notify, plSubj, plExam, dateStart)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows due reminders: %w", err)
 	}
 	return out, nil
+}
+
+func fillReminderDerived(r *DueReminder, serviceRaw string, noSMS int, notify sql.NullInt64, plSubj, plExam int64, dateStart string) {
+	r.DoctorName = trimDoctorName(r.DoctorName)
+	r.Service = CleanServiceName(serviceRaw)
+	r.NoSMSNotify = noSMS != 0 || IsWaitlistService(serviceRaw)
+	if notify.Valid {
+		v := int(notify.Int64)
+		if v != 0 {
+			v = 1
+		}
+		r.MessengerNotify = &v
+	}
+	r.ApptVersion = ApptVersion(dateStart, plSubj, plExam)
 }
 
 func moscowLocation() *time.Location {

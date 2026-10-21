@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,7 +13,7 @@ import (
 )
 
 type NotificationsService interface {
-	NewBookings(ctx context.Context, since, now time.Time, patientIDs []int64) ([]repo.NewBooking, error)
+	NewBookings(ctx context.Context, now time.Time, patientIDs []int64, cursor *repo.BookingCursor, limit int) (repo.NewBookingsPage, error)
 }
 
 type NotificationsHandler struct {
@@ -20,18 +22,33 @@ type NotificationsHandler struct {
 	Now    func() time.Time
 }
 
+type newBookingsRequest struct {
+	PatientIDs []int64            `json:"patient_ids"`
+	Cursor     *repo.BookingCursor `json:"cursor"`
+	Limit      int                `json:"limit"`
+}
+
 type newBookingDTO struct {
 	PlanningID       int64  `json:"planning_id"`
 	PatientID        int64  `json:"patient_id"`
 	PatientPhone     string `json:"patient_phone"`
 	PatientName      string `json:"patient_name"`
 	DoctorName       string `json:"doctor_name"`
-	Specialty        string `json:"specialty"`
+	Service          string `json:"service"`
+	MessengerNotify  *int   `json:"messenger_notify"`
+	NoSMSNotify      bool   `json:"no_sms_notify"`
+	ApptVersion      string `json:"appt_version"`
 	BranchID         int    `json:"branch_id"`
 	BranchCode       string `json:"branch_code"`
 	DateConsultation string `json:"date_consultation"`
 	Status           int    `json:"status"`
 	CreatedAt        string `json:"created_at"`
+}
+
+type newBookingsPageDTO struct {
+	Items      []newBookingDTO     `json:"items"`
+	NextCursor *repo.BookingCursor `json:"next_cursor"`
+	HasMore    bool                `json:"has_more"`
 }
 
 func (h NotificationsHandler) now() time.Time {
@@ -42,22 +59,28 @@ func (h NotificationsHandler) now() time.Time {
 }
 
 func (h NotificationsHandler) NewBookings(w http.ResponseWriter, r *http.Request) {
-	sinceRaw := r.URL.Query().Get("since")
-	since, err := time.Parse(time.RFC3339, sinceRaw)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "since: формат RFC3339")
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "Некорректное тело запроса")
 		return
 	}
-	patientIDs, err := repo.RequirePatientIDsCSV(r.URL.Query().Get("patient_ids"), 50)
+	var req newBookingsRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			response.Error(w, http.StatusBadRequest, "VALIDATION", "Некорректный JSON")
+			return
+		}
+	}
+	ids, err := repo.RequirePatientIDList(req.PatientIDs, 500)
 	if err != nil {
-		msg := "patient_ids: ожидается CSV положительных целых"
+		msg := "patient_ids: ожидается список положительных целых"
 		if err.Error() == "too many patient_ids" {
-			msg = "patient_ids: не больше 50"
+			msg = "patient_ids: не больше 500"
 		}
 		response.Error(w, http.StatusBadRequest, "VALIDATION", msg)
 		return
 	}
-	rows, err := h.Svc.NewBookings(r.Context(), since, h.now(), patientIDs)
+	page, err := h.Svc.NewBookings(r.Context(), h.now(), ids, req.Cursor, req.Limit)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Error("new bookings failed", "err", err)
@@ -65,21 +88,24 @@ func (h NotificationsHandler) NewBookings(w http.ResponseWriter, r *http.Request
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
-	out := make([]newBookingDTO, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, newBookingDTO{
+	items := make([]newBookingDTO, 0, len(page.Rows))
+	for _, row := range page.Rows {
+		items = append(items, newBookingDTO{
 			PlanningID:       row.PlanningID,
 			PatientID:        row.PatientID,
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
 			DoctorName:       displayDoctorName(row.DoctorName),
-			Specialty:        row.Specialty,
+			Service:          row.Service,
+			MessengerNotify:  row.MessengerNotify,
+			NoSMSNotify:      row.NoSMSNotify,
+			ApptVersion:      row.ApptVersion,
 			BranchID:         row.BranchID,
 			BranchCode:       row.BranchCode,
 			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
 			Status:           row.Status,
-			CreatedAt:        row.CreatedAt.Format(time.RFC3339),
+			CreatedAt:        row.CreatedAt,
 		})
 	}
-	response.OK(w, out)
+	response.OK(w, newBookingsPageDTO{Items: items, NextCursor: page.NextCursor, HasMore: page.HasMore})
 }

@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS medialog_write_log (
 	if err := ensureColumn(ctx, db, "appointment_confirmations", "appt_start", "TEXT"); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, "appointment_confirmations", "appt_version", "TEXT"); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -23,12 +23,13 @@ type DashboardHandler struct {
 }
 
 type dashboardAppointmentDTO struct {
-	PlanningID   int64   `json:"planning_id"`
-	Time         string  `json:"time"`
-	PatientName  string  `json:"patient_name"`
-	DoctorName   string  `json:"doctor_name"`
-	Status       int     `json:"status"`
-	Confirmation *string `json:"confirmation"`
+	PlanningID       int64   `json:"planning_id"`
+	Time             string  `json:"time"`
+	PatientName      string  `json:"patient_name"`
+	DoctorName       string  `json:"doctor_name"`
+	Status           int     `json:"status"`
+	Confirmation     *string `json:"confirmation"`
+	ConfirmationHint string  `json:"confirmation_hint,omitempty"`
 }
 
 type dashboardBranchDTO struct {
@@ -82,12 +83,13 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 		appts := make([]dashboardAppointmentDTO, 0, len(b.Appointments))
 		for _, a := range b.Appointments {
 			appts = append(appts, dashboardAppointmentDTO{
-				PlanningID:   a.PlanningID,
-				Time:         a.Time,
-				PatientName:  a.PatientName,
-				DoctorName:   displayDoctorName(a.DoctorName),
-				Status:       a.Status,
-				Confirmation: a.Confirmation,
+				PlanningID:       a.PlanningID,
+				Time:             a.Time,
+				PatientName:      a.PatientName,
+				DoctorName:       displayDoctorName(a.DoctorName),
+				Status:           a.Status,
+				Confirmation:     a.Confirmation,
+				ConfirmationHint: a.ConfirmationHint,
 			})
 		}
 		branches = append(branches, dashboardBranchDTO{

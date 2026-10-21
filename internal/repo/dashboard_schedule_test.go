@@ -11,7 +11,7 @@ func TestBuildDashboardSchedule_OrderAndOverlay(t *testing.T) {
 		{PlanningID: 2, PatientName: "Петров", DoctorName: "Врач", BranchID: 106, BranchCode: "Каширка", Time: "09:00", Status: 0},
 		{PlanningID: 3, PatientName: "Сидоров", DoctorName: "Эксперт", BranchID: 496, BranchCode: "Куркино 2 (взр.)", Time: "11:30", Status: 1},
 	}
-	overlay := map[int64]string{1: "confirmed", 3: "declined"}
+	overlay := map[int64]ConfirmationOverlay{1: {Status: "confirmed"}, 3: {Status: "declined"}}
 
 	got := BuildDashboardSchedule(time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC), rows, overlay)
 
@@ -42,6 +42,21 @@ func TestBuildDashboardSchedule_OrderAndOverlay(t *testing.T) {
 	}
 	if got.Branches[2].Appointments[0].Confirmation == nil || *got.Branches[2].Appointments[0].Confirmation != "declined" {
 		t.Fatalf("confirmation=%v", got.Branches[2].Appointments[0].Confirmation)
+	}
+}
+
+func TestBuildDashboardSchedule_StaleVersion(t *testing.T) {
+	rows := []DashboardPlanningRow{
+		{PlanningID: 1, PatientName: "Иванов", BranchID: 106, BranchCode: "Каширка", Time: "09:00", ApptVersion: "new"},
+	}
+	overlay := map[int64]ConfirmationOverlay{1: {Status: "confirmed", Version: "old"}}
+	got := BuildDashboardSchedule(time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC), rows, overlay)
+	appt := got.Branches[0].Appointments[0]
+	if appt.Confirmation != nil {
+		t.Fatal("stale confirmation must not be shown as current")
+	}
+	if appt.ConfirmationHint != "ответ на прежнее время" {
+		t.Fatalf("hint=%q", appt.ConfirmationHint)
 	}
 }
 

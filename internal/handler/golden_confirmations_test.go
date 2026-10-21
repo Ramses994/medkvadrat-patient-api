@@ -19,7 +19,7 @@ type fakeConfirmationsSvc struct {
 	err            error
 }
 
-func (f *fakeConfirmationsSvc) UpsertConfirmation(ctx context.Context, planningID, patientID int64, status, source string) (confirmations.Record, error) {
+func (f *fakeConfirmationsSvc) UpsertConfirmation(ctx context.Context, planningID, patientID int64, status, source, apptVersion string) (confirmations.Record, error) {
 	f.lastPlanningID = planningID
 	f.lastPatientID = patientID
 	f.lastStatus = status
@@ -91,6 +91,20 @@ func TestGolden_Confirmations_AlreadyAnswered(t *testing.T) {
 		t.Fatalf("status=%d", w.Code)
 	}
 	assertGolden(t, "confirmations_already_answered", w.Body.Bytes())
+}
+
+func TestConfirmations_StaleReminder(t *testing.T) {
+	h := ConfirmationsHandler{Svc: &fakeConfirmationsSvc{err: confirmations.ErrStaleReminder}}
+	body := `{"planning_id":1,"patient_id":2,"status":"confirmed","appt_version":"old"}`
+	r := httptest.NewRequest(http.MethodPost, "/api/internal/confirmations", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	h.Upsert(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("STALE_REMINDER")) {
+		t.Fatalf("body=%s", w.Body.String())
+	}
 }
 
 func Test__GenerateConfirmationsGolden(t *testing.T) {
