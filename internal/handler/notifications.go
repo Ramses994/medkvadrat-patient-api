@@ -35,6 +35,7 @@ type newBookingDTO struct {
 	PatientName      string `json:"patient_name"`
 	DoctorName       string `json:"doctor_name"`
 	Service          string `json:"service"`
+	IsWaitlist       bool   `json:"is_waitlist"`
 	MessengerNotify  *int   `json:"messenger_notify"`
 	NoSMSNotify      bool   `json:"no_sms_notify"`
 	ApptVersion      string `json:"appt_version"`
@@ -97,6 +98,7 @@ func (h NotificationsHandler) NewBookings(w http.ResponseWriter, r *http.Request
 			PatientName:      row.PatientName,
 			DoctorName:       displayDoctorName(row.DoctorName),
 			Service:          row.Service,
+			IsWaitlist:       row.IsWaitlist,
 			MessengerNotify:  row.MessengerNotify,
 			NoSMSNotify:      row.NoSMSNotify,
 			ApptVersion:      row.ApptVersion,

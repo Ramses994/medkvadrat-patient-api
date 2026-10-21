@@ -153,11 +153,11 @@ func (s *Services) PollAfter(ctx context.Context, last time.Time) ([]repo.PollRo
 }
 
 func (s *Services) RemindersDue(ctx context.Context, from, to time.Time, patientIDs []int64) ([]repo.DueReminder, error) {
-	return repo.DueReminders(ctx, s.MSSQL, from, to, patientIDs)
+	return repo.DueReminders(ctx, s.MSSQL, from, to, patientIDs, s.Config.WaitlistExamIDs)
 }
 
 func (s *Services) NewBookings(ctx context.Context, now time.Time, patientIDs []int64, cursor *repo.BookingCursor, limit int) (repo.NewBookingsPage, error) {
-	return repo.NewBookings(ctx, s.MSSQL, now, patientIDs, cursor, limit)
+	return repo.NewBookings(ctx, s.MSSQL, now, patientIDs, cursor, limit, s.Config.WaitlistExamIDs)
 }
 
 func ParseDefaultModelsID(v string) int {

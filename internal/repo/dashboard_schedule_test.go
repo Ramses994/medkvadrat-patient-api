@@ -75,6 +75,27 @@ func TestBuildDashboardSchedule_EmptyDay(t *testing.T) {
 	}
 }
 
+func TestDashboardConfirmationCountsSkipWaitlist(t *testing.T) {
+	rows := []DashboardPlanningRow{
+		{PlanningID: 1, PatientName: "A", BranchID: 106, BranchCode: "Каширка", Time: "09:00"},
+		{PlanningID: 2, PatientName: "B", BranchID: 106, BranchCode: "Каширка", Time: "09:10", IsWaitlist: true},
+		{PlanningID: 3, PatientName: "C", BranchID: 106, BranchCode: "Каширка", Time: "09:20"},
+	}
+	overlay := map[int64]ConfirmationOverlay{
+		1: {Status: "confirmed"},
+		2: {Status: "confirmed"},
+		3: {Status: "declined"},
+	}
+	got := BuildDashboardSchedule(time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC), rows, overlay)
+	if !got.Branches[0].Appointments[1].IsWaitlist {
+		t.Fatal("waitlist flag must be copied")
+	}
+	counts := DashboardConfirmationCounts(got.Branches)
+	if counts["confirmed"] != 1 || counts["declined"] != 1 || counts["pending"] != 0 {
+		t.Fatalf("counts=%v (waitlist must not increment придёт/не придёт/нет ответа)", counts)
+	}
+}
+
 func TestNormalizeHHMM(t *testing.T) {
 	if got := normalizeHHMM("19:30:00"); got != "19:30" {
 		t.Fatalf("got %q", got)

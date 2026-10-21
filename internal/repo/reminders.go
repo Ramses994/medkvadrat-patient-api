@@ -16,6 +16,7 @@ type DueReminder struct {
 	PatientName      string
 	DoctorName       string
 	Service          string
+	IsWaitlist       bool
 	NoSMSNotify      bool
 	MessengerNotify  *int // 1 / 0 / nil (no questionnaire)
 	ApptVersion      string
@@ -28,14 +29,16 @@ type DueReminder struct {
 const mssqlReminderBoundLayout = "2006-01-02T15:04:05"
 const consultationWallClockLayout = "2006-01-02 15:04"
 
-var dueRemindersBaseSQL = `
+func dueRemindersBaseSQL(waitlistIDs []int64) (string, []any) {
+	examSQL, examArgs := examSelectSQL(waitlistIDs)
+	q := `
 SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
 ` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
-` + serviceRawSelectSQL + ` AS SERVICE_RAW,
+` + examSQL + `,
   ISNULL(ex.NO_SMS_NOTIFY, 0) AS NO_SMS_NOTIFY,
   r.MESSENGER_NOTIFY AS MESSENGER_NOTIFY,
   ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
@@ -57,6 +60,8 @@ WHERE p.PATIENTS_ID IS NOT NULL
   AND p.DATE_CONS <= CAST(@to AS date)
   AND DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS) >= @from
   AND DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS) <= @to`
+	return q, examArgs
+}
 
 // ParseConsultationWallClock parses MSSQL CONVERT(varchar(16), …, 120) as MSK wall-clock.
 func ParseConsultationWallClock(s string) (time.Time, error) {
@@ -118,19 +123,21 @@ func patientFilterClause(patientIDs []int64) (string, []any) {
 	return b.String(), args
 }
 
-func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time, patientIDs []int64) ([]DueReminder, error) {
+func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time, patientIDs, waitlistIDs []int64) ([]DueReminder, error) {
 	loc := moscowLocation()
 	fromBound := from.In(loc).Format(mssqlReminderBoundLayout)
 	toBound := to.In(loc).Format(mssqlReminderBoundLayout)
 
+	baseSQL, examArgs := dueRemindersBaseSQL(waitlistIDs)
 	filterSQL, filterArgs := patientFilterClause(patientIDs)
-	query := dueRemindersBaseSQL + filterSQL + `
+	query := baseSQL + filterSQL + `
 ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 
 	args := []any{
 		sql.Named("from", fromBound),
 		sql.Named("to", toBound),
 	}
+	args = append(args, examArgs...)
 	args = append(args, filterArgs...)
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -142,8 +149,8 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 	var out []DueReminder
 	for rows.Next() {
 		var r DueReminder
-		var dateConsStr, serviceRaw, dateStart string
-		var noSMS int
+		var dateConsStr, webName, examName, dateStart string
+		var isWaitlist, noSMS int
 		var notify sql.NullInt64
 		var plSubj, plExam int64
 		if err := rows.Scan(
@@ -152,7 +159,9 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 			&r.PatientPhone,
 			&r.PatientName,
 			&r.DoctorName,
-			&serviceRaw,
+			&webName,
+			&examName,
+			&isWaitlist,
 			&noSMS,
 			&notify,
 			&plSubj,
@@ -169,7 +178,7 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 		if err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
-		fillReminderDerived(&r, serviceRaw, noSMS, notify, plSubj, plExam, dateStart)
+		fillReminderDerived(&r, webName, examName, isWaitlist, noSMS, notify, plSubj, plExam, dateStart)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -178,10 +187,11 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 	return out, nil
 }
 
-func fillReminderDerived(r *DueReminder, serviceRaw string, noSMS int, notify sql.NullInt64, plSubj, plExam int64, dateStart string) {
+func fillReminderDerived(r *DueReminder, webName, examName string, isWaitlist, noSMS int, notify sql.NullInt64, plSubj, plExam int64, dateStart string) {
 	r.DoctorName = trimDoctorName(r.DoctorName)
-	r.Service = CleanServiceName(serviceRaw)
-	r.NoSMSNotify = noSMS != 0 || IsWaitlistService(serviceRaw)
+	r.Service = DisplayService(webName, examName)
+	r.IsWaitlist = isWaitlist != 0
+	r.NoSMSNotify = noSMS != 0
 	if notify.Valid {
 		v := int(notify.Int64)
 		if v != 0 {

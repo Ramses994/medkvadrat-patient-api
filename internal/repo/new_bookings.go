@@ -49,7 +49,7 @@ func RequirePatientIDList(ids []int64, maxN int) ([]int64, error) {
 	return ids, nil
 }
 
-func NewBookings(ctx context.Context, db *sql.DB, now time.Time, patientIDs []int64, cursor *BookingCursor, limit int) (NewBookingsPage, error) {
+func NewBookings(ctx context.Context, db *sql.DB, now time.Time, patientIDs []int64, cursor *BookingCursor, limit int, waitlistIDs []int64) (NewBookingsPage, error) {
 	ids, err := RequirePatientIDList(patientIDs, maxNewBookingPatients)
 	if err != nil {
 		return NewBookingsPage{}, err
@@ -79,6 +79,8 @@ func NewBookings(ctx context.Context, db *sql.DB, now time.Time, patientIDs []in
 		in.WriteString("@" + name)
 		args = append(args, sql.Named(name, id))
 	}
+	examSQL, examArgs := examSelectSQL(waitlistIDs)
+	args = append(args, examArgs...)
 
 	query := fmt.Sprintf(`
 SELECT TOP %d
@@ -87,7 +89,7 @@ SELECT TOP %d
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
 %s AS DOCTOR_NAME,
-%s AS SERVICE_RAW,
+%s,
   ISNULL(ex.NO_SMS_NOTIFY, 0) AS NO_SMS_NOTIFY,
   r.MESSENGER_NOTIFY AS MESSENGER_NOTIFY,
   ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
@@ -112,7 +114,7 @@ WHERE p.PATIENTS_ID IN (%s)
     p.CREATE_DATE_TIME > CONVERT(datetime, @ts, 121)
     OR (p.CREATE_DATE_TIME = CONVERT(datetime, @ts, 121) AND p.PLANNING_ID > @pid)
   )
-ORDER BY p.CREATE_DATE_TIME, p.PLANNING_ID`, limit+1, doctorNameSelectSQL, serviceRawSelectSQL, in.String())
+ORDER BY p.CREATE_DATE_TIME, p.PLANNING_ID`, limit+1, doctorNameSelectSQL, examSQL, in.String())
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -123,13 +125,13 @@ ORDER BY p.CREATE_DATE_TIME, p.PLANNING_ID`, limit+1, doctorNameSelectSQL, servi
 	var out []NewBooking
 	for rows.Next() {
 		var r NewBooking
-		var dateConsStr, serviceRaw, dateStart string
-		var noSMS int
+		var dateConsStr, webName, examName, dateStart string
+		var isWaitlist, noSMS int
 		var notify sql.NullInt64
 		var plSubj, plExam int64
 		if err := rows.Scan(
 			&r.PlanningID, &r.PatientID, &r.PatientPhone, &r.PatientName, &r.DoctorName,
-			&serviceRaw, &noSMS, &notify, &plSubj, &plExam, &dateStart,
+			&webName, &examName, &isWaitlist, &noSMS, &notify, &plSubj, &plExam, &dateStart,
 			&r.BranchID, &r.BranchCode, &dateConsStr, &r.Status, &r.CreatedAt,
 		); err != nil {
 			return NewBookingsPage{}, fmt.Errorf("scan new bookings: %w", err)
@@ -138,7 +140,7 @@ ORDER BY p.CREATE_DATE_TIME, p.PLANNING_ID`, limit+1, doctorNameSelectSQL, servi
 		if err != nil {
 			return NewBookingsPage{}, err
 		}
-		fillReminderDerived(&r.DueReminder, serviceRaw, noSMS, notify, plSubj, plExam, dateStart)
+		fillReminderDerived(&r.DueReminder, webName, examName, isWaitlist, noSMS, notify, plSubj, plExam, dateStart)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
