@@ -29,6 +29,7 @@ type dashboardAppointmentDTO struct {
 	DoctorName   string  `json:"doctor_name"`
 	Status       int     `json:"status"`
 	Confirmation *string `json:"confirmation"`
+	IsWaitlist   bool    `json:"is_waitlist"`
 }
 
 type dashboardBranchDTO struct {
@@ -88,6 +89,7 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 				DoctorName:   displayDoctorName(a.DoctorName),
 				Status:       a.Status,
 				Confirmation: a.Confirmation,
+				IsWaitlist:   a.IsWaitlist,
 			})
 		}
 		branches = append(branches, dashboardBranchDTO{

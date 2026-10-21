@@ -25,6 +25,7 @@ type Config struct {
 	MedialogWriteAllowPlSubj   []int64
 	MotconsuPollEnabled        bool
 	CORSAllowedOrigins         []string
+	WaitlistExamIDs            []int64
 
 	HTTP      HTTPConfig
 	MSSQL     MSSQLConfig
@@ -111,6 +112,7 @@ func Load() (Config, error) {
 		MedialogWriteAllowPlSubj:   mustInt64CSV(os.Getenv("MEDIALOG_WRITE_ALLOW_PL_SUBJ")),
 		MotconsuPollEnabled:        mustBool(getEnv("MOTCONSU_POLL_ENABLED", "false")),
 		CORSAllowedOrigins:         splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "")),
+		WaitlistExamIDs:            mustInt64CSV(os.Getenv("WAITLIST_EXAM_IDS")),
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
@@ -167,6 +169,9 @@ func Load() (Config, error) {
 			CookieSecure: mustBool(getEnv("DASHBOARD_COOKIE_SECURE", "false")),
 			AllowedCIDRs: splitCSV(getEnv("DASHBOARD_ALLOWED_CIDRS", "192.168.0.0/16,127.0.0.1/32")),
 		},
+	}
+	if len(cfg.WaitlistExamIDs) == 0 {
+		cfg.WaitlistExamIDs = []int64{3118}
 	}
 
 	if err := cfg.validate(); err != nil {

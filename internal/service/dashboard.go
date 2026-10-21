@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Services) DashboardSchedule(ctx context.Context, date time.Time) (repo.DashboardSchedule, error) {
-	rows, err := repo.DashboardPlanningRows(ctx, s.MSSQL, date)
+	rows, err := repo.DashboardPlanningRows(ctx, s.MSSQL, date, s.Config.WaitlistExamIDs)
 	if err != nil {
 		return repo.DashboardSchedule{}, err
 	}
