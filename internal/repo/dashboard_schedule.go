@@ -22,12 +22,12 @@ type DashboardPlanningRow struct {
 	Status      int
 }
 
-const dashboardScheduleSQL = `
+var dashboardScheduleSQL = `
 SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS PATIENT_NAME,
-  ISNULL(ps.NAME,'') AS DOCTOR_NAME,
+` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
   o.FM_ORG_ID AS BRANCH_ID,
   ISNULL(o.CODE,'') AS BRANCH_CODE,
   CONVERT(varchar(5), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 108) AS TIME_HHMM,
@@ -69,6 +69,7 @@ func DashboardPlanningRows(ctx context.Context, db *sql.DB, date time.Time) ([]D
 			return nil, fmt.Errorf("scan dashboard schedule: %w", err)
 		}
 		r.Time = normalizeHHMM(timeRaw)
+		r.DoctorName = SanitizeScheduleLabel(r.DoctorName)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

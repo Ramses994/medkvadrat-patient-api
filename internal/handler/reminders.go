@@ -100,6 +100,10 @@ type errValidation string
 
 func (e errValidation) Error() string { return string(e) }
 
+func displayDoctorName(full string) string {
+	return abbrevDoctorName(repo.SanitizeScheduleLabel(full))
+}
+
 func abbrevDoctorName(full string) string {
 	parts := strings.Fields(strings.TrimSpace(full))
 	if len(parts) == 0 {
@@ -147,7 +151,7 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 			PatientID:        row.PatientID,
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
-			DoctorName:       abbrevDoctorName(row.DoctorName),
+			DoctorName:       displayDoctorName(row.DoctorName),
 			BranchID:         row.BranchID,
 			BranchCode:       row.BranchCode,
 			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
