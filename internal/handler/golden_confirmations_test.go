@@ -75,6 +75,24 @@ func TestGolden_Confirmations_PatientMismatch(t *testing.T) {
 	assertGolden(t, "confirmations_patient_mismatch", w.Body.Bytes())
 }
 
+func TestGolden_Confirmations_AlreadyAnswered(t *testing.T) {
+	h := ConfirmationsHandler{Svc: &fakeConfirmationsSvc{err: &confirmations.AlreadyAnsweredError{Record: confirmations.Record{
+		PlanningID: 11737097,
+		PatientID:  1587578,
+		Status:     "confirmed",
+		Source:     "max",
+		UpdatedAt:  time.Date(2026, 6, 23, 15, 0, 0, 0, time.UTC),
+	}}}}
+	body := `{"planning_id":11737097,"patient_id":1587578,"status":"declined","source":"max"}`
+	r := httptest.NewRequest(http.MethodPost, "/api/internal/confirmations", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	h.Upsert(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d", w.Code)
+	}
+	assertGolden(t, "confirmations_already_answered", w.Body.Bytes())
+}
+
 func Test__GenerateConfirmationsGolden(t *testing.T) {
 	if os.Getenv("UPDATE_GOLDEN") != "1" {
 		t.Skip("set UPDATE_GOLDEN=1 to (re)generate golden files")

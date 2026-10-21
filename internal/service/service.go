@@ -156,6 +156,10 @@ func (s *Services) RemindersDue(ctx context.Context, from, to time.Time, patient
 	return repo.DueReminders(ctx, s.MSSQL, from, to, patientIDs)
 }
 
+func (s *Services) NewBookings(ctx context.Context, since, now time.Time, patientIDs []int64) ([]repo.NewBooking, error) {
+	return repo.NewBookings(ctx, s.MSSQL, since, now, patientIDs)
+}
+
 func ParseDefaultModelsID(v string) int {
 	n, _ := strconv.Atoi(v)
 	return n

@@ -73,5 +73,36 @@ CREATE TABLE IF NOT EXISTS medialog_write_log (
 			return fmt.Errorf("migrate stmt %d: %w", i, err)
 		}
 	}
+	if err := ensureColumn(ctx, db, "appointment_confirmations", "appt_start", "TEXT"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureColumn(ctx context.Context, db *sql.DB, table, column, decl string) error {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("pragma %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
+	if err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
 	return nil
 }

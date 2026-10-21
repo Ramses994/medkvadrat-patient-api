@@ -8,12 +8,12 @@ import (
 )
 
 func (s *Services) UpsertConfirmation(ctx context.Context, planningID, patientID int64, status, source string) (confirmations.Record, error) {
-	ownerID, err := repo.PlanningPatientID(ctx, s.MSSQL, planningID)
+	appt, err := repo.PlanningAppointmentByID(ctx, s.MSSQL, planningID)
 	if err != nil {
 		return confirmations.Record{}, err
 	}
-	if ownerID != patientID {
+	if appt.PatientID != patientID {
 		return confirmations.Record{}, confirmations.ErrPatientMismatch
 	}
-	return confirmations.NewRepo(s.SQLite).Upsert(ctx, planningID, patientID, status, source)
+	return confirmations.NewRepo(s.SQLite).Upsert(ctx, planningID, patientID, status, source, appt.DateStart)
 }

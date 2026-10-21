@@ -65,7 +65,16 @@ func (h ConfirmationsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 
 	rec, err := h.Svc.UpsertConfirmation(r.Context(), req.PlanningID, req.PatientID, req.Status, source)
 	if err != nil {
+		var already *confirmations.AlreadyAnsweredError
 		switch {
+		case errors.As(err, &already):
+			response.ErrorWithData(w, http.StatusConflict, "ALREADY_ANSWERED", "Ответ уже получен", confirmationDTO{
+				PlanningID: already.Record.PlanningID,
+				PatientID:  already.Record.PatientID,
+				Status:     already.Record.Status,
+				Source:     already.Record.Source,
+				UpdatedAt:  already.Record.UpdatedAt.Format("2006-01-02T15:04:05"),
+			})
 		case errors.Is(err, confirmations.ErrAppointmentNotFound):
 			response.Error(w, http.StatusNotFound, "APPOINTMENT_NOT_FOUND", "Запись на приём не найдена")
 		case errors.Is(err, confirmations.ErrPatientMismatch):

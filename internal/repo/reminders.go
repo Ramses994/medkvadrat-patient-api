@@ -15,6 +15,7 @@ type DueReminder struct {
 	PatientPhone     string
 	PatientName      string
 	DoctorName       string
+	Specialty        string
 	BranchID         int
 	BranchCode       string
 	DateConsultation time.Time
@@ -24,13 +25,14 @@ type DueReminder struct {
 const mssqlReminderBoundLayout = "2006-01-02T15:04:05"
 const consultationWallClockLayout = "2006-01-02 15:04"
 
-const dueRemindersBaseSQL = `
+var dueRemindersBaseSQL = `
 SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
   ISNULL(ps.NAME,'') AS DOCTOR_NAME,
+` + specialtySelectSQL + ` AS SPECIALTY,
   ISNULL(o.FM_ORG_ID,0) AS BRANCH_ID,
   ISNULL(o.CODE,'')     AS BRANCH_CODE,
   CONVERT(varchar(16), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 120) AS DATE_CONSULTATION,
@@ -137,6 +139,7 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 			&r.PatientPhone,
 			&r.PatientName,
 			&r.DoctorName,
+			&r.Specialty,
 			&r.BranchID,
 			&r.BranchCode,
 			&dateConsStr,

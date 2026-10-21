@@ -10,10 +10,10 @@ func TestRepo_StatusByPlanningIDs(t *testing.T) {
 	r := NewRepo(db)
 	ctx := context.Background()
 
-	if _, err := r.Upsert(ctx, 10, 1, "confirmed", "max"); err != nil {
+	if _, err := r.Upsert(ctx, 10, 1, "confirmed", "max", "2026-06-26 19:30:00"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Upsert(ctx, 20, 2, "declined", "max"); err != nil {
+	if _, err := r.Upsert(ctx, 20, 2, "declined", "max", "2026-06-26 19:30:00"); err != nil {
 		t.Fatal(err)
 	}
 

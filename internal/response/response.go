@@ -31,8 +31,13 @@ func NoContent(w http.ResponseWriter) {
 }
 
 func Error(w http.ResponseWriter, status int, code, msg string) {
+	ErrorWithData(w, status, code, msg, nil)
+}
+
+func ErrorWithData(w http.ResponseWriter, status int, code, msg string, data interface{}) {
 	writeJSON(w, status, ResponseOK{
 		Success: false,
+		Data:    data,
 		Error:   msg,
 		ErrorDetails: &ErrorDetails{
 			Code:    code,

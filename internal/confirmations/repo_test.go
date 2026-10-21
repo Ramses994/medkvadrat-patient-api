@@ -22,27 +22,52 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func TestRepo_UpsertLastWriteWins(t *testing.T) {
+func TestRepo_FirstAnswerWinsUntilStartChanges(t *testing.T) {
 	db := openTestDB(t)
 	r := NewRepo(db)
 	ctx := context.Background()
 
-	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max")
+	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max", "2026-06-26 19:30:00")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Status != "confirmed" || rec.PlanningID != 100 {
-		t.Fatalf("first upsert: %+v", rec)
+	if rec.Status != "confirmed" {
+		t.Fatalf("%+v", rec)
 	}
 
-	rec2, err := r.Upsert(ctx, 100, 200, "declined", "max")
+	_, err = r.Upsert(ctx, 100, 200, "declined", "max", "2026-06-26 19:30:00")
+	var already *AlreadyAnsweredError
+	if !asAlready(err, &already) || already.Record.Status != "confirmed" {
+		t.Fatalf("repeat: %v", err)
+	}
+
+	rec2, err := r.Upsert(ctx, 100, 200, "reschedule", "max", "2026-06-27 10:00:00")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec2.Status != "declined" {
-		t.Fatalf("expected declined, got %q", rec2.Status)
+	if rec2.Status != "reschedule" || rec2.ApptStart != "2026-06-27 10:00:00" {
+		t.Fatalf("%+v", rec2)
 	}
-	if !rec2.UpdatedAt.Equal(rec.UpdatedAt) && !rec2.UpdatedAt.After(rec.UpdatedAt) {
-		t.Fatalf("updated_at should advance: %v vs %v", rec.UpdatedAt, rec2.UpdatedAt)
+}
+
+func TestRepo_NullStartBlocksRewrite(t *testing.T) {
+	db := openTestDB(t)
+	r := NewRepo(db)
+	ctx := context.Background()
+	if _, err := r.Upsert(ctx, 7, 1, "confirmed", "max", ""); err != nil {
+		t.Fatal(err)
 	}
+	_, err := r.Upsert(ctx, 7, 1, "declined", "max", "2026-06-26 19:30:00")
+	var already *AlreadyAnsweredError
+	if !asAlready(err, &already) || already.Record.Status != "confirmed" {
+		t.Fatalf("null start must block: %v", err)
+	}
+}
+
+func asAlready(err error, dest **AlreadyAnsweredError) bool {
+	aa, ok := err.(*AlreadyAnsweredError)
+	if ok {
+		*dest = aa
+	}
+	return ok
 }

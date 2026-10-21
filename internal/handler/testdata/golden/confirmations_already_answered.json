@@ -1,0 +1,1 @@
+{"success":false,"data":{"planning_id":11737097,"patient_id":1587578,"status":"confirmed","source":"max","updated_at":"2026-06-23T15:00:00"},"error":"Ответ уже получен","error_details":{"code":"ALREADY_ANSWERED","message":"Ответ уже получен"}}

@@ -24,6 +24,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WriteGuard: wg}
 	confirmationsH := handler.ConfirmationsHandler{Svc: svc, Logger: logger}
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
+	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger}
 	dashboardH := handler.DashboardHandler{Svc: svc, Logger: logger}
 
 	// Public
@@ -43,6 +44,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("/api/patients/lab-results", patientH.LabResults)
 	mux.HandleFunc("/api/patients/lab-panels", patientH.LabPanels)
 	mux.HandleFunc("GET /api/reminders/due", remindersH.Due)
+	mux.HandleFunc("GET /api/notifications/new-bookings", notificationsH.NewBookings)
 	mux.HandleFunc("GET /api/dashboard/schedule", dashboardH.Schedule)
 
 	// Patient JWT-protected (step 3)
