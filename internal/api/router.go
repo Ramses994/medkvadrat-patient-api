@@ -87,12 +87,16 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 		cidrNets, _ = middleware.ParseCIDRList([]string{"192.168.0.0/16", "127.0.0.1/32"})
 	}
 	cidr := middleware.AllowCIDRs{Nets: cidrNets}
+	dashReady := middleware.RequireDashboardConfig{
+		Password: cfg.Dashboard.Password,
+		Secret:   []byte(cfg.Dashboard.Secret),
+	}
 
 	auth := middleware.Auth{Token: cfg.APIToken}
 	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}
 	var base http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/dashboard") {
-			cidr.Wrap(mux).ServeHTTP(w, r)
+			dashReady.Wrap(cidr.Wrap(mux)).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/auth/") || r.URL.Path == "/api/health" {

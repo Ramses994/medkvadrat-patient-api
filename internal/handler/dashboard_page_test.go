@@ -13,7 +13,7 @@ func TestDashboardPage_ServesHTML(t *testing.T) {
 	h := DashboardPageHandler{
 		HTML:     web.DashboardHTML,
 		Password: "secret",
-		Secret:   []byte("test-secret-32-bytes-long!!!!!!"),
+		Secret:   []byte("0123456789abcdef0123456789abcdef"),
 	}
 	r := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
 	w := httptest.NewRecorder()
@@ -50,7 +50,7 @@ func TestDashboardPage_LoginSetsCookie(t *testing.T) {
 	h := DashboardPageHandler{
 		HTML:     []byte("x"),
 		Password: "secret",
-		Secret:   []byte("test-secret-32-bytes-long!!!!!!"),
+		Secret:   []byte("0123456789abcdef0123456789abcdef"),
 	}
 	r := httptest.NewRequest(http.MethodPost, "/dashboard/login", strings.NewReader("password=secret"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")

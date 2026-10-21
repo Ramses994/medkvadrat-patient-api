@@ -69,7 +69,7 @@ func DashboardPlanningRows(ctx context.Context, db *sql.DB, date time.Time) ([]D
 			return nil, fmt.Errorf("scan dashboard schedule: %w", err)
 		}
 		r.Time = normalizeHHMM(timeRaw)
-		r.DoctorName = SanitizeScheduleLabel(r.DoctorName)
+		r.DoctorName = trimDoctorName(r.DoctorName)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

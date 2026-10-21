@@ -101,7 +101,11 @@ type errValidation string
 func (e errValidation) Error() string { return string(e) }
 
 func displayDoctorName(full string) string {
-	return abbrevDoctorName(repo.SanitizeScheduleLabel(full))
+	full = strings.TrimSpace(full)
+	if full == "" {
+		return ""
+	}
+	return abbrevDoctorName(full)
 }
 
 func abbrevDoctorName(full string) string {

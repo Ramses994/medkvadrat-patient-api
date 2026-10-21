@@ -6,35 +6,64 @@ import (
 )
 
 func TestSignValid(t *testing.T) {
-	secret := []byte("test-secret-32-bytes-long!!!!!!")
+	secret := []byte("0123456789abcdef0123456789abcdef")
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	exp := now.Add(12 * time.Hour)
-	val := Sign(secret, exp)
-	if !Valid(secret, val, now) {
+	val, err := Sign(secret, exp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := Valid(secret, val, now)
+	if err != nil || !ok {
 		t.Fatal("expected valid")
 	}
-	if Valid(secret, val, exp.Add(time.Second)) {
+	ok, err = Valid(secret, val, exp.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
 		t.Fatal("expected expired")
 	}
 }
 
 func TestValidTampered(t *testing.T) {
-	secret := []byte("test-secret-32-bytes-long!!!!!!")
+	secret := []byte("0123456789abcdef0123456789abcdef")
 	now := time.Now().UTC()
-	val := Sign(secret, now.Add(time.Hour))
+	val, err := Sign(secret, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// flip last hex nibble
 	bad := val[:len(val)-1] + "0"
 	if bad == val {
 		bad = val[:len(val)-1] + "1"
 	}
-	if Valid(secret, bad, now) {
+	if ok, _ := Valid(secret, bad, now); ok {
 		t.Fatal("tampered cookie must fail")
 	}
-	if Valid([]byte("other-secret"), val, now) {
+	if ok, _ := Valid([]byte("fedcba9876543210fedcba9876543210"), val, now); ok {
 		t.Fatal("wrong secret must fail")
 	}
-	if Valid(secret, "not-a-cookie", now) {
+	if ok, _ := Valid(secret, "not-a-cookie", now); ok {
 		t.Fatal("garbage must fail")
+	}
+}
+
+func TestSignValid_WeakSecret(t *testing.T) {
+	now := time.Now().UTC()
+	if _, err := Sign(nil, now.Add(time.Hour)); err != ErrWeakSecret {
+		t.Fatalf("empty secret: %v", err)
+	}
+	if _, err := Sign([]byte("short"), now.Add(time.Hour)); err != ErrWeakSecret {
+		t.Fatalf("short secret: %v", err)
+	}
+	ok, err := Valid(nil, "1|ab", now)
+	if ok || err != ErrWeakSecret {
+		t.Fatalf("Valid empty secret ok=%v err=%v", ok, err)
+	}
+	ok, err = Valid([]byte("x"), "1|ab", now)
+	if ok || err != ErrWeakSecret {
+		t.Fatalf("Valid short secret ok=%v err=%v", ok, err)
 	}
 }
 

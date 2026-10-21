@@ -38,12 +38,17 @@ func (h DashboardPageHandler) now() time.Time {
 }
 
 func (h DashboardPageHandler) configured() bool {
-	return strings.TrimSpace(h.Password) != "" && len(h.Secret) > 0
+	return strings.TrimSpace(h.Password) != "" && !staffsession.WeakSecret(h.Secret)
+}
+
+func dashboardUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "Dashboard not configured", http.StatusServiceUnavailable)
 }
 
 func (h DashboardPageHandler) Page(w http.ResponseWriter, r *http.Request) {
 	if !h.configured() {
-		http.Error(w, "Dashboard not configured", http.StatusServiceUnavailable)
+		dashboardUnavailable(w)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -58,6 +63,7 @@ func (h DashboardPageHandler) LoginForm(w http.ResponseWriter, r *http.Request) 
 
 func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) {
 	if !h.configured() {
+		w.Header().Set("Cache-Control", "no-store")
 		http.Error(w, "Dashboard not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -89,9 +95,15 @@ func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) 
 		ttl = 12 * time.Hour
 	}
 	exp := h.now().Add(ttl)
+	cookieVal, err := staffsession.Sign(h.Secret, exp)
+	if err != nil {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "Dashboard not configured", http.StatusServiceUnavailable)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     staffsession.CookieName,
-		Value:    staffsession.Sign(h.Secret, exp),
+		Value:    cookieVal,
 		Path:     "/dashboard",
 		Expires:  exp,
 		MaxAge:   int(ttl.Seconds()),
@@ -117,7 +129,7 @@ func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 func (h DashboardPageHandler) writeLogin(w http.ResponseWriter, errMsg string) {
 	if !h.configured() {
-		http.Error(w, "Dashboard not configured", http.StatusServiceUnavailable)
+		dashboardUnavailable(w)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

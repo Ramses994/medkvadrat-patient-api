@@ -9,6 +9,40 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 )
 
+func staffNoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+}
+
+func staffError(w http.ResponseWriter, status int, code, msg string) {
+	staffNoStore(w)
+	response.Error(w, status, code, msg)
+}
+
+// RequireDashboardConfig rejects every /dashboard* route before cookies when
+// DASHBOARD_PASSWORD is empty or DASHBOARD_SECRET is shorter than 32 bytes.
+type RequireDashboardConfig struct {
+	Password string
+	Secret   []byte
+}
+
+func (d RequireDashboardConfig) Ready() bool {
+	return strings.TrimSpace(d.Password) != "" && !staffsession.WeakSecret(d.Secret)
+}
+
+func (d RequireDashboardConfig) Wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/dashboard") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !d.Ready() {
+			staffError(w, http.StatusServiceUnavailable, "DASHBOARD_NOT_CONFIGURED", "Дашборд не настроен")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RequireStaff checks the mk_staff session cookie.
 type RequireStaff struct {
 	Secret []byte
@@ -24,13 +58,21 @@ func (s RequireStaff) now() time.Time {
 
 func (s RequireStaff) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if staffsession.WeakSecret(s.Secret) {
+			staffError(w, http.StatusServiceUnavailable, "DASHBOARD_NOT_CONFIGURED", "Дашборд не настроен")
+			return
+		}
 		c, err := r.Cookie(staffsession.CookieName)
-		ok := err == nil && c != nil && staffsession.Valid(s.Secret, c.Value, s.now())
+		ok := false
+		if err == nil && c != nil {
+			ok, _ = staffsession.Valid(s.Secret, c.Value, s.now())
+		}
 		if !ok {
 			if strings.HasPrefix(r.URL.Path, "/dashboard/data") {
-				response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
+				staffError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
 				return
 			}
+			staffNoStore(w)
 			http.Redirect(w, r, "/dashboard/login", http.StatusFound)
 			return
 		}

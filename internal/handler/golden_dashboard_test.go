@@ -80,6 +80,9 @@ func TestGolden_Dashboard_Data_SameShapeAsSchedule(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Schedule(w, r)
 	assertGolden(t, "dashboard_schedule_ok", w.Body.Bytes())
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache-control=%q", w.Header().Get("Cache-Control"))
+	}
 }
 
 func TestGolden_Dashboard_Schedule_EmptyDay(t *testing.T) {

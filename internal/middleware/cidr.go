@@ -62,6 +62,7 @@ func (a AllowCIDRs) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := staffsession.ClientIP(r.RemoteAddr)
 		if !a.Allowed(ip) {
+			w.Header().Set("Cache-Control", "no-store")
 			response.Error(w, http.StatusForbidden, "FORBIDDEN", "Доступ запрещён")
 			return
 		}

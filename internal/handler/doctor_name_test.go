@@ -1,16 +1,12 @@
 package handler
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestDisplayDoctorName_StripsPhoneFromLine(t *testing.T) {
-	got := displayDoctorName("Иванов И.И. - 8-925-514-41-48")
-	if strings.ContainsAny(got, "0123456789") {
-		t.Fatalf("phone leaked in doctor_name: %q", got)
+func TestDisplayDoctorName_EmptyWhenNoDoctor(t *testing.T) {
+	if got := displayDoctorName(""); got != "" {
+		t.Fatalf("got %q", got)
 	}
-	if !strings.HasPrefix(got, "Иванов") {
+	if got := displayDoctorName("   "); got != "" {
 		t.Fatalf("got %q", got)
 	}
 }
