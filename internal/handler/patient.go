@@ -2,9 +2,12 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
@@ -29,7 +32,26 @@ type patientInfoDTO struct {
 }
 
 func (h PatientHandler) Search(w http.ResponseWriter, r *http.Request) {
-	phone := r.URL.Query().Get("phone")
+	phone := strings.TrimSpace(r.URL.Query().Get("phone"))
+	if r.Method == http.MethodPost {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "VALIDATION", "Некорректное тело запроса")
+			return
+		}
+		var req struct {
+			Phone string `json:"phone"`
+		}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				response.Error(w, http.StatusBadRequest, "VALIDATION", "Некорректный JSON")
+				return
+			}
+		}
+		if strings.TrimSpace(req.Phone) != "" {
+			phone = strings.TrimSpace(req.Phone)
+		}
+	}
 	if phone == "" {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "Параметр phone обязателен")
 		return

@@ -1,14 +1,14 @@
-# Integration tests (MSSQL)
+# Integration tests
 
-Tests are behind `//go:build integration` so `go test ./...` does not run them.
+Только чтение. Запускает **владелец** под `svc_patient_api_ro`. Агент к боевому Медиалогу не подключается.
 
-```bash
-# Against dev (or any) Medialog; leaves one booked slot — use a test stand only.
-set INTEGRATION_MSSQL=1
-# DB_* and API_TOKEN as in your .env
-go test -tags=integration -v ./internal/integration/...
+`notify_queries_test.go` (тег `integration`) вызывает `DueReminders`, `NewBookings` (курсор «сейчас минус 30 дней»), чтение одной записи `BookingByPlanningID` и `DashboardPlanningRows` для `patient_ids=1,1587578`. Проверяет отсутствие ошибки и что SQL без `INSERT|UPDATE|DELETE|MERGE|EXEC`. Данные (ПДн) в вывод не печатаются.
+
+```text
+set INTEGRATION_NOTIFY_QUERIES=1
+go test -tags=integration ./internal/integration -run TestNotifyQueries_ReadOnlyLive -count=1
 ```
 
-For CI, you can add a job with `-tags=integration` and DB secrets, or start SQL Server in Docker and load a minimal Medialog (usually not worth it; prefer dev-MSSQL).
+Нужны переменные подключения RO (`DB_SERVER`, `DB_NAME`, `DB_USER=svc_patient_api_ro`, `DB_PASSWORD`) в окружении или `.env`.
 
-Reference image: `mcr.microsoft.com/mssql/server:2022-latest`.
+Старый `booking_concurrency_test.go` не используется для записи.

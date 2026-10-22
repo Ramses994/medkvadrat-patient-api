@@ -20,8 +20,8 @@ func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, phoneLast10 string
 			PATIENTS_ID,
 			ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
 			ISNULL(EMAIL,'') AS EMAIL,
-			ISNULL(NOT_SEND_MAILING_SMS,0) AS NOT_SEND_MAILING_SMS,
-			ISNULL(SEND_AUTO_EMAIL,0) AS SEND_AUTO_EMAIL
+			CAST(ISNULL(NOT_SEND_MAILING_SMS,0) AS int) AS NOT_SEND_MAILING_SMS,
+			CAST(ISNULL(SEND_AUTO_EMAIL,0) AS int) AS SEND_AUTO_EMAIL
 		FROM PATIENTS
 		WHERE REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(MOBIL_TELEFON,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
 		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
@@ -36,12 +36,12 @@ func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, phoneLast10 string
 	var out []OTPPatient
 	for rows.Next() {
 		var p OTPPatient
-		var notSend, sendAuto bool
+		var notSend, sendAuto bitInt
 		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Email, &notSend, &sendAuto); err != nil {
 			return nil, fmt.Errorf("scan otp patients: %w", err)
 		}
-		p.NotSendMailingSMS = notSend
-		p.SendAutoEmail = sendAuto
+		p.NotSendMailingSMS = notSend != 0
+		p.SendAutoEmail = sendAuto != 0
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {

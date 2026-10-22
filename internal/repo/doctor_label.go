@@ -1,12 +1,9 @@
 package repo
 
-import (
-	"strings"
-)
+import "strings"
 
-// doctorNameSelectSQL is the display name for a schedule line (SQL Server 2008).
-// If the line has a doctor (PL_SUBJ.MEDECINS_ID): MEDECINS.NOM + PRENOM.
-// Otherwise empty — never send PL_SUBJ.NAME (it can contain phones and notes).
+// doctorNameSelectSQL is MEDECINS.NOM + PRENOM when the line has a doctor.
+// Otherwise empty — never PL_SUBJ.NAME (phones and notes live there).
 const doctorNameSelectSQL = `
 LTRIM(RTRIM(CASE
   WHEN ps.MEDECINS_ID IS NOT NULL THEN ISNULL((

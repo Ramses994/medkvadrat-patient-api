@@ -7,11 +7,11 @@ import (
 
 func TestBuildDashboardSchedule_OrderAndOverlay(t *testing.T) {
 	rows := []DashboardPlanningRow{
-		{PlanningID: 1, PatientName: "Иванов", DoctorName: "Доктор", BranchID: 3, BranchCode: "Куркино", Time: "10:00", Status: 0},
-		{PlanningID: 2, PatientName: "Петров", DoctorName: "Врач", BranchID: 106, BranchCode: "Каширка", Time: "09:00", Status: 0},
-		{PlanningID: 3, PatientName: "Сидоров", DoctorName: "Эксперт", BranchID: 496, BranchCode: "Куркино 2 (взр.)", Time: "11:30", Status: 1},
+		{PlanningID: 1, PatientName: "Иванов", DoctorName: "Доктор", BranchID: 3, BranchCode: "Куркино", Time: "10:00", Status: 0, ApptVersion: "v1"},
+		{PlanningID: 2, PatientName: "Петров", DoctorName: "Врач", BranchID: 106, BranchCode: "Каширка", Time: "09:00", Status: 0, ApptVersion: "v1"},
+		{PlanningID: 3, PatientName: "Сидоров", DoctorName: "Эксперт", BranchID: 496, BranchCode: "Куркино 2 (взр.)", Time: "11:30", Status: 1, ApptVersion: "v1"},
 	}
-	overlay := map[int64]string{1: "confirmed", 3: "declined"}
+	overlay := map[int64]ConfirmationOverlay{1: {Status: "confirmed", Version: "v1"}, 3: {Status: "declined", Version: "v1"}}
 
 	got := BuildDashboardSchedule(time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC), rows, overlay)
 
@@ -45,6 +45,21 @@ func TestBuildDashboardSchedule_OrderAndOverlay(t *testing.T) {
 	}
 }
 
+func TestBuildDashboardSchedule_StaleVersion(t *testing.T) {
+	rows := []DashboardPlanningRow{
+		{PlanningID: 1, PatientName: "Иванов", BranchID: 106, BranchCode: "Каширка", Time: "09:00", ApptVersion: "new"},
+	}
+	overlay := map[int64]ConfirmationOverlay{1: {Status: "confirmed", Version: "old"}}
+	got := BuildDashboardSchedule(time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC), rows, overlay)
+	appt := got.Branches[0].Appointments[0]
+	if appt.Confirmation != nil {
+		t.Fatal("stale confirmation must not be shown as current")
+	}
+	if appt.ConfirmationHint != ConfirmationUnknownVersionHint {
+		t.Fatalf("hint=%q", appt.ConfirmationHint)
+	}
+}
+
 func TestBuildDashboardSchedule_EmptyDay(t *testing.T) {
 	got := BuildDashboardSchedule(time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC), nil, nil)
 	if len(got.Branches) != 3 {
@@ -57,6 +72,46 @@ func TestBuildDashboardSchedule_EmptyDay(t *testing.T) {
 		if b.Name == "" {
 			t.Fatalf("branch %d missing name", b.BranchID)
 		}
+	}
+}
+
+func TestBuildDashboardSchedule_EmptyVersionIsGray(t *testing.T) {
+	rows := []DashboardPlanningRow{
+		{PlanningID: 1, PatientName: "Иванов", BranchID: 106, BranchCode: "Каширка", Time: "09:00", ApptVersion: "new"},
+	}
+	overlay := map[int64]ConfirmationOverlay{1: {Status: "confirmed", Version: ""}}
+	got := BuildDashboardSchedule(time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC), rows, overlay)
+	appt := got.Branches[0].Appointments[0]
+	if appt.Confirmation != nil {
+		t.Fatal("unknown version must not apply confirmation")
+	}
+	if appt.ConfirmationHint != ConfirmationUnknownVersionHint {
+		t.Fatalf("hint=%q", appt.ConfirmationHint)
+	}
+	counts := DashboardConfirmationCounts(got.Branches)
+	if counts["confirmed"] != 0 || counts["pending"] != 0 {
+		t.Fatalf("gray answer must not enter придёт/не придёт counters: %v", counts)
+	}
+}
+
+func TestDashboardConfirmationCountsSkipWaitlist(t *testing.T) {
+	rows := []DashboardPlanningRow{
+		{PlanningID: 1, PatientName: "A", BranchID: 106, BranchCode: "Каширка", Time: "09:00", ApptVersion: "v1"},
+		{PlanningID: 2, PatientName: "B", BranchID: 106, BranchCode: "Каширка", Time: "09:10", IsWaitlist: true, ApptVersion: "v1"},
+		{PlanningID: 3, PatientName: "C", BranchID: 106, BranchCode: "Каширка", Time: "09:20", ApptVersion: "v1"},
+	}
+	overlay := map[int64]ConfirmationOverlay{
+		1: {Status: "confirmed", Version: "v1"},
+		2: {Status: "confirmed", Version: "v1"},
+		3: {Status: "declined", Version: "v1"},
+	}
+	got := BuildDashboardSchedule(time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC), rows, overlay)
+	if !got.Branches[0].Appointments[1].IsWaitlist {
+		t.Fatal("waitlist flag must be copied")
+	}
+	counts := DashboardConfirmationCounts(got.Branches)
+	if counts["confirmed"] != 1 || counts["declined"] != 1 || counts["pending"] != 0 {
+		t.Fatalf("counts=%v (waitlist must not increment придёт/не придёт/нет ответа)", counts)
 	}
 }
 

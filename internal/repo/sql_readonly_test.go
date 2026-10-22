@@ -35,6 +35,9 @@ func TestReadRepoSQL_NoExecOrDbFunctions(t *testing.T) {
 		if reExec.MatchString(src) || reFn.MatchString(src) {
 			t.Errorf("%s: read repo must not contain EXEC or dbo.fn/Get", path)
 		}
+		if !exclude[base] && SQLLooksMutating(src) && (base == "reminders.go" || base == "new_bookings.go" || base == "dashboard_schedule.go" || base == "planning_owner.go") {
+			t.Errorf("%s: notify/dashboard SQL must not contain INSERT|UPDATE|DELETE|MERGE|EXEC", path)
+		}
 		return nil
 	})
 	if err != nil {

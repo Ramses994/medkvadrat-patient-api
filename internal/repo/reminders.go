@@ -15,6 +15,11 @@ type DueReminder struct {
 	PatientPhone     string
 	PatientName      string
 	DoctorName       string
+	Service          string
+	IsWaitlist       bool
+	NoSMSNotify      bool
+	MessengerNotify  *int // 1 / 0 / nil (no questionnaire)
+	ApptVersion      string
 	BranchID         int
 	BranchCode       string
 	DateConsultation time.Time
@@ -24,20 +29,30 @@ type DueReminder struct {
 const mssqlReminderBoundLayout = "2006-01-02T15:04:05"
 const consultationWallClockLayout = "2006-01-02 15:04"
 
-const dueRemindersBaseSQL = `
+func dueRemindersBaseSQL(waitlistIDs []int64) (string, []any) {
+	examSQL, examArgs := examSelectSQL(waitlistIDs)
+	q := `
 SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
-  ISNULL(ps.NAME,'') AS DOCTOR_NAME,
+` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
+` + examSQL + `,
+  CAST(ISNULL(ex.NO_SMS_NOTIFY, 0) AS int) AS NO_SMS_NOTIFY,
+  CAST(r.MESSENGER_NOTIFY AS int) AS MESSENGER_NOTIFY,
+  ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
+  ISNULL(p.PL_EXAM_ID, 0) AS PL_EXAM_ID,
+  CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START_FULL,
   ISNULL(o.FM_ORG_ID,0) AS BRANCH_ID,
   ISNULL(o.CODE,'')     AS BRANCH_CODE,
   CONVERT(varchar(16), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 120) AS DATE_CONSULTATION,
-  ISNULL(p.STATUS,-1) AS STATUS
+  CAST(ISNULL(p.STATUS,-1) AS int) AS STATUS
 FROM PLANNING p
 JOIN PATIENTS pt ON pt.PATIENTS_ID = p.PATIENTS_ID
 JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
+LEFT JOIN PL_EXAM ex ON ex.PL_EXAM_ID = p.PL_EXAM_ID
+LEFT JOIN DATA_W3_RASSYLKA r ON r.PATIENTS_ID = p.PATIENTS_ID
 LEFT JOIN FM_ORG o ON o.FM_ORG_ID = ps.FM_INTORG_ID
 WHERE p.PATIENTS_ID IS NOT NULL
   AND ISNULL(p.CANCELLED,0) = 0
@@ -45,6 +60,8 @@ WHERE p.PATIENTS_ID IS NOT NULL
   AND p.DATE_CONS <= CAST(@to AS date)
   AND DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS) >= @from
   AND DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS) <= @to`
+	return q, examArgs
+}
 
 // ParseConsultationWallClock parses MSSQL CONVERT(varchar(16), …, 120) as MSK wall-clock.
 func ParseConsultationWallClock(s string) (time.Time, error) {
@@ -106,19 +123,21 @@ func patientFilterClause(patientIDs []int64) (string, []any) {
 	return b.String(), args
 }
 
-func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time, patientIDs []int64) ([]DueReminder, error) {
+func DueReminders(ctx context.Context, db *sql.DB, from, to time.Time, patientIDs, waitlistIDs []int64) ([]DueReminder, error) {
 	loc := moscowLocation()
 	fromBound := from.In(loc).Format(mssqlReminderBoundLayout)
 	toBound := to.In(loc).Format(mssqlReminderBoundLayout)
 
+	baseSQL, examArgs := dueRemindersBaseSQL(waitlistIDs)
 	filterSQL, filterArgs := patientFilterClause(patientIDs)
-	query := dueRemindersBaseSQL + filterSQL + `
+	query := baseSQL + filterSQL + `
 ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 
 	args := []any{
 		sql.Named("from", fromBound),
 		sql.Named("to", toBound),
 	}
+	args = append(args, examArgs...)
 	args = append(args, filterArgs...)
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -130,17 +149,28 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 	var out []DueReminder
 	for rows.Next() {
 		var r DueReminder
-		var dateConsStr string
+		var dateConsStr, webName, examName, dateStart string
+		var isWaitlist, noSMS, status bitInt
+		var notify nullBitInt
+		var plSubj, plExam int64
 		if err := rows.Scan(
 			&r.PlanningID,
 			&r.PatientID,
 			&r.PatientPhone,
 			&r.PatientName,
 			&r.DoctorName,
+			&webName,
+			&examName,
+			&isWaitlist,
+			&noSMS,
+			&notify,
+			&plSubj,
+			&plExam,
+			&dateStart,
 			&r.BranchID,
 			&r.BranchCode,
 			&dateConsStr,
-			&r.Status,
+			&status,
 		); err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
@@ -148,12 +178,29 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 		if err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
+		r.Status = int(status)
+		fillReminderDerived(&r, webName, examName, int(isWaitlist), int(noSMS), notify, plSubj, plExam, dateStart)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows due reminders: %w", err)
 	}
 	return out, nil
+}
+
+func fillReminderDerived(r *DueReminder, webName, examName string, isWaitlist, noSMS int, notify nullBitInt, plSubj, plExam int64, dateStart string) {
+	r.DoctorName = trimDoctorName(r.DoctorName)
+	r.Service = DisplayService(webName, examName)
+	r.IsWaitlist = isWaitlist != 0
+	r.NoSMSNotify = noSMS != 0
+	if notify.Valid {
+		v := notify.Int
+		if v != 0 {
+			v = 1
+		}
+		r.MessengerNotify = &v
+	}
+	r.ApptVersion = ApptVersion(dateStart, plSubj, plExam)
 }
 
 func moscowLocation() *time.Location {
