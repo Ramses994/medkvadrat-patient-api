@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/poll"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 )
 
@@ -27,6 +29,9 @@ func main() {
 	}
 
 	logger := logging.New(cfg.LogLevel)
+	if strings.TrimSpace(cfg.Dashboard.Password) == "" || staffsession.WeakSecret([]byte(cfg.Dashboard.Secret)) {
+		logger.Warn("WARNING: dashboard disabled — DASHBOARD_PASSWORD empty or DASHBOARD_SECRET shorter than 32 bytes")
+	}
 
 	mssql, err := db.OpenMSSQL(cfg.MSSQL)
 	if err != nil {

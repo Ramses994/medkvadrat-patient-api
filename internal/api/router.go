@@ -8,7 +8,9 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/handler"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/ratelimit"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
+	"github.com/medkvadrat/medkvadrat-patient-api/web"
 )
 
 func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) http.Handler {
@@ -26,6 +28,15 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
 	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger}
 	dashboardH := handler.DashboardHandler{Svc: svc, Logger: logger}
+	dashboardPageH := handler.DashboardPageHandler{
+		HTML:         web.DashboardHTML,
+		Password:     cfg.Dashboard.Password,
+		Secret:       []byte(cfg.Dashboard.Secret),
+		SessionTTL:   cfg.Dashboard.SessionTTL,
+		CookieSecure: cfg.Dashboard.CookieSecure,
+		RateLimit:    ratelimit.NewStore(svc.SQLite),
+		Logger:       logger,
+	}
 
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
@@ -62,9 +73,35 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	// Server-to-server (API_TOKEN), same as /api/reminders/due
 	mux.HandleFunc("POST /api/internal/confirmations", confirmationsH.Upsert)
 
+	// Staff dashboard (session cookie; not API_TOKEN)
+	mux.HandleFunc("GET /dashboard/login", dashboardPageH.LoginForm)
+	mux.HandleFunc("POST /dashboard/login", dashboardPageH.LoginPost)
+	mux.HandleFunc("POST /dashboard/logout", dashboardPageH.Logout)
+
+	staff := middleware.RequireStaff{Secret: []byte(cfg.Dashboard.Secret)}
+	mux.Handle("GET /dashboard", staff.Wrap(http.HandlerFunc(dashboardPageH.Page)))
+	mux.Handle("GET /dashboard/data", staff.Wrap(http.HandlerFunc(dashboardH.Schedule)))
+
+	cidrNets, err := middleware.ParseCIDRList(cfg.Dashboard.AllowedCIDRs)
+	if err != nil || len(cidrNets) == 0 {
+		if err != nil {
+			logger.Error("invalid DASHBOARD_ALLOWED_CIDRS, using defaults", "err", err)
+		}
+		cidrNets, _ = middleware.ParseCIDRList([]string{"192.168.0.0/16", "127.0.0.1/32"})
+	}
+	cidr := middleware.AllowCIDRs{Nets: cidrNets}
+	dashReady := middleware.RequireDashboardConfig{
+		Password: cfg.Dashboard.Password,
+		Secret:   []byte(cfg.Dashboard.Secret),
+	}
+
 	auth := middleware.Auth{Token: cfg.APIToken}
 	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}
 	var base http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/dashboard") {
+			dashReady.Wrap(cidr.Wrap(mux)).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/auth/") || r.URL.Path == "/api/health" {
 			mux.ServeHTTP(w, r)
 			return
