@@ -21,20 +21,35 @@ type Record struct {
 }
 
 type Repo struct {
-	db *sql.DB
+	db  *sql.DB
+	Now func() time.Time
 }
 
 func NewRepo(db *sql.DB) *Repo {
 	return &Repo{db: db}
 }
 
+func (r *Repo) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
 // Upsert stores the first answer for a planning_id atomically.
 // A later row is written only when appt_version differs (reschedule / line / exam change).
-func (r *Repo) Upsert(ctx context.Context, planningID, patientID int64, status, source, apptStart, apptVersion string) (Record, error) {
+// declined/reschedule winners also insert waitlist in the same SQLite transaction.
+func (r *Repo) Upsert(ctx context.Context, planningID, patientID int64, status, source, apptStart, apptVersion string, branchID int) (Record, error) {
 	if source == "" {
 		source = defaultSource
 	}
 	status = NormalizeStatus(status)
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Record{}, fmt.Errorf("begin confirmation tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 
 	const q = `
 INSERT INTO appointment_confirmations (planning_id, status, source, patient_id, appt_version, appt_start, updated_at)
@@ -53,10 +68,13 @@ RETURNING planning_id, status, source, patient_id, appt_start, appt_version, upd
 	var rec Record
 	var start, ver sql.NullString
 	var updatedAt string
-	err := r.db.QueryRowContext(ctx, q, planningID, status, source, patientID, nullIfEmpty(apptVersion), nullIfEmpty(apptStart)).Scan(
+	err = tx.QueryRowContext(ctx, q, planningID, status, source, patientID, nullIfEmpty(apptVersion), nullIfEmpty(apptStart)).Scan(
 		&rec.PlanningID, &rec.Status, &rec.Source, &rec.PatientID, &start, &ver, &updatedAt,
 	)
 	if err == sql.ErrNoRows {
+		if rbErr := tx.Rollback(); rbErr != nil {
+			return Record{}, rbErr
+		}
 		existing, getErr := r.get(ctx, planningID)
 		if getErr != nil {
 			return Record{}, getErr
@@ -77,6 +95,30 @@ RETURNING planning_id, status, source, patient_id, appt_start, appt_version, upd
 		return Record{}, err
 	}
 	rec.UpdatedAt = t
+
+	if reason, ok := waitlistReason(status); ok {
+		now := r.now()
+		wl := WaitlistRow{
+			PlanningID:   planningID,
+			PatientID:    patientID,
+			ApptVersion:  apptVersion,
+			ApptStart:    apptStart,
+			Reason:       reason,
+			Source:       source,
+			Status:       WaitlistStatusNew,
+			CreatedAt:    FormatWaitlistUTC(now),
+			UpdatedAt:    FormatWaitlistUTC(now),
+			CreatedAtMSK: FormatWaitlistMSK(now),
+			BranchID:     branchID,
+		}
+		if err := insertWaitlistTx(ctx, tx, wl); err != nil {
+			return Record{}, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Record{}, fmt.Errorf("commit confirmation: %w", err)
+	}
 	return rec, nil
 }
 

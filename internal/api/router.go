@@ -28,6 +28,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
 	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger}
 	dashboardH := handler.DashboardHandler{Svc: svc, Logger: logger}
+	waitlistH := handler.WaitlistHandler{Svc: svc, Logger: logger}
 	dashboardPageH := handler.DashboardPageHandler{
 		HTML:         web.DashboardHTML,
 		Password:     cfg.Dashboard.Password,
@@ -81,6 +82,8 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	staff := middleware.RequireStaff{Secret: []byte(cfg.Dashboard.Secret)}
 	mux.Handle("GET /dashboard", staff.Wrap(http.HandlerFunc(dashboardPageH.Page)))
 	mux.Handle("GET /dashboard/data", staff.Wrap(http.HandlerFunc(dashboardH.Schedule)))
+	mux.Handle("GET /dashboard/waitlist", staff.Wrap(http.HandlerFunc(waitlistH.List)))
+	mux.Handle("POST /dashboard/waitlist/{id}", staff.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(waitlistH.Update))))
 
 	cidrNets, err := middleware.ParseCIDRList(cfg.Dashboard.AllowedCIDRs)
 	if err != nil || len(cidrNets) == 0 {

@@ -122,6 +122,7 @@ type DashboardAppointment struct {
 	Confirmation     *string
 	ConfirmationHint string
 	IsWaitlist       bool
+	OnWaitlist       bool
 }
 
 type ConfirmationOverlay struct {
