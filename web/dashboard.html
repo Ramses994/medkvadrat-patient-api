@@ -529,7 +529,7 @@ function renderWaitlistRow(it) {
     a.textContent = it.patient_phone;
     patient.appendChild(a);
   }
-  if (it.patient_birth) patient.appendChild(el('div', '', it.patient_birth));
+  patient.appendChild(el('div', '', it.patient_birth || '—'));
   tr.appendChild(patient);
 
   const orig = el('td');
@@ -594,6 +594,17 @@ async function saveWaitlist(id, status, outcome) {
     });
     if (res.status === 401 || res.status === 403) {
       window.location.href = '/dashboard/login';
+      return;
+    }
+    if (res.status === 409) {
+      let msg = 'Заявку уже обновил другой сотрудник — обновите страницу';
+      try {
+        const body = await res.json();
+        if (body.error_details && body.error_details.message) msg = body.error_details.message;
+        else if (body.error) msg = body.error;
+      } catch (e) {}
+      showBanner(msg);
+      await loadWaitlist();
       return;
     }
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);

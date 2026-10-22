@@ -133,6 +133,8 @@ func (h WaitlistHandler) Update(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, confirmations.ErrWaitlistNotFound):
 			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Строка листа не найдена")
+		case errors.Is(err, confirmations.ErrWaitlistChanged):
+			response.Error(w, http.StatusConflict, "WAITLIST_CHANGED", "Заявку уже обновил другой сотрудник — обновите страницу")
 		case errors.Is(err, confirmations.ErrInvalidWaitlistTransition):
 			response.Error(w, http.StatusUnprocessableEntity, "INVALID_TRANSITION", "Недопустимый переход статуса")
 		case errors.Is(err, confirmations.ErrUnknownWaitlistOutcome):

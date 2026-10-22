@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,24 @@ func TestGolden_Waitlist_List_OK(t *testing.T) {
 	assertGolden(t, "waitlist_ok", w.Body.Bytes())
 	if w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("cache-control=%q", w.Header().Get("Cache-Control"))
+	}
+}
+
+func TestWaitlist_Update_409Changed(t *testing.T) {
+	h := WaitlistHandler{Svc: &fakeWaitlistSvc{err: confirmations.ErrWaitlistChanged}}
+	body := `{"status":"closed","outcome":"refused"}`
+	r := httptest.NewRequest(http.MethodPost, "/dashboard/waitlist/1", bytes.NewBufferString(body))
+	r.SetPathValue("id", "1")
+	w := httptest.NewRecorder()
+	h.Update(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "WAITLIST_CHANGED") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("no-store")
 	}
 }
 

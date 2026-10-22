@@ -23,6 +23,8 @@ type Record struct {
 type Repo struct {
 	db  *sql.DB
 	Now func() time.Time
+	// AfterWaitlistRead is a test hook so concurrent updates can both observe the same status.
+	AfterWaitlistRead func()
 }
 
 func NewRepo(db *sql.DB) *Repo {

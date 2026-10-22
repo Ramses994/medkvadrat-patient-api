@@ -29,6 +29,7 @@ var allowedOutcomes = map[string]struct{}{
 var ErrInvalidWaitlistTransition = errors.New("INVALID_WAITLIST_TRANSITION")
 var ErrUnknownWaitlistOutcome = errors.New("UNKNOWN_WAITLIST_OUTCOME")
 var ErrWaitlistNotFound = errors.New("WAITLIST_NOT_FOUND")
+var ErrWaitlistChanged = errors.New("WAITLIST_CHANGED")
 
 // DashboardItem is a waitlist row plus Medialog fields for the staff page.
 type DashboardItem struct {
@@ -240,16 +241,30 @@ func (r *Repo) UpdateWaitlist(ctx context.Context, id int64, status, outcome, up
 	if err != nil {
 		return WaitlistRow{}, err
 	}
+	if r.AfterWaitlistRead != nil {
+		r.AfterWaitlistRead()
+	}
 	if !waitlistTransitionOK(row.Status, status) {
 		return WaitlistRow{}, ErrInvalidWaitlistTransition
 	}
 
 	updated := FormatWaitlistUTC(now)
-	_, err = r.db.ExecContext(ctx, `
-UPDATE waitlist SET status = ?, outcome = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
-		status, outcome, updated, updatedBy, id)
+	res, err := r.db.ExecContext(ctx, `
+UPDATE waitlist SET status = ?, outcome = ?, updated_at = ?, updated_by = ?
+WHERE id = ? AND status = ?`,
+		status, outcome, updated, updatedBy, id, row.Status)
 	if err != nil {
 		return WaitlistRow{}, fmt.Errorf("update waitlist: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return WaitlistRow{}, err
+	}
+	if n == 0 {
+		if _, getErr := r.getWaitlist(ctx, id); getErr != nil {
+			return WaitlistRow{}, getErr
+		}
+		return WaitlistRow{}, ErrWaitlistChanged
 	}
 	row.Status = status
 	row.Outcome = outcome

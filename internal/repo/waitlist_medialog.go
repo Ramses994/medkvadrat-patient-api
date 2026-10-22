@@ -60,7 +60,7 @@ SELECT
   p.PATIENTS_ID,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS PATIENT_NAME,
   ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))) AS PHONE,
-  CONVERT(varchar(10), pt.DATENAISS, 23) AS DOB,
+  ISNULL(CONVERT(varchar(10), pt.NE_LE, 23), '') AS DOB,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START,
   CAST(ISNULL(p.CANCELLED,0) AS int) AS CANCELLED,
   CAST(ISNULL(p.STATUS,0) AS int) AS STATUS,
@@ -92,7 +92,7 @@ LEFT JOIN PL_EXAM ex ON ex.PL_EXAM_ID = p.PL_EXAM_ID
 WHERE p.PATIENTS_ID IN (` + inSQL + `)
   AND ISNULL(p.CANCELLED,0) = 0
   AND ISNULL(p.STATUS,0) = 0
-  AND p.DATE_START > @now
+  AND p.DATE_START > CONVERT(datetime, @now, 126)
 ORDER BY p.DATE_START, p.PLANNING_ID`
 	args := append(inArgs, examArgs...)
 	return q, args
@@ -112,19 +112,24 @@ func WaitlistOriginals(ctx context.Context, db *sql.DB, planningIDs []int64, wai
 	defer rs.Close()
 	for rs.Next() {
 		var row WaitlistPlanningLive
-		var webName, examName string
 		var cancelled, status, isWL bitInt
+		var name, phone, dob, dateStart, doctor sql.NullString
+		var webName, examName sql.NullString
 		if err := rs.Scan(
-			&row.PlanningID, &row.PatientID, &row.PatientName, &row.Phone, &row.BirthDate,
-			&row.DateStart, &cancelled, &status, &row.BranchID, &row.DoctorName,
+			&row.PlanningID, &row.PatientID, &name, &phone, &dob,
+			&dateStart, &cancelled, &status, &row.BranchID, &doctor,
 			&webName, &examName, &isWL,
 		); err != nil {
 			return nil, err
 		}
+		row.PatientName = name.String
+		row.Phone = phone.String
+		row.BirthDate = dob.String
+		row.DateStart = dateStart.String
 		row.Cancelled = int(cancelled)
 		row.Status = int(status)
-		row.DoctorName = trimDoctorName(row.DoctorName)
-		row.Service = DisplayService(webName, examName)
+		row.DoctorName = trimDoctorName(doctor.String)
+		row.Service = DisplayService(webName.String, examName.String)
 		row.IsWaitlist = isWL != 0
 		out[row.PlanningID] = row
 	}
@@ -137,7 +142,7 @@ func WaitlistFutures(ctx context.Context, db *sql.DB, patientIDs []int64, now ti
 		return nil, nil
 	}
 	q, args := waitlistFutureSQL(patientIDs, waitlistIDs)
-	args = append(args, sql.Named("now", now))
+	args = append(args, sql.Named("now", waitlistNowBound(now)))
 	rs, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("waitlist futures: %w", err)
@@ -146,20 +151,26 @@ func WaitlistFutures(ctx context.Context, db *sql.DB, patientIDs []int64, now ti
 	var out []WaitlistFutureVisit
 	for rs.Next() {
 		var row WaitlistFutureVisit
-		var webName, examName string
 		var isWL bitInt
+		var created, dateStart, doctor, webName, examName sql.NullString
 		if err := rs.Scan(
-			&row.PlanningID, &row.PatientID, &row.CreatedAt, &row.DateStart,
-			&row.DoctorName, &webName, &examName, &isWL,
+			&row.PlanningID, &row.PatientID, &created, &dateStart,
+			&doctor, &webName, &examName, &isWL,
 		); err != nil {
 			return nil, err
 		}
-		row.DoctorName = trimDoctorName(row.DoctorName)
-		row.Service = DisplayService(webName, examName)
+		row.CreatedAt = created.String
+		row.DateStart = dateStart.String
+		row.DoctorName = trimDoctorName(doctor.String)
+		row.Service = DisplayService(webName.String, examName.String)
 		row.IsWaitlist = isWL != 0
 		out = append(out, row)
 	}
 	return out, rs.Err()
+}
+
+func waitlistNowBound(now time.Time) string {
+	return now.In(moscowLocation()).Format(mssqlReminderBoundLayout)
 }
 
 func PickNewerFuture(createdAtMSK string, futures []WaitlistFutureVisit, patientID int64) *WaitlistFutureVisit {
