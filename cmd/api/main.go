@@ -54,6 +54,12 @@ func main() {
 		logger.Error("sqlite migrate failed", "err", err)
 		os.Exit(1)
 	}
+	if n, err := store.PurgeClosedWaitlist(ctxBackground(), sqlite, time.Now().UTC()); err != nil {
+		logger.Error("waitlist purge failed", "err", err)
+		os.Exit(1)
+	} else if n > 0 {
+		logger.Info("waitlist purged", "count", n)
+	}
 
 	repos := repo.New(mssql)
 	defaultModelsID := service.ParseDefaultModelsID(os.Getenv("DEFAULT_MODELS_ID"))
@@ -82,6 +88,24 @@ func main() {
 	} else {
 		logger.Info("motconsu poller disabled")
 	}
+
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				n, err := store.PurgeClosedWaitlist(context.Background(), sqlite, time.Now().UTC())
+				if err != nil {
+					logger.Error("waitlist daily purge failed", "err", err)
+					continue
+				}
+				logger.Info("waitlist purged", "count", n)
+			}
+		}
+	}()
 
 	go func() {
 		logger.Info("http server starting", "addr", cfg.HTTP.ListenAddr)
