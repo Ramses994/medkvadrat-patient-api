@@ -23,18 +23,20 @@ type DashboardHandler struct {
 }
 
 type dashboardAppointmentDTO struct {
-	PlanningID   int64   `json:"planning_id"`
-	Time         string  `json:"time"`
-	PatientName  string  `json:"patient_name"`
-	DoctorName   string  `json:"doctor_name"`
-	Status       int     `json:"status"`
-	Confirmation *string `json:"confirmation"`
+	PlanningID       int64   `json:"planning_id"`
+	Time             string  `json:"time"`
+	PatientName      string  `json:"patient_name"`
+	DoctorName       string  `json:"doctor_name"`
+	Status           int     `json:"status"`
+	Confirmation     *string `json:"confirmation"`
+	ConfirmationHint string  `json:"confirmation_hint,omitempty"`
+	IsWaitlist       bool    `json:"is_waitlist"`
 }
 
 type dashboardBranchDTO struct {
-	BranchID     int     `json:"branch_id"`
-	BranchCode   string  `json:"branch_code"`
-	Name         string  `json:"name"`
+	BranchID     int                       `json:"branch_id"`
+	BranchCode   string                    `json:"branch_code"`
+	Name         string                    `json:"name"`
 	Appointments []dashboardAppointmentDTO `json:"appointments"`
 }
 
@@ -82,12 +84,14 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 		appts := make([]dashboardAppointmentDTO, 0, len(b.Appointments))
 		for _, a := range b.Appointments {
 			appts = append(appts, dashboardAppointmentDTO{
-				PlanningID:   a.PlanningID,
-				Time:         a.Time,
-				PatientName:  a.PatientName,
-				DoctorName:   abbrevDoctorName(a.DoctorName),
-				Status:       a.Status,
-				Confirmation: a.Confirmation,
+				PlanningID:       a.PlanningID,
+				Time:             a.Time,
+				PatientName:      a.PatientName,
+				DoctorName:       displayDoctorName(a.DoctorName),
+				Status:           a.Status,
+				Confirmation:     a.Confirmation,
+				ConfirmationHint: a.ConfirmationHint,
+				IsWaitlist:       a.IsWaitlist,
 			})
 		}
 		branches = append(branches, dashboardBranchDTO{

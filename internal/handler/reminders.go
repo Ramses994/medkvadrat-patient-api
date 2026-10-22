@@ -34,6 +34,11 @@ type dueReminderDTO struct {
 	PatientPhone     string `json:"patient_phone"`
 	PatientName      string `json:"patient_name"`
 	DoctorName       string `json:"doctor_name"`
+	Service          string `json:"service"`
+	IsWaitlist       bool   `json:"is_waitlist"`
+	MessengerNotify  *int   `json:"messenger_notify"`
+	NoSMSNotify      bool   `json:"no_sms_notify"`
+	ApptVersion      string `json:"appt_version"`
 	BranchID         int    `json:"branch_id"`
 	BranchCode       string `json:"branch_code"`
 	DateConsultation string `json:"date_consultation"`
@@ -90,15 +95,23 @@ func parseReminderWindow(fromStr, toStr string, now time.Time) (time.Time, time.
 }
 
 var (
-	errReminderRange          = errValidation("from должен быть раньше to")
-	errReminderWindow         = errValidation("окно не больше 14 дней")
-	errReminderFormat         = errValidation("from/to: формат 2006-01-02T15:04:05")
-	errReminderPatientIDs     = errValidation("patient_ids: ожидается CSV положительных целых")
+	errReminderRange      = errValidation("from должен быть раньше to")
+	errReminderWindow     = errValidation("окно не больше 14 дней")
+	errReminderFormat     = errValidation("from/to: формат 2006-01-02T15:04:05")
+	errReminderPatientIDs = errValidation("patient_ids: ожидается CSV положительных целых")
 )
 
 type errValidation string
 
 func (e errValidation) Error() string { return string(e) }
+
+func displayDoctorName(full string) string {
+	full = strings.TrimSpace(full)
+	if full == "" {
+		return ""
+	}
+	return abbrevDoctorName(full)
+}
 
 func abbrevDoctorName(full string) string {
 	parts := strings.Fields(strings.TrimSpace(full))
@@ -147,7 +160,12 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 			PatientID:        row.PatientID,
 			PatientPhone:     row.PatientPhone,
 			PatientName:      row.PatientName,
-			DoctorName:       abbrevDoctorName(row.DoctorName),
+			DoctorName:       displayDoctorName(row.DoctorName),
+			Service:          row.Service,
+			IsWaitlist:       row.IsWaitlist,
+			MessengerNotify:  row.MessengerNotify,
+			NoSMSNotify:      row.NoSMSNotify,
+			ApptVersion:      row.ApptVersion,
 			BranchID:         row.BranchID,
 			BranchCode:       row.BranchCode,
 			DateConsultation: row.DateConsultation.Format(reminderOutLayout),

@@ -3,15 +3,18 @@ package confirmations
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 	_ "modernc.org/sqlite"
 )
 
-func openTestDB(t *testing.T) *sql.DB {
+func openNamedDB(t *testing.T, name string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:confirmations_test?mode=memory&cache=shared")
+	db, err := sql.Open("sqlite", "file:"+name+"?mode=memory&cache=shared&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,27 +25,84 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func TestRepo_UpsertLastWriteWins(t *testing.T) {
-	db := openTestDB(t)
-	r := NewRepo(db)
+func openTestDB(t *testing.T) *sql.DB {
+	return openNamedDB(t, "confirmations_test_"+t.Name())
+}
+
+func TestRepo_FirstAnswerWinsUntilVersionChanges(t *testing.T) {
+	r := NewRepo(openTestDB(t))
 	ctx := context.Background()
 
-	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max")
+	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max", "2026-06-26 19:30:00", "ver-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Status != "confirmed" || rec.PlanningID != 100 {
-		t.Fatalf("first upsert: %+v", rec)
+	if rec.Status != "confirmed" {
+		t.Fatalf("%+v", rec)
 	}
 
-	rec2, err := r.Upsert(ctx, 100, 200, "declined", "max")
+	_, err = r.Upsert(ctx, 100, 200, "declined", "max", "2026-06-26 19:30:00", "ver-a")
+	var already *AlreadyAnsweredError
+	if !asAlready(err, &already) || already.Record.Status != "confirmed" {
+		t.Fatalf("repeat: %v", err)
+	}
+
+	rec2, err := r.Upsert(ctx, 100, 200, "reschedule", "max", "2026-06-27 10:00:00", "ver-b")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec2.Status != "declined" {
-		t.Fatalf("expected declined, got %q", rec2.Status)
+	if rec2.Status != "reschedule" || rec2.ApptVersion != "ver-b" {
+		t.Fatalf("%+v", rec2)
 	}
-	if !rec2.UpdatedAt.Equal(rec.UpdatedAt) && !rec2.UpdatedAt.After(rec.UpdatedAt) {
-		t.Fatalf("updated_at should advance: %v vs %v", rec.UpdatedAt, rec2.UpdatedAt)
+}
+
+func TestRepo_NullVersionAllowsNewAnswer(t *testing.T) {
+	r := NewRepo(openTestDB(t))
+	ctx := context.Background()
+	if _, err := r.Upsert(ctx, 7, 1, "confirmed", "max", "", ""); err != nil {
+		t.Fatal(err)
 	}
+	rec, err := r.Upsert(ctx, 7, 1, "declined", "max", "2026-06-26 19:30:00", "ver-a")
+	if err != nil {
+		t.Fatalf("null stored version must accept new answer: %v", err)
+	}
+	if rec.Status != "declined" || rec.ApptVersion != "ver-a" {
+		t.Fatalf("%+v", rec)
+	}
+}
+
+func TestRepo_RaceOneWinner(t *testing.T) {
+	r := NewRepo(openNamedDB(t, "confirmations_race"))
+	ctx := context.Background()
+	var okN, alreadyN atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := r.Upsert(ctx, 1, 2, "confirmed", "max", "2026-06-26 19:30:00", "abc")
+			if err == nil {
+				okN.Add(1)
+				return
+			}
+			var a *AlreadyAnsweredError
+			if errors.As(err, &a) {
+				alreadyN.Add(1)
+				return
+			}
+			t.Errorf("unexpected: %v", err)
+		}()
+	}
+	wg.Wait()
+	if okN.Load() != 1 {
+		t.Fatalf("winners=%d already=%d", okN.Load(), alreadyN.Load())
+	}
+}
+
+func asAlready(err error, dest **AlreadyAnsweredError) bool {
+	aa, ok := err.(*AlreadyAnsweredError)
+	if ok {
+		*dest = aa
+	}
+	return ok
 }
