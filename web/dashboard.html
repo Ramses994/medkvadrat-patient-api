@@ -263,6 +263,7 @@ function renderBranch(branch, isToday, nowMin) {
   const counts = {confirmed:0, declined:0, reschedule:0, pending:0};
   items.forEach(a => {
     if (a.is_waitlist) return;
+    if (a.confirmation_hint && !a.confirmation) return;
     counts[a.confirmation || 'pending']++;
   });
 
@@ -313,6 +314,8 @@ function renderRow(a, isPast) {
   const tags = el('div', 'tagline');
   if (a.is_waitlist) {
     tags.appendChild(el('span', 'pill waitlist', 'лист ожидания'));
+  } else if (a.confirmation_hint && !a.confirmation) {
+    tags.appendChild(el('span', 'pill pending', a.confirmation_hint));
   } else {
     tags.appendChild(el('span', `pill ${state}`, LABEL[state]));
     if (state !== 'pending') tags.appendChild(el('span', 'via', 'ответ из MAX'));
