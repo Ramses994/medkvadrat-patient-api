@@ -45,6 +45,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("/api/patients/lab-panels", patientH.LabPanels)
 	mux.HandleFunc("GET /api/reminders/due", remindersH.Due)
 	mux.HandleFunc("POST /api/notifications/new-bookings", notificationsH.NewBookings)
+	mux.HandleFunc("GET /api/notifications/booking/{planning_id}", notificationsH.BookingByID)
 	mux.HandleFunc("GET /api/dashboard/schedule", dashboardH.Schedule)
 
 	// Patient JWT-protected (step 3)

@@ -36,7 +36,7 @@ SELECT
   o.FM_ORG_ID AS BRANCH_ID,
   ISNULL(o.CODE,'') AS BRANCH_CODE,
   CONVERT(varchar(5), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 108) AS TIME_HHMM,
-  ISNULL(p.STATUS,-1) AS STATUS,
+  CAST(ISNULL(p.STATUS,-1) AS int) AS STATUS,
   ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
   ISNULL(p.PL_EXAM_ID, 0) AS PL_EXAM_ID,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START_FULL
@@ -69,7 +69,7 @@ func DashboardPlanningRows(ctx context.Context, db *sql.DB, date time.Time, wait
 	for rows.Next() {
 		var r DashboardPlanningRow
 		var timeRaw, dateStart, webName, examName string
-		var isWaitlist int
+		var isWaitlist, status bitInt
 		var plSubj, plExam int64
 		if err := rows.Scan(
 			&r.PlanningID,
@@ -82,7 +82,7 @@ func DashboardPlanningRows(ctx context.Context, db *sql.DB, date time.Time, wait
 			&r.BranchID,
 			&r.BranchCode,
 			&timeRaw,
-			&r.Status,
+			&status,
 			&plSubj,
 			&plExam,
 			&dateStart,
@@ -92,6 +92,7 @@ func DashboardPlanningRows(ctx context.Context, db *sql.DB, date time.Time, wait
 		_ = webName
 		_ = examName
 		r.IsWaitlist = isWaitlist != 0
+		r.Status = int(status)
 		r.Time = normalizeHHMM(timeRaw)
 		r.DoctorName = trimDoctorName(r.DoctorName)
 		r.ApptVersion = ApptVersion(dateStart, plSubj, plExam)
@@ -127,6 +128,8 @@ type ConfirmationOverlay struct {
 	Status  string
 	Version string
 }
+
+const ConfirmationUnknownVersionHint = "ответ получен ранее (время могло измениться)"
 
 // DashboardBranchSchedule groups appointments for a branch.
 type DashboardBranchSchedule struct {
@@ -170,10 +173,10 @@ func BuildDashboardSchedule(date time.Time, rows []DashboardPlanningRow, confirm
 				Status:      row.Status,
 				IsWaitlist:  row.IsWaitlist,
 			}
-			if o, ok := confirmations[row.PlanningID]; ok {
-				if o.Version != "" && row.ApptVersion != "" && o.Version != row.ApptVersion {
-					appt.ConfirmationHint = "ответ на прежнее время"
-				} else if o.Status != "" {
+			if o, ok := confirmations[row.PlanningID]; ok && o.Status != "" {
+				if o.Version == "" || row.ApptVersion == "" || o.Version != row.ApptVersion {
+					appt.ConfirmationHint = ConfirmationUnknownVersionHint
+				} else {
 					s := o.Status
 					appt.Confirmation = &s
 				}
@@ -194,7 +197,7 @@ func DashboardConfirmationCounts(branches []DashboardBranchSchedule) map[string]
 	counts := map[string]int{"confirmed": 0, "declined": 0, "reschedule": 0, "pending": 0}
 	for _, b := range branches {
 		for _, a := range b.Appointments {
-			if a.IsWaitlist {
+			if a.IsWaitlist || (a.Confirmation == nil && a.ConfirmationHint != "") {
 				continue
 			}
 			key := "pending"

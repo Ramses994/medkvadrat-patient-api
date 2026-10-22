@@ -160,6 +160,10 @@ func (s *Services) NewBookings(ctx context.Context, now time.Time, patientIDs []
 	return repo.NewBookings(ctx, s.MSSQL, now, patientIDs, cursor, limit, s.Config.WaitlistExamIDs)
 }
 
+func (s *Services) BookingByPlanningID(ctx context.Context, planningID int64) (repo.BookingNotice, error) {
+	return repo.BookingByPlanningID(ctx, s.MSSQL, planningID, s.Config.WaitlistExamIDs)
+}
+
 func ParseDefaultModelsID(v string) int {
 	n, _ := strconv.Atoi(v)
 	return n

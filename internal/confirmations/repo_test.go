@@ -56,16 +56,18 @@ func TestRepo_FirstAnswerWinsUntilVersionChanges(t *testing.T) {
 	}
 }
 
-func TestRepo_NullVersionBlocksRewrite(t *testing.T) {
+func TestRepo_NullVersionAllowsNewAnswer(t *testing.T) {
 	r := NewRepo(openTestDB(t))
 	ctx := context.Background()
 	if _, err := r.Upsert(ctx, 7, 1, "confirmed", "max", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.Upsert(ctx, 7, 1, "declined", "max", "2026-06-26 19:30:00", "ver-a")
-	var already *AlreadyAnsweredError
-	if !asAlready(err, &already) || already.Record.Status != "confirmed" {
-		t.Fatalf("null version must block: %v", err)
+	rec, err := r.Upsert(ctx, 7, 1, "declined", "max", "2026-06-26 19:30:00", "ver-a")
+	if err != nil {
+		t.Fatalf("null stored version must accept new answer: %v", err)
+	}
+	if rec.Status != "declined" || rec.ApptVersion != "ver-a" {
+		t.Fatalf("%+v", rec)
 	}
 }
 

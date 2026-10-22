@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,10 @@ import (
 )
 
 type fakeNotifySvc struct{}
+
+func (fakeNotifySvc) BookingByPlanningID(context.Context, int64) (repo.BookingNotice, error) {
+	return repo.BookingNotice{}, sql.ErrNoRows
+}
 
 func (fakeNotifySvc) NewBookings(context.Context, time.Time, []int64, *repo.BookingCursor, int) (repo.NewBookingsPage, error) {
 	loc := time.FixedZone("MSK", 3*3600)

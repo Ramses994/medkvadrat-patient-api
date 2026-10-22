@@ -41,7 +41,7 @@ func examSelectSQL(waitlistIDs []int64) (string, []any) {
 	frag := `
 ISNULL(ex.WEB_NAME,'') AS EXAM_WEB_NAME,
 ISNULL(ex.NAME,'') AS EXAM_NAME,
-CASE WHEN ISNULL(ex.NAME,'') LIKE N'%ожидан%' OR ex.PL_EXAM_ID IN (` + in.String() + `) THEN 1 ELSE 0 END AS IS_WAITLIST`
+CAST(CASE WHEN ISNULL(ex.NAME,'') LIKE N'%ожидан%' OR ex.PL_EXAM_ID IN (` + in.String() + `) THEN 1 ELSE 0 END AS int) AS IS_WAITLIST`
 	return frag, args
 }
 

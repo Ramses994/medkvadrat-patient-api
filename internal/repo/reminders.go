@@ -39,15 +39,15 @@ SELECT
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
 ` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
 ` + examSQL + `,
-  ISNULL(ex.NO_SMS_NOTIFY, 0) AS NO_SMS_NOTIFY,
-  r.MESSENGER_NOTIFY AS MESSENGER_NOTIFY,
+  CAST(ISNULL(ex.NO_SMS_NOTIFY, 0) AS int) AS NO_SMS_NOTIFY,
+  CAST(r.MESSENGER_NOTIFY AS int) AS MESSENGER_NOTIFY,
   ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
   ISNULL(p.PL_EXAM_ID, 0) AS PL_EXAM_ID,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START_FULL,
   ISNULL(o.FM_ORG_ID,0) AS BRANCH_ID,
   ISNULL(o.CODE,'')     AS BRANCH_CODE,
   CONVERT(varchar(16), DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS), 120) AS DATE_CONSULTATION,
-  ISNULL(p.STATUS,-1) AS STATUS
+  CAST(ISNULL(p.STATUS,-1) AS int) AS STATUS
 FROM PLANNING p
 JOIN PATIENTS pt ON pt.PATIENTS_ID = p.PATIENTS_ID
 JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
@@ -150,8 +150,8 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 	for rows.Next() {
 		var r DueReminder
 		var dateConsStr, webName, examName, dateStart string
-		var isWaitlist, noSMS int
-		var notify sql.NullInt64
+		var isWaitlist, noSMS, status bitInt
+		var notify nullBitInt
 		var plSubj, plExam int64
 		if err := rows.Scan(
 			&r.PlanningID,
@@ -170,7 +170,7 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 			&r.BranchID,
 			&r.BranchCode,
 			&dateConsStr,
-			&r.Status,
+			&status,
 		); err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
@@ -178,7 +178,8 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 		if err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
-		fillReminderDerived(&r, webName, examName, isWaitlist, noSMS, notify, plSubj, plExam, dateStart)
+		r.Status = int(status)
+		fillReminderDerived(&r, webName, examName, int(isWaitlist), int(noSMS), notify, plSubj, plExam, dateStart)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -187,13 +188,13 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 	return out, nil
 }
 
-func fillReminderDerived(r *DueReminder, webName, examName string, isWaitlist, noSMS int, notify sql.NullInt64, plSubj, plExam int64, dateStart string) {
+func fillReminderDerived(r *DueReminder, webName, examName string, isWaitlist, noSMS int, notify nullBitInt, plSubj, plExam int64, dateStart string) {
 	r.DoctorName = trimDoctorName(r.DoctorName)
 	r.Service = DisplayService(webName, examName)
 	r.IsWaitlist = isWaitlist != 0
 	r.NoSMSNotify = noSMS != 0
 	if notify.Valid {
-		v := int(notify.Int64)
+		v := notify.Int
 		if v != 0 {
 			v = 1
 		}

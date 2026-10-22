@@ -46,8 +46,8 @@ ON CONFLICT(planning_id) DO UPDATE SET
   appt_version = excluded.appt_version,
   appt_start = excluded.appt_start,
   updated_at = excluded.updated_at
-WHERE appointment_confirmations.appt_version IS NOT NULL
-  AND appointment_confirmations.appt_version <> excluded.appt_version
+WHERE appointment_confirmations.appt_version IS NULL
+  OR appointment_confirmations.appt_version <> excluded.appt_version
 RETURNING planning_id, status, source, patient_id, appt_start, appt_version, updated_at`
 
 	var rec Record

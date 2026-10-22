@@ -2,10 +2,13 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
@@ -14,6 +17,7 @@ import (
 
 type NotificationsService interface {
 	NewBookings(ctx context.Context, now time.Time, patientIDs []int64, cursor *repo.BookingCursor, limit int) (repo.NewBookingsPage, error)
+	BookingByPlanningID(ctx context.Context, planningID int64) (repo.BookingNotice, error)
 }
 
 type NotificationsHandler struct {
@@ -110,4 +114,49 @@ func (h NotificationsHandler) NewBookings(w http.ResponseWriter, r *http.Request
 		})
 	}
 	response.OK(w, newBookingsPageDTO{Items: items, NextCursor: page.NextCursor, HasMore: page.HasMore})
+}
+
+type bookingNoticeDTO struct {
+	newBookingDTO
+	Cancelled bool `json:"cancelled"`
+}
+
+func (h NotificationsHandler) BookingByID(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("planning_id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "planning_id")
+		return
+	}
+	row, err := h.Svc.BookingByPlanningID(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "Запись не найдена")
+		return
+	}
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("booking by id failed", "err", err)
+		}
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		return
+	}
+	response.OK(w, bookingNoticeDTO{
+		newBookingDTO: newBookingDTO{
+			PlanningID:       row.PlanningID,
+			PatientID:        row.PatientID,
+			PatientPhone:     row.PatientPhone,
+			PatientName:      row.PatientName,
+			DoctorName:       displayDoctorName(row.DoctorName),
+			Service:          row.Service,
+			IsWaitlist:       row.IsWaitlist,
+			MessengerNotify:  row.MessengerNotify,
+			NoSMSNotify:      row.NoSMSNotify,
+			ApptVersion:      row.ApptVersion,
+			BranchID:         row.BranchID,
+			BranchCode:       row.BranchCode,
+			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
+			Status:           row.Status,
+			CreatedAt:        row.CreatedAt,
+		},
+		Cancelled: row.Cancelled,
+	})
 }
