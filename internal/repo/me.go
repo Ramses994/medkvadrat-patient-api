@@ -3,7 +3,6 @@ package repo
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -17,17 +16,7 @@ type Profile struct {
 	BirthDate *time.Time
 	// BirthYear from GOD_ROGDENIQ when NE_LE is missing; omitted in JSON when BirthDate is set.
 	BirthYear *int
-	Email string
-}
-
-type Appointment struct {
-	MotconsuID         int64
-	DoctorID           int64
-	DoctorName         string
-	DateConsultation   time.Time
-	RecStatus          string
-	PlanningID         *int64
-	PlanningPatientsID *int64
+	Email     string
 }
 
 type MeRepo struct {
@@ -66,64 +55,6 @@ WHERE PATIENTS_ID = @id`,
 		}
 	}
 	return p, nil
-}
-
-func (r *MeRepo) Appointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]Appointment, error) {
-	// kind: upcoming|past
-	where := ""
-	switch kind {
-	case "", "upcoming":
-		where = "m.DATE_CONSULTATION >= @now AND m.REC_STATUS = 'W'"
-	case "past":
-		where = "(m.DATE_CONSULTATION < @now OR m.REC_STATUS = 'A')"
-	default:
-		return nil, fmt.Errorf("invalid kind")
-	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT
-  m.MOTCONSU_ID,
-  m.MEDECINS_ID,
-  ISNULL(d.NOM,'') + ' ' + ISNULL(d.PRENOM,'') AS DOC_NAME,
-  m.DATE_CONSULTATION,
-  ISNULL(m.REC_STATUS,'') AS REC_STATUS,
-  m.PLANNING_ID,
-  p.PATIENTS_ID
-FROM MOTCONSU m
-LEFT JOIN MEDECINS d ON d.MEDECINS_ID = m.MEDECINS_ID
-LEFT JOIN PLANNING p ON p.PLANNING_ID = m.PLANNING_ID
-WHERE m.PATIENTS_ID = @pid
-  AND `+where+`
-ORDER BY m.DATE_CONSULTATION`,
-		sql.Named("pid", patientID),
-		sql.Named("now", now),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query appointments: %w", err)
-	}
-	defer rows.Close()
-
-	var out []Appointment
-	for rows.Next() {
-		var a Appointment
-		var planningID sql.NullInt64
-		var planningPat sql.NullInt64
-		if err := rows.Scan(&a.MotconsuID, &a.DoctorID, &a.DoctorName, &a.DateConsultation, &a.RecStatus, &planningID, &planningPat); err != nil {
-			return nil, fmt.Errorf("scan appointments: %w", err)
-		}
-		if planningID.Valid {
-			v := planningID.Int64
-			a.PlanningID = &v
-		}
-		if planningPat.Valid {
-			v := planningPat.Int64
-			a.PlanningPatientsID = &v
-		}
-		out = append(out, a)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows appointments: %w", err)
-	}
-	return out, nil
 }
 
 // parseBirthYear extracts a calendar year from Medialog varchar (most often "YYYY";

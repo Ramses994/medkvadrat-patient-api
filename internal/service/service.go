@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/confirmations"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/health"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
@@ -74,8 +75,41 @@ func (s *Services) MeProfile(ctx context.Context, patientID int64) (repo.Profile
 	return s.Repos.Me.Profile(ctx, patientID)
 }
 
-func (s *Services) MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.Appointment, error) {
-	return s.Repos.Me.Appointments(ctx, patientID, now, kind)
+func (s *Services) MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.PlanningVisit, error) {
+	rows, err := s.Repos.Me.PlanningAppointments(ctx, patientID, now, kind)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachConfirmations(ctx, rows)
+}
+
+func (s *Services) MeVisits(ctx context.Context, patientID int64, from, to time.Time) ([]repo.PlanningVisit, error) {
+	rows, err := s.Repos.Me.PlanningVisits(ctx, patientID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachConfirmations(ctx, rows)
+}
+
+func (s *Services) attachConfirmations(ctx context.Context, rows []repo.PlanningVisit) ([]repo.PlanningVisit, error) {
+	if len(rows) == 0 || s.SQLite == nil {
+		return rows, nil
+	}
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.PlanningID)
+	}
+	overlay, err := confirmations.NewRepo(s.SQLite).StatusByPlanningIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		if st, ok := overlay[rows[i].PlanningID]; ok && st != "" {
+			status := st
+			rows[i].Confirmation = &status
+		}
+	}
+	return rows, nil
 }
 
 func (s *Services) MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (motconsuID int64, restored bool, err error) {

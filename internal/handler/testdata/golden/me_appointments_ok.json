@@ -1,2 +1,1 @@
-{"success":true,"data":[{"motconsu_id":10,"doctor_id":7,"doctor_name":"Доктор Док","date_consultation":"2099-01-02 09:30","rec_status":"W","planning_id":123,"can_cancel":true,"can_cancel_reason":"ok"}]}
-
+{"success":true,"data":[{"planning_id":11737097,"starts_at":"2099-06-26 19:30","duration_min":30,"state":"scheduled","branch":{"id":3,"name":"Куркино","address":"г. Москва, ул. Ландышевая, 14к1"},"doctor":{"id":1828,"name":"Гаевой Эдуард Валерьевич"},"exam_name":"Приём стоматолога","confirmation":"confirmed"},{"planning_id":11737098,"starts_at":"2099-06-27 10:00","duration_min":20,"state":"warned_absent","branch":{"id":999,"name":"Склад","address":null},"doctor":null,"exam_name":"Консультация","confirmation":null}]}

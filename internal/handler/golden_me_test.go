@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,20 +18,61 @@ func (fakeMeSvc) MeProfile(ctx context.Context, patientID int64) (repo.Profile, 
 	return repo.Profile{PatientID: patientID, FullName: "Иван Иванов", Phone: "+79990000000", Email: "ivan@example.com"}, nil
 }
 
-func (fakeMeSvc) MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.Appointment, error) {
+func (fakeMeSvc) MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.PlanningVisit, error) {
 	if kind != "" && kind != "upcoming" && kind != "past" {
 		return nil, errInvalidKind
 	}
-	return []repo.Appointment{
+	if kind == "past" {
+		return pastPlanningVisits(), nil
+	}
+	if kind == "empty" {
+		return []repo.PlanningVisit{}, nil
+	}
+	return upcomingPlanningVisits(), nil
+}
+
+func (fakeMeSvc) MeVisits(ctx context.Context, patientID int64, from, to time.Time) ([]repo.PlanningVisit, error) {
+	confirmed := "confirmed"
+	return []repo.PlanningVisit{{
+		PlanningID: 11737097, StartsAt: "2026-06-26 19:30", DurationMin: 30,
+		Arrived: 1, BranchID: 3, BranchCode: "Куркино",
+		MedecinsID: sql.NullInt64{Int64: 1828, Valid: true},
+		DoctorName: "Гаевой Эдуард Валерьевич", ExamName: "Приём стоматолога",
+		Confirmation: &confirmed,
+	}}, nil
+}
+
+func upcomingPlanningVisits() []repo.PlanningVisit {
+	confirmed := "confirmed"
+	return []repo.PlanningVisit{
 		{
-			MotconsuID:       10,
-			DoctorID:         7,
-			DoctorName:       "Доктор Док",
-			DateConsultation: time.Date(2099, 1, 2, 9, 30, 0, 0, time.Local),
-			RecStatus:        "W",
-			PlanningID:       ptrI64(123),
+			PlanningID: 11737097, StartsAt: "2099-06-26 19:30", DurationMin: 30,
+			BranchID: 3, BranchCode: "Куркино",
+			MedecinsID: sql.NullInt64{Int64: 1828, Valid: true},
+			DoctorName: "Гаевой Эдуард Валерьевич", ExamName: "Приём стоматолога",
+			Confirmation: &confirmed,
 		},
-	}, nil
+		{
+			PlanningID: 11737098, StartsAt: "2099-06-27 10:00", DurationMin: 20,
+			Cancelled: 1, BranchID: 999, BranchCode: "Склад",
+			ExamName: "Консультация",
+		},
+	}
+}
+
+func pastPlanningVisits() []repo.PlanningVisit {
+	return []repo.PlanningVisit{
+		{
+			PlanningID: 100, StartsAt: "2020-01-10 09:00", DurationMin: 30, Arrived: 1,
+			BranchID: 106, BranchCode: "Каширка",
+			MedecinsID: sql.NullInt64{Int64: 5, Valid: true}, DoctorName: "Петров Пётр",
+			ExamName: "Терапевт",
+		},
+		{
+			PlanningID: 101, StartsAt: "2020-01-11 11:00", DurationMin: 15,
+			BranchID: 496, BranchCode: "Куркино 2",
+		},
+	}
 }
 
 var errInvalidKind = &fakeErr{msg: "invalid kind"}
@@ -52,8 +94,6 @@ func (fakeMeSvc) MeBookAppointment(ctx context.Context, patientID int64, plannin
 func (fakeMeSvc) MeCancelAppointment(ctx context.Context, patientID int64, motconsuID int64, now time.Time) error {
 	return nil
 }
-
-func ptrI64(v int64) *int64 { return &v }
 
 func TestGolden_Me_Profile_OK(t *testing.T) {
 	h := MeHandler{Svc: fakeMeSvc{}}
@@ -80,6 +120,39 @@ func TestGolden_Me_LabPanels_OK(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.LabPanels(w, r)
 	assertGolden(t, "me_lab_panels_ok", w.Body.Bytes())
+}
+
+type emptyPlanningSvc struct{ fakeMeSvc }
+
+func (emptyPlanningSvc) MeAppointments(context.Context, int64, time.Time, string) ([]repo.PlanningVisit, error) {
+	return []repo.PlanningVisit{}, nil
+}
+
+func TestGolden_Me_Appointments_Past(t *testing.T) {
+	h := MeHandler{Svc: fakeMeSvc{}}
+	r := httptest.NewRequest(http.MethodGet, "/api/me/appointments?status=past", nil)
+	r = r.WithContext(middleware.WithPatientID(r.Context(), 1548055))
+	w := httptest.NewRecorder()
+	h.Appointments(w, r)
+	assertGolden(t, "me_appointments_past", w.Body.Bytes())
+}
+
+func TestGolden_Me_Appointments_Empty(t *testing.T) {
+	h := MeHandler{Svc: emptyPlanningSvc{}}
+	r := httptest.NewRequest(http.MethodGet, "/api/me/appointments?status=upcoming", nil)
+	r = r.WithContext(middleware.WithPatientID(r.Context(), 1548055))
+	w := httptest.NewRecorder()
+	h.Appointments(w, r)
+	assertGolden(t, "me_appointments_empty", w.Body.Bytes())
+}
+
+func TestGolden_Me_Visits(t *testing.T) {
+	h := MeHandler{Svc: fakeMeSvc{}}
+	r := httptest.NewRequest(http.MethodGet, "/api/me/visits?from=2026-01-01&to=2026-10-14", nil)
+	r = r.WithContext(middleware.WithPatientID(r.Context(), 1548055))
+	w := httptest.NewRecorder()
+	h.Visits(w, r)
+	assertGolden(t, "me_visits_ok", w.Body.Bytes())
 }
 
 func TestGolden_Me_Appointments_ValidationError(t *testing.T) {
