@@ -82,7 +82,7 @@ func Book(ctx context.Context, db *sql.DB, planning *PlanningRepo, motconsu *Mot
 		sql.Named("medID", medecinsID),
 		sql.Named("fmID", fmDepID),
 		sql.Named("depID", meddep),
-		sql.Named("dt", dateConsultation),
+		sql.Named("dt", dateConsultation.Format(mssqlReminderBoundLayout)),
 	).Scan(&motconsuID)
 	if err != nil || motconsuID == 0 {
 		return BookResult{}, fmt.Errorf("CreateMotconsu: %w", err)

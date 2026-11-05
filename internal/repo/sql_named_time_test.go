@@ -1,115 +1,133 @@
 package repo
 
 import (
+	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
-// LK-1a still binds MOTCONSU datetimes as time.Time. Everything else must use a wall-clock string.
-var allowTimeNamedMSSQL = map[string]string{
-	"me.go":       "LK-1a MOTCONSU",
-	"motconsu.go": "LK-1a MOTCONSU",
+// Удалить после LK-1a (PR #21). Исключения точечные: новый sql.Named(time.Time)
+// в том же файле сторож уже ловит.
+var allowMSSQLTimeNamed = map[string]bool{
+	"me.go:Appointments":       true,
+	"motconsu.go:ChangesSince": true,
+	"motconsu.go:PollAfter":    true,
 }
 
 func TestMSSQLNamedArgsForbidTimeTime(t *testing.T) {
-	fset := token.NewFileSet()
-	err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		base := filepath.Base(path)
-		if _, ok := allowTimeNamedMSSQL[base]; ok {
-			return nil
-		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		f, err := parser.ParseFile(fset, path, src, 0)
-		if err != nil {
-			return err
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			fn, ok := n.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				return true
+	got := mssqlNamedTimeCalls(t, []string{
+		".",
+		"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite",
+	}, allowMSSQLTimeNamed)
+	if len(got) > 0 {
+		t.Fatalf("sql.Named(time.Time|*time.Time|sql.NullTime) in MSSQL packages:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+func TestNamedTimeGuardCatchesIndirectBindings(t *testing.T) {
+	got := mssqlNamedTimeCalls(t, []string{"./testdata/namedtime/bad"}, nil)
+	want := []string{
+		"directTimeBinding",
+		"localTimeBinding",
+		"returnedTimeBinding",
+		"chainedTimeBinding",
+		"fieldTimeBinding",
+		"nullTimeBinding",
+	}
+	seen := map[string]bool{}
+	for _, line := range got {
+		for _, name := range want {
+			if strings.Contains(line, ":"+name) || strings.HasSuffix(line, ":"+name) {
+				seen[name] = true
 			}
-			timeParams := map[string]bool{}
-			if fn.Type.Params != nil {
-				for _, field := range fn.Type.Params.List {
-					if !isTimeTime(field.Type) {
-						continue
-					}
-					for _, name := range field.Names {
-						timeParams[name.Name] = true
-					}
-				}
-			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok || len(call.Args) < 2 {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "Named" {
-					return true
-				}
-				pkg, ok := sel.X.(*ast.Ident)
-				if !ok || pkg.Name != "sql" {
-					return true
-				}
-				if argIsTimeTime(call.Args[1], timeParams) {
-					t.Errorf("%s:%s sql.Named passes time.Time to Medialog; use wall-clock string + CONVERT (docs/MEDIALOG_RULES.md)", path, fn.Name.Name)
-				}
-				return true
-			})
-			return true
-		})
-		return nil
-	})
+		}
+	}
+	for _, name := range want {
+		if !seen[name] {
+			t.Errorf("missed %s\n%s", name, strings.Join(got, "\n"))
+		}
+	}
+}
+
+func TestNamedTimeGuardAllowsWallClockString(t *testing.T) {
+	got := mssqlNamedTimeCalls(t, []string{"./testdata/namedtime/good"}, nil)
+	if len(got) != 0 {
+		t.Fatalf("string bound must pass:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+func mssqlNamedTimeCalls(t *testing.T, patterns []string, allow map[string]bool) []string {
+	t.Helper()
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  ".",
+	}
+	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-func isTimeTime(expr ast.Expr) bool {
-	sel, ok := expr.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "time" && sel.Sel.Name == "Time"
-}
-
-func argIsTimeTime(expr ast.Expr, timeParams map[string]bool) bool {
-	switch v := expr.(type) {
-	case *ast.Ident:
-		return timeParams[v.Name]
-	case *ast.CallExpr:
-		if sel, ok := v.Fun.(*ast.SelectorExpr); ok {
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "time" && sel.Sel.Name == "Now" {
-				return true
+	var out []string
+	for _, pkg := range pkgs {
+		if len(pkg.Errors) > 0 {
+			t.Fatalf("load %s: %v", pkg.PkgPath, pkg.Errors)
+		}
+		for _, file := range pkg.Syntax {
+			name := pkg.Fset.Position(file.Pos()).Filename
+			if strings.HasSuffix(name, "_test.go") {
+				continue
 			}
-			if timeParams[identName(sel.X)] && (sel.Sel.Name == "UTC" || sel.Sel.Name == "In" || sel.Sel.Name == "Add" || sel.Sel.Name == "Local") {
+			ast.Inspect(file, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok || len(call.Args) < 2 || !isSQLNamed(call.Fun) {
+					return true
+				}
+				tv, ok := pkg.TypesInfo.Types[call.Args[1]]
+				if !ok || !forbiddenMedialogTime(tv.Type) {
+					return true
+				}
+				fn := enclosingFunc(file, call.Pos())
+				key := filepath.Base(name) + ":" + fn
+				if allow[key] {
+					return true
+				}
+				pos := pkg.Fset.Position(call.Pos())
+				out = append(out, fmt.Sprintf("%s:%d %s", pos.Filename, pos.Line, key))
 				return true
-			}
+			})
 		}
 	}
-	return false
+	return out
 }
 
-func identName(expr ast.Expr) string {
-	id, ok := expr.(*ast.Ident)
-	if !ok {
-		return ""
+func isSQLNamed(fun ast.Expr) bool {
+	sel, ok := fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Named" {
+		return false
 	}
-	return id.Name
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "sql"
+}
+
+func enclosingFunc(file *ast.File, pos token.Pos) string {
+	var name string
+	ast.Inspect(file, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || fn.Name == nil {
+			return true
+		}
+		if fn.Body.Pos() <= pos && pos <= fn.Body.End() {
+			name = fn.Name.Name
+			return false
+		}
+		return true
+	})
+	if name == "" {
+		return "<unknown>"
+	}
+	return name
 }

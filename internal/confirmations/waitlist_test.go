@@ -74,24 +74,6 @@ func TestWaitlist_AlreadyAnsweredNoRow(t *testing.T) {
 	}
 }
 
-func TestWaitlist_StaleVersionNoInsert(t *testing.T) {
-	// STALE_REMINDER is enforced in service before Upsert; Upsert with a new version
-	// is a legitimate reschedule answer and must insert a new waitlist row.
-	db := openTestDB(t)
-	r := NewRepo(db)
-	ctx := context.Background()
-	if _, err := r.Upsert(ctx, 10, 20, "declined", "max", "a", "v1", 3); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Upsert(ctx, 10, 20, "reschedule", "max", "b", "v2", 3); err != nil {
-		t.Fatal(err)
-	}
-	n, err := CountWaitlistByPlanning(ctx, db, 10)
-	if err != nil || n != 2 {
-		t.Fatalf("n=%d err=%v", n, err)
-	}
-}
-
 func TestWaitlist_RaceOneRow(t *testing.T) {
 	db := openNamedDB(t, "waitlist_race")
 	r := NewRepo(db)

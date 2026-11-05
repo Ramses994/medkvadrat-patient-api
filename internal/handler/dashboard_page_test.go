@@ -49,6 +49,11 @@ func TestDashboardPage_ServesHTML(t *testing.T) {
 	if !strings.Contains(body, "res.status === 409") {
 		t.Fatal("waitlist save must handle WAITLIST_CHANGED")
 	}
+	save := body[strings.Index(body, "async function saveWaitlist"):]
+	block := save[strings.Index(save, "if (res.status === 409)"):strings.Index(save, "if (!res.ok)")]
+	if load, show := strings.Index(block, "await loadWaitlist()"), strings.Index(block, "showBanner(msg)"); load < 0 || show < load {
+		t.Fatal("409 banner must stay visible after the list refresh")
+	}
 	for _, line := range strings.Split(body, "\n") {
 		trim := strings.TrimSpace(line)
 		if strings.Contains(trim, "innerHTML") && !strings.Contains(trim, "board.innerHTML = ''") && !strings.Contains(trim, "wrap.innerHTML = ''") {

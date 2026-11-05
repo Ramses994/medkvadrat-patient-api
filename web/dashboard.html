@@ -603,8 +603,8 @@ async function saveWaitlist(id, status, outcome) {
         if (body.error_details && body.error_details.message) msg = body.error_details.message;
         else if (body.error) msg = body.error;
       } catch (e) {}
-      showBanner(msg);
       await loadWaitlist();
+      showBanner(msg);
       return;
     }
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
