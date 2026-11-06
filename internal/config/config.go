@@ -239,6 +239,15 @@ func (c Config) validate() error {
 	return nil
 }
 
+// ClampBookingMaxDays reports whether BOOKING_MAX_DAYS was above the hard cap.
+// The caller logs a warning at startup and stores 14.
+func ClampBookingMaxDays(n int) (int, bool) {
+	if n > 14 {
+		return 14, true
+	}
+	return n, false
+}
+
 func positiveOr(n, def int) int {
 	if n <= 0 {
 		return def

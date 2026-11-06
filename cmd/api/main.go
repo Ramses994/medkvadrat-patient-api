@@ -29,6 +29,10 @@ func main() {
 	}
 
 	logger := logging.New(cfg.LogLevel)
+	if days, clamped := config.ClampBookingMaxDays(cfg.BookingMaxDays); clamped {
+		logger.Warn("BOOKING_MAX_DAYS above 14, using 14", "configured", cfg.BookingMaxDays)
+		cfg.BookingMaxDays = days
+	}
 	if strings.TrimSpace(cfg.Dashboard.Password) == "" || staffsession.WeakSecret([]byte(cfg.Dashboard.Secret)) {
 		logger.Warn("WARNING: dashboard disabled — DASHBOARD_PASSWORD empty or DASHBOARD_SECRET shorter than 32 bytes")
 	}

@@ -9,13 +9,16 @@ import (
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/confirmations"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/slottoken"
 )
 
 const (
-	pairCacheTTL = 10 * time.Minute
-	slotCacheTTL = 60 * time.Second
+	pairCacheTTL     = 10 * time.Minute
+	slotCacheTTL     = 60 * time.Second
+	bookingWindowCap = 14
+	slotCacheMax     = 48
 )
 
 type bookingState struct {
@@ -113,9 +116,12 @@ func (s *Services) BookingSlots(ctx context.Context, subj, exam int64, from, to 
 		s.log().Error("slot token secret not configured")
 		return nil, slottoken.ErrSecret
 	}
-	days, err := dateSpan(from, to, s.Config.BookingMaxDays)
+	days, err := slotDays(from, to, now, s.Config.BookingMaxDays)
 	if err != nil {
 		return nil, repo.ErrBadSlotWindow
+	}
+	if len(days) == 0 {
+		return []repo.BookingSlot{}, nil
 	}
 	opt, ok := s.activePair(ctx, subj, exam)
 	if !ok {
@@ -123,13 +129,13 @@ func (s *Services) BookingSlots(ctx context.Context, subj, exam int64, from, to 
 	}
 	offers := make([]repo.BookingSlot, 0)
 	for _, day := range days {
-		starts, err := s.daySlots(ctx, subj, exam, day)
+		starts, err := s.daySlots(ctx, subj, exam, day, now)
 		if err != nil {
 			s.log().Error("slots unavailable", "pl_subj_id", subj, "pl_exam_id", exam)
 			return nil, repo.ErrSlotsUnavailable
 		}
 		for _, start := range starts {
-			if !repo.KeepSlot(start, now, s.Config.BookingMinHoursAhead, s.Config.BookingMaxDays) {
+			if !repo.KeepSlot(start, now, s.Config.BookingMinHoursAhead, effectiveMaxDays(s.Config.BookingMaxDays)) {
 				continue
 			}
 			offers = append(offers, repo.BookingSlot{
@@ -154,10 +160,14 @@ func (s *Services) InvalidateSlotCache(plSubjID int64) {
 	}
 }
 
-func (s *Services) daySlots(ctx context.Context, subj, exam int64, day string) ([]string, error) {
+func (s *Services) daySlots(ctx context.Context, subj, exam int64, day string, now time.Time) ([]string, error) {
+	if !dayInHorizon(day, now, s.Config.BookingMaxDays) {
+		return nil, nil
+	}
 	key := fmt.Sprintf("%d:%d:%s", subj, exam, day)
 	st := s.booking()
 	st.mu.Lock()
+	purgeExpiredSlots(st, time.Now())
 	if hit, ok := st.slots[key]; ok && time.Since(hit.at) < slotCacheTTL {
 		out := append([]string(nil), hit.starts...)
 		st.mu.Unlock()
@@ -169,20 +179,56 @@ func (s *Services) daySlots(ctx context.Context, subj, exam int64, day string) (
 		return nil, err
 	}
 	st.mu.Lock()
+	purgeExpiredSlots(st, time.Now())
 	if st.slots == nil {
 		st.slots = map[string]slotCache{}
 	}
-	st.slots[key] = slotCache{at: time.Now(), starts: starts}
+	if _, exists := st.slots[key]; !exists && len(st.slots) >= slotCacheMax {
+		st.mu.Unlock()
+		return starts, nil
+	}
+	st.slots[key] = slotCache{at: time.Now(), starts: append([]string(nil), starts...)}
 	st.mu.Unlock()
 	return starts, nil
 }
 
-func dateSpan(from, to string, maxDays int) ([]string, error) {
-	a, err := time.Parse("2006-01-02", from)
+func purgeExpiredSlots(st *bookingState, now time.Time) {
+	for k, hit := range st.slots {
+		if now.Sub(hit.at) >= slotCacheTTL {
+			delete(st.slots, k)
+		}
+	}
+}
+
+// effectiveMaxDays is the horizon length. Anything above 14 is treated as 14.
+func effectiveMaxDays(cfg int) int {
+	if cfg <= 0 || cfg > bookingWindowCap {
+		return bookingWindowCap
+	}
+	return cfg
+}
+
+func dayInHorizon(day string, now time.Time, maxDays int) bool {
+	loc := confirmations.MoscowLocation()
+	d, err := time.ParseInLocation("2006-01-02", day, loc)
+	if err != nil {
+		return false
+	}
+	nowM := now.In(loc)
+	today := time.Date(nowM.Year(), nowM.Month(), nowM.Day(), 0, 0, 0, 0, loc)
+	last := today.AddDate(0, 0, effectiveMaxDays(maxDays))
+	return !d.Before(today) && !d.After(last)
+}
+
+// slotDays rejects a requested period longer than 14 days and clips the rest
+// to [today, today+horizon]. A period that misses the horizon is empty.
+func slotDays(from, to string, now time.Time, maxDays int) ([]string, error) {
+	loc := confirmations.MoscowLocation()
+	a, err := time.ParseInLocation("2006-01-02", from, loc)
 	if err != nil {
 		return nil, err
 	}
-	b, err := time.Parse("2006-01-02", to)
+	b, err := time.ParseInLocation("2006-01-02", to, loc)
 	if err != nil {
 		return nil, err
 	}
@@ -190,11 +236,24 @@ func dateSpan(from, to string, maxDays int) ([]string, error) {
 		return nil, fmt.Errorf("order")
 	}
 	n := int(b.Sub(a).Hours()/24) + 1
-	if n > maxDays || n <= 0 {
+	if n <= 0 || n > bookingWindowCap {
 		return nil, fmt.Errorf("span")
 	}
-	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	nowM := now.In(loc)
+	today := time.Date(nowM.Year(), nowM.Month(), nowM.Day(), 0, 0, 0, 0, loc)
+	last := today.AddDate(0, 0, effectiveMaxDays(maxDays))
+	if a.Before(today) {
+		a = today
+	}
+	if b.After(last) {
+		b = last
+	}
+	if b.Before(a) {
+		return []string{}, nil
+	}
+	span := int(b.Sub(a).Hours()/24) + 1
+	out := make([]string, 0, span)
+	for i := 0; i < span; i++ {
 		out = append(out, a.AddDate(0, 0, i).Format("2006-01-02"))
 	}
 	return out, nil
