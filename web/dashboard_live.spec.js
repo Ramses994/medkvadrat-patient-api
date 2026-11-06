@@ -139,16 +139,18 @@ async function openDashboard(page, state) {
   });
   await page.route('**/dashboard/waitlist**', async route => {
     if (route.request().method() !== 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"success":true}' });
+      try { state.saved = route.request().postDataJSON(); } catch (e) { state.saved = {}; }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"success":true,"data":{}}' });
       return;
     }
+    const saved = state.saved || {};
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify(waitlistBody(baseItem({
         patient_name: state.wlName,
-        status: state.wlStatus,
-        outcome: state.wlOutcome,
+        status: state.forceStatus || saved.status || state.wlStatus,
+        outcome: state.wlOutcome || saved.outcome || '',
       }))),
     });
   });
@@ -168,6 +170,8 @@ function freshState() {
     wlName: 'Иванов Иван',
     wlStatus: 'new',
     wlOutcome: '',
+    forceStatus: '',
+    saved: null,
   };
 }
 
@@ -222,7 +226,11 @@ test('an open waitlist choice survives a tick and applies after five idle second
   await expect(page.locator('.wl-outcome')).toBeVisible();
   await page.clock.fastForward(8_000);
   await page.locator('.wl-status').selectOption('closed');
+  const posted = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'POST');
+  const reloaded = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'GET');
   await page.locator('.wl-outcome').selectOption('refused');
+  await posted;
+  await reloaded;
   await page.locator('.wl-outcome').focus();
   await expect(page.locator('.wl-outcome')).toBeFocused();
   state.wlName = 'Петров Пётр';
@@ -245,8 +253,12 @@ test('a server status change during editing shows the other-staff notice', async
   await expect(page.locator('.wl-status')).toBeVisible();
   await page.clock.fastForward(8_000);
   await page.locator('.wl-status').selectOption('closed');
+  const posted = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'POST');
+  const reloaded = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'GET');
   await page.locator('.wl-outcome').selectOption('refused');
-  state.wlStatus = 'contacted';
+  await posted;
+  await reloaded;
+  state.forceStatus = 'contacted';
   state.wlName = 'Чужое имя';
   await page.clock.fastForward(2_000);
   await expect(page.locator('.wl-conflict')).toContainText('Изменено другим сотрудником');

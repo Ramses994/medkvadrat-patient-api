@@ -26,6 +26,8 @@ type Config struct {
 	MotconsuPollEnabled        bool
 	CORSAllowedOrigins         []string
 	WaitlistExamIDs            []int64
+	WaitlistMisDaysBack       int
+	WaitlistMisDaysAhead      int
 
 	HTTP      HTTPConfig
 	MSSQL     MSSQLConfig
@@ -39,6 +41,7 @@ type Config struct {
 
 type DashboardConfig struct {
 	Password     string
+	AdminLogin   string
 	Secret       string
 	SessionTTL   time.Duration
 	CookieSecure bool
@@ -113,6 +116,8 @@ func Load() (Config, error) {
 		MotconsuPollEnabled:        mustBool(getEnv("MOTCONSU_POLL_ENABLED", "false")),
 		CORSAllowedOrigins:         splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "")),
 		WaitlistExamIDs:            mustInt64CSV(os.Getenv("WAITLIST_EXAM_IDS")),
+		WaitlistMisDaysBack:        mustInt(getEnv("WAITLIST_MIS_DAYS_BACK", "7"), 7),
+		WaitlistMisDaysAhead:       mustInt(getEnv("WAITLIST_MIS_DAYS_AHEAD", "60"), 60),
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
@@ -164,6 +169,7 @@ func Load() (Config, error) {
 		},
 		Dashboard: DashboardConfig{
 			Password:     os.Getenv("DASHBOARD_PASSWORD"),
+			AdminLogin:   strings.TrimSpace(getEnv("DASHBOARD_ADMIN_LOGIN", "admin")),
 			Secret:       strings.TrimSpace(os.Getenv("DASHBOARD_SECRET")),
 			SessionTTL:   mustDuration(getEnv("DASHBOARD_SESSION_TTL", "12h")),
 			CookieSecure: mustBool(getEnv("DASHBOARD_COOKIE_SECURE", "false")),

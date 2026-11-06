@@ -10,6 +10,7 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/ratelimit"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/web"
 )
 
@@ -29,6 +30,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger}
 	dashboardH := handler.DashboardHandler{Svc: svc, Logger: logger}
 	waitlistH := handler.WaitlistHandler{Svc: svc, Logger: logger}
+	users := staff.New(svc.SQLite)
 	dashboardPageH := handler.DashboardPageHandler{
 		HTML:         web.DashboardHTML,
 		Password:     cfg.Dashboard.Password,
@@ -37,7 +39,9 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 		CookieSecure: cfg.Dashboard.CookieSecure,
 		RateLimit:    ratelimit.NewStore(svc.SQLite),
 		Logger:       logger,
+		Users:        users,
 	}
+	staffH := handler.StaffHandler{Store: users, Logger: logger}
 
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
@@ -80,11 +84,17 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("POST /dashboard/login", dashboardPageH.LoginPost)
 	mux.HandleFunc("POST /dashboard/logout", dashboardPageH.Logout)
 
-	staff := middleware.RequireStaff{Secret: []byte(cfg.Dashboard.Secret)}
-	mux.Handle("GET /dashboard", staff.Wrap(http.HandlerFunc(dashboardPageH.Page)))
-	mux.Handle("GET /dashboard/data", staff.Wrap(http.HandlerFunc(dashboardH.Schedule)))
-	mux.Handle("GET /dashboard/waitlist", staff.Wrap(http.HandlerFunc(waitlistH.List)))
-	mux.Handle("POST /dashboard/waitlist/{id}", staff.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(waitlistH.Update))))
+	staffMW := middleware.RequireStaff{Secret: []byte(cfg.Dashboard.Secret), Lookup: users.ByID}
+	mux.Handle("GET /dashboard", staffMW.Wrap(http.HandlerFunc(dashboardPageH.Page)))
+	mux.Handle("GET /dashboard/password", staffMW.Wrap(http.HandlerFunc(dashboardPageH.PasswordForm)))
+	mux.Handle("POST /dashboard/password", staffMW.Wrap(http.HandlerFunc(dashboardPageH.PasswordPost)))
+	mux.Handle("GET /dashboard/me", staffMW.Wrap(http.HandlerFunc(staffH.Me)))
+	mux.Handle("GET /dashboard/data", staffMW.Wrap(http.HandlerFunc(dashboardH.Schedule)))
+	mux.Handle("GET /dashboard/waitlist", staffMW.Wrap(http.HandlerFunc(waitlistH.List)))
+	mux.Handle("POST /dashboard/waitlist/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(waitlistH.Update))))
+	mux.Handle("GET /dashboard/staff", staffMW.Wrap(http.HandlerFunc(staffH.List)))
+	mux.Handle("POST /dashboard/staff", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Create))))
+	mux.Handle("POST /dashboard/staff/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Update))))
 
 	cidrNets, err := middleware.ParseCIDRList(cfg.Dashboard.AllowedCIDRs)
 	if err != nil || len(cidrNets) == 0 {

@@ -29,6 +29,13 @@ func (f *fakeWaitlistSvc) DashboardWaitlist(ctx context.Context, filter confirma
 	return f.page, nil
 }
 
+func (f *fakeWaitlistSvc) UpdateRegistryWaitlist(ctx context.Context, planningID int64, status, outcome, updatedBy string) (confirmations.MisWork, error) {
+	if f.err != nil {
+		return confirmations.MisWork{}, f.err
+	}
+	return confirmations.MisWork{PlanningID: planningID, Status: status, Outcome: outcome, UpdatedBy: updatedBy}, nil
+}
+
 func (f *fakeWaitlistSvc) UpdateWaitlist(ctx context.Context, id int64, status, outcome, updatedBy string) (confirmations.WaitlistRow, error) {
 	if f.err != nil {
 		return confirmations.WaitlistRow{}, f.err
@@ -107,7 +114,7 @@ func TestWaitlist_Router_AuthAndOrigin(t *testing.T) {
 		t.Fatalf("no cookie: %d", w.Code)
 	}
 
-	val, err := staffsession.Sign(secret, dashboardNow().Add(time.Hour))
+	val, err := staffsession.Sign(secret, 7, dashboardNow().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

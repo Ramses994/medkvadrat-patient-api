@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 	"github.com/medkvadrat/medkvadrat-patient-api/web"
+	_ "modernc.org/sqlite"
 )
 
 func TestDashboardPage_ServesHTML(t *testing.T) {
@@ -73,18 +78,33 @@ func TestDashboardPage_NotConfigured(t *testing.T) {
 }
 
 func TestDashboardPage_LoginSetsCookie(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:dash_login?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := staff.EnsureFirstAdmin(context.Background(), db, "admin", "secret"); err != nil {
+		t.Fatal(err)
+	}
 	h := DashboardPageHandler{
 		HTML:     []byte("x"),
 		Password: "secret",
 		Secret:   []byte("0123456789abcdef0123456789abcdef"),
+		Users:    staff.New(db),
 	}
-	r := httptest.NewRequest(http.MethodPost, "/dashboard/login", strings.NewReader("password=secret"))
+	r := httptest.NewRequest(http.MethodPost, "/dashboard/login", strings.NewReader("login=admin&password=secret"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.RemoteAddr = "127.0.0.1:1234"
 	w := httptest.NewRecorder()
 	h.LoginPost(w, r)
 	if w.Code != http.StatusFound {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if loc := w.Header().Get("Location"); loc != "/dashboard/password" {
+		t.Fatalf("first admin must change password, location=%s", loc)
 	}
 	found := false
 	for _, c := range w.Result().Cookies() {

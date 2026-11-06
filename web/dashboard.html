@@ -152,6 +152,21 @@
   .waitlist-table th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
   .waitlist-table tr.fresh{background:var(--brand-soft)}
   .pager{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px}
+  select.top-select{font:inherit;font-size:13px;padding:5px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.12);color:#fff}
+  .med-alert{color:#9A5B00;font-weight:700}
+  .wl-saved{color:var(--ok);font-size:12px;margin-top:6px}
+  .wl-meta{color:var(--muted);font-size:11px;margin-top:6px}
+  .modal{position:fixed;inset:0;background:rgba(15,30,28,.35);display:flex;align-items:center;justify-content:center;z-index:5;padding:18px}
+  .modal-card{background:#fff;padding:20px;border-radius:10px;max-width:440px;border:1px solid var(--line)}
+  .modal-card p{margin:0 0 14px;line-height:1.45}
+  .modal-actions{display:flex;gap:8px;justify-content:flex-end}
+  .staff-panel{flex:1;overflow:auto;padding:12px 18px 24px}
+  .staff-panel table{width:100%;border-collapse:collapse;background:#fff;font-size:13px}
+  .staff-panel th,.staff-panel td{border-bottom:1px solid var(--line-soft);padding:8px;text-align:left}
+  .staff-form{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:end}
+  .staff-form input,.staff-form select{font:inherit;padding:6px 8px}
+  .waitlist-table .btn,.staff-panel .btn{color:var(--ink);border-color:var(--line);background:#fff}
+  .staff-panel .btn{margin-right:6px}
 
   @media (max-width:900px){
     .board{grid-template-columns:1fr;gap:0}
@@ -166,6 +181,7 @@
 <header class="top">
   <div class="brand">МедКвадрат <span>расписание филиалов</span></div>
   <div class="top-right">
+    <select id="branch" class="top-select" aria-label="Филиал"><option value="">Все мои</option></select>
     <input type="date" id="date" autocomplete="off" aria-label="Дата расписания">
     <button class="btn" id="today">Сегодня</button>
     <div class="live"><span class="dot" id="dot"></span><span id="liveText">подключение…</span></div>
@@ -176,6 +192,7 @@
 <div class="tabs" role="tablist">
   <button class="tab active" id="tabSchedule" type="button">Расписание</button>
   <button class="tab" id="tabWaitlist" type="button">Лист ожидания <span class="count" id="waitlistCount">0</span></button>
+  <button class="tab" id="tabStaff" type="button" hidden>Сотрудники</button>
 </div>
 <p class="note" id="noteSchedule">ответ пациента в MAX, Медиалог не изменён</p>
 <p class="note" id="noteWaitlist" hidden>Ответы пациентов в MAX. Медиалог не изменён — отмену или перенос делает регистратура в клиенте</p>
@@ -185,18 +202,26 @@
 <main class="board" id="board"></main>
 <section class="waitlist-panel" id="waitlistPanel" hidden>
   <div class="waitlist-filters">
-    <label>Филиал
-      <select id="wlBranch">
-        <option value="">все</option>
-        <option value="106">Каширка</option>
-        <option value="3">Куркино</option>
-        <option value="496">Куркино 2</option>
-      </select>
-    </label>
     <label>Строки
       <select id="wlStatus">
         <option value="open">открытые</option>
         <option value="all">все</option>
+      </select>
+    </label>
+    <label>Статус
+      <select id="wlWork">
+        <option value="all">все</option>
+        <option value="new">новый</option>
+        <option value="contacted">связались</option>
+        <option value="rebooked">перезаписан</option>
+        <option value="closed">закрыт</option>
+      </select>
+    </label>
+    <label>Источник
+      <select id="wlSource">
+        <option value="all">все</option>
+        <option value="max">MAX</option>
+        <option value="registry">регистратура</option>
       </select>
     </label>
   </div>
@@ -207,6 +232,33 @@
     <button class="btn" id="wlNext" type="button">Вперёд</button>
   </div>
 </section>
+<section class="staff-panel" id="staffPanel" hidden>
+  <h2>Сотрудники</h2>
+  <form id="staffForm" class="staff-form">
+    <label>Логин <input id="staffLogin" required></label>
+    <label>Имя <input id="staffName" required></label>
+    <label>Роль
+      <select id="staffRole">
+        <option value="registrar">Регистратор</option>
+        <option value="manager">Директор / колл-центр</option>
+        <option value="admin">ИТ</option>
+      </select>
+    </label>
+    <label>Филиалы <input id="staffBranches" value="106" placeholder="106 или 3,496 или *"></label>
+    <button class="btn" type="submit" style="color:var(--ink);border-color:var(--line)">Добавить</button>
+  </form>
+  <div id="staffTemp" class="wl-saved"></div>
+  <div id="staffTable"></div>
+</section>
+<div class="modal" id="confirmModal" hidden>
+  <div class="modal-card">
+    <p id="confirmText"></p>
+    <div class="modal-actions">
+      <button class="btn" id="confirmNo" type="button" style="color:var(--ink);border-color:var(--line)">Отмена</button>
+      <button class="btn" id="confirmYes" type="button" style="background:var(--brand);color:#fff;border-color:var(--brand)">Закрыть строку</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ─────────── настройки ───────────
@@ -324,14 +376,12 @@ async function loadSchedule() {
   scheduleBusy = true;
   const epoch = viewEpoch;
   const date = $('date').value || todayISO();
-  const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINT}?date=${encodeURIComponent(date)}`;
+  const branch = $('branch') ? $('branch').value : '';
+  const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINT}?date=${encodeURIComponent(date)}${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`;
   try {
     const res = await fetch(url, {credentials: 'same-origin'});
-    if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || activeTab !== 'schedule') return;
-    if (res.status === 401 || res.status === 403) {
-      window.location.href = '/dashboard/login';
-      return;
-    }
+    if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || ($('branch') && branch !== $('branch').value) || activeTab !== 'schedule') return;
+    if (await authStop(res)) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
@@ -638,15 +688,17 @@ function setTab(name) {
   if (activeTab === name) return;
   activeTab = name;
   viewEpoch++;
-  const schedule = name === 'schedule';
-  $('tabSchedule').classList.toggle('active', schedule);
-  $('tabWaitlist').classList.toggle('active', !schedule);
-  $('board').hidden = !schedule;
-  $('noteSchedule').hidden = !schedule;
-  $('waitlistPanel').hidden = schedule;
-  $('noteWaitlist').hidden = schedule;
-  if (schedule) scheduleKey = '';
-  else waitlistKey = '';
+  $('tabSchedule').classList.toggle('active', name === 'schedule');
+  $('tabWaitlist').classList.toggle('active', name === 'waitlist');
+  $('tabStaff').classList.toggle('active', name === 'staff');
+  $('board').hidden = name !== 'schedule';
+  $('noteSchedule').hidden = name !== 'schedule';
+  $('waitlistPanel').hidden = name !== 'waitlist';
+  $('noteWaitlist').hidden = name !== 'waitlist';
+  $('staffPanel').hidden = name !== 'staff';
+  if (name === 'schedule') scheduleKey = '';
+  if (name === 'waitlist') waitlistKey = '';
+  if (name === 'staff') { loadStaff(); return; }
   load();
 }
 
@@ -669,11 +721,14 @@ async function refreshWaitlistCount() {
 }
 
 function waitlistURL() {
-  const status = $('wlStatus').value || 'open';
-  const branch = $('wlBranch').value;
-  const params = new URLSearchParams({status, page: String(wlPage), per_page: '50'});
+  const scope = $('wlStatus').value || 'open';
+  const work = $('wlWork') ? $('wlWork').value : 'all';
+  const source = $('wlSource') ? $('wlSource').value : 'all';
+  const branch = $('branch') ? $('branch').value : '';
+  const status = work && work !== 'all' ? work : scope;
+  const params = new URLSearchParams({status, page: String(wlPage), per_page: '50', source});
   if (branch) params.set('branch', branch);
-  return {key: `${status}|${branch}|${wlPage}`, url: `${CONFIG.API_BASE}${CONFIG.WAITLIST}?${params}`};
+  return {key: `${status}|${branch}|${wlPage}|${source}`, url: `${CONFIG.API_BASE}${CONFIG.WAITLIST}?${params}`};
 }
 
 async function loadWaitlist() {
@@ -684,10 +739,7 @@ async function loadWaitlist() {
   try {
     const res = await fetch(q.url, {credentials:'same-origin'});
     if (epoch !== viewEpoch || q.key !== waitlistURL().key) return;
-    if (res.status === 401 || res.status === 403) {
-      window.location.href = '/dashboard/login';
-      return;
-    }
+    if (await authStop(res)) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
@@ -734,7 +786,7 @@ function paintWaitlist(data, key) {
     table.className = 'waitlist-table';
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
-    ['Ответ','Пациент','Исходная запись','В Медиалоге','Новая будущая запись','Работа'].forEach(title => {
+    ['Источник','Ответ','Пациент','Исходная запись','В Медиалоге','Новая будущая запись','Работа'].forEach(title => {
       hr.appendChild(el('th', '', title));
     });
     thead.appendChild(hr);
@@ -743,9 +795,9 @@ function paintWaitlist(data, key) {
     wrap.appendChild(table);
   }
   const tbody = table.querySelector('tbody');
-  const ids = items.map(it => String(it.id));
+  const ids = items.map(it => (it.source || 'max') + ':' + it.id);
   items.forEach(it => {
-    let tr = tbody.querySelector(`tr[data-id="${it.id}"]`);
+    let tr = tbody.querySelector(`tr[data-key="${(it.source || 'max') + ':' + it.id}"]`);
     if (!tr) {
       tr = renderWaitlistRow(it);
       tbody.appendChild(tr);
@@ -753,21 +805,21 @@ function paintWaitlist(data, key) {
       wlSeen.set(it.id, it.status);
     } else if (rowBusy(tr)) {
       if ((it.status || '') !== tr.dataset.status) showConflict(tr);
-      pendingWl.set(String(it.id), it);
+      pendingWl.set(tr.dataset.key, it);
     } else {
       applyWaitlistItem(tr, it);
     }
     tr.classList.toggle('fresh', (wlFresh.get(it.id) || 0) > Date.now());
   });
   [...tbody.querySelectorAll('tr')].forEach(tr => {
-    if (!ids.includes(tr.dataset.id)) {
-      pendingWl.delete(tr.dataset.id);
+    if (!ids.includes(tr.dataset.key)) {
+      pendingWl.delete(tr.dataset.key);
       tr.remove();
     }
   });
   let after = null;
   ids.forEach(id => {
-    const tr = tbody.querySelector(`tr[data-id="${id}"]`);
+    const tr = tbody.querySelector(`tr[data-key="${id}"]`);
     if (!tr) return;
     if (tr.previousElementSibling !== after) tbody.insertBefore(tr, after ? after.nextSibling : tbody.firstChild);
     after = tr;
@@ -777,6 +829,9 @@ function paintWaitlist(data, key) {
 function renderWaitlistRow(it) {
   const tr = document.createElement('tr');
   tr.dataset.id = String(it.id);
+  tr.dataset.source = it.source || 'max';
+  tr.dataset.key = tr.dataset.source + ':' + tr.dataset.id;
+  tr.appendChild(el('td'));
   tr.appendChild(el('td'));
   tr.appendChild(el('td'));
   tr.appendChild(el('td'));
@@ -792,6 +847,10 @@ function renderWaitlistRow(it) {
   });
   const oc = document.createElement('select');
   oc.className = 'wl-outcome';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = 'итог';
+  oc.appendChild(blank);
   OUTCOMES.forEach(([v,l]) => {
     const o = document.createElement('option');
     o.value = v; o.textContent = l;
@@ -801,13 +860,27 @@ function renderWaitlistRow(it) {
   btn.type = 'button';
   btn.className = 'btn';
   btn.textContent = 'Сохранить';
-  btn.addEventListener('click', () => saveWaitlist(it.id, st.value, oc.value));
+  btn.addEventListener('click', () => saveFromRow(tr));
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'btn wl-close';
+  closeBtn.textContent = 'Закрыть';
+  closeBtn.addEventListener('click', () => closeRow(tr));
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.className = 'btn wl-reopen';
+  backBtn.textContent = 'Вернуть в работу';
+  backBtn.addEventListener('click', () => reopenRow(tr));
   work.appendChild(st);
   work.appendChild(oc);
   work.appendChild(btn);
+  work.appendChild(closeBtn);
+  work.appendChild(backBtn);
+  work.appendChild(el('div', 'wl-meta'));
+  work.appendChild(el('div', 'wl-saved'));
   tr.appendChild(work);
   tr.addEventListener('focusin', () => touchRow(tr));
-  tr.addEventListener('change', () => touchRow(tr));
+  tr.addEventListener('change', () => { touchRow(tr); saveFromRow(tr); });
   tr.addEventListener('pointerdown', () => touchRow(tr));
   tr.addEventListener('keydown', () => touchRow(tr));
   tr.addEventListener('focusout', () => scheduleRelease(tr));
@@ -817,12 +890,16 @@ function renderWaitlistRow(it) {
 
 function applyWaitlistItem(tr, it) {
   const cells = tr.children;
-  const answer = cells[0];
+  tr.dataset.source = it.source || tr.dataset.source || 'max';
+  tr.dataset.key = tr.dataset.source + ':' + tr.dataset.id;
+  cells[0].textContent = tr.dataset.source === 'registry' ? 'Регистратура' : 'MAX';
+  const answer = cells[1];
   answer.replaceChildren();
   answer.appendChild(el('div', '', it.created_at_msk || it.created_at || ''));
   answer.appendChild(el('div', '', REASON_LABEL[it.reason] || it.reason || ''));
+  if (it.creator_name) answer.appendChild(el('div', '', 'поставил: ' + it.creator_name));
 
-  const patient = cells[1];
+  const patient = cells[2];
   patient.replaceChildren();
   patient.appendChild(el('div', '', it.patient_name || ''));
   if (it.patient_phone) {
@@ -833,23 +910,30 @@ function applyWaitlistItem(tr, it) {
   }
   patient.appendChild(el('div', '', it.patient_birth || '—'));
 
-  const orig = cells[2];
+  const orig = cells[3];
   orig.replaceChildren();
   orig.appendChild(el('div', '', it.orig_date_start || ''));
   orig.appendChild(el('div', '', BRANCH_NAME[it.branch_id] || String(it.branch_id || '')));
   orig.appendChild(el('div', '', it.orig_doctor || ''));
   orig.appendChild(el('div', '', it.orig_service || ''));
 
-  cells[3].textContent = it.medialog_state || '';
+  const med = cells[4];
+  med.replaceChildren();
+  const active = it.medialog_state === 'запись действует';
+  const noFuture = !it.future_date_start;
+  if (active && (noFuture || it.outcome === 'refused')) med.appendChild(el('div', 'med-alert', 'действует — отменить в клиенте'));
+  else med.textContent = it.medialog_state || '';
+  tr.dataset.medialog = it.medialog_state || '';
+  tr.dataset.future = it.future_date_start || '';
 
-  const fut = cells[4];
+  const fut = cells[5];
   fut.replaceChildren();
   fut.appendChild(el('div', '', it.future_label || '—'));
   if (it.future_date_start) fut.appendChild(el('div', '', it.future_date_start));
   if (it.future_doctor) fut.appendChild(el('div', '', it.future_doctor));
   if (it.future_service) fut.appendChild(el('div', '', it.future_service));
 
-  const work = cells[5];
+  const work = cells[6];
   const st = work.querySelector('.wl-status');
   if (it.status === 'new' && !st.querySelector('option[value="new"]')) {
     const o = document.createElement('option');
@@ -861,15 +945,21 @@ function applyWaitlistItem(tr, it) {
   if (it.outcome && [...oc.options].some(o => o.value === it.outcome)) oc.value = it.outcome;
   tr.dataset.status = it.status || '';
   tr.dataset.outcome = it.outcome || '';
+  const closeBtn = work.querySelector('.wl-close');
+  const backBtn = work.querySelector('.wl-reopen');
+  if (closeBtn) closeBtn.hidden = it.status === 'closed';
+  if (backBtn) backBtn.hidden = it.status !== 'closed';
+  const meta = work.querySelector('.wl-meta');
+  if (meta) meta.textContent = it.updated_by ? `${it.updated_by} · ${it.updated_at || ''}` : '';
   const note = work.querySelector('.wl-conflict');
   if (note) note.remove();
-  pendingWl.delete(String(it.id));
+  pendingWl.delete(tr.dataset.key);
   if (wlSeen.size && wlSeen.get(it.id) !== it.status) wlFresh.set(it.id, Date.now() + CONFIG.FRESH_MS);
   wlSeen.set(it.id, it.status);
 }
 
 function showConflict(tr) {
-  const work = tr.children[5];
+  const work = tr.children[6];
   if (work.querySelector('.wl-conflict')) return;
   const box = el('div', 'wl-conflict');
   box.appendChild(el('div', '', 'Изменено другим сотрудником'));
@@ -878,7 +968,7 @@ function showConflict(tr) {
   btn.className = 'btn';
   btn.textContent = 'Обновить строку';
   btn.addEventListener('click', () => {
-    const item = pendingWl.get(tr.dataset.id);
+    const item = pendingWl.get(tr.dataset.key);
     if (item) applyWaitlistItem(tr, item);
   });
   box.appendChild(btn);
@@ -903,12 +993,87 @@ function scheduleRelease(tr) {
 }
 function releaseRow(tr) {
   if (rowBusy(tr)) return;
-  const item = pendingWl.get(tr.dataset.id);
+  const item = pendingWl.get(tr.dataset.key);
   if (item) applyWaitlistItem(tr, item);
 }
 
-async function saveWaitlist(id, status, outcome) {
-  if (status === 'new') return;
+function markRow(tr, text) {
+  const n = tr.querySelector('.wl-saved');
+  if (n) n.textContent = text;
+}
+
+function saveFromRow(tr) {
+  const status = tr.querySelector('.wl-status').value;
+  const outcome = tr.querySelector('.wl-outcome').value;
+  if (!outcome) {
+    markRow(tr, 'Выберите итог');
+    return;
+  }
+  saveWaitlist(tr.dataset.id, status === 'new' ? 'contacted' : status, outcome, tr.dataset.source);
+}
+
+async function closeRow(tr) {
+  const outcome = tr.querySelector('.wl-outcome').value;
+  if (!outcome) {
+    markRow(tr, 'Выберите итог');
+    return;
+  }
+  const active = tr.dataset.medialog === 'запись действует';
+  if (active && (!tr.dataset.future || outcome === 'refused')) {
+    const ok = await askClose();
+    if (!ok) return;
+  }
+  saveWaitlist(tr.dataset.id, 'closed', outcome, tr.dataset.source);
+}
+
+function reopenRow(tr) {
+  const outcome = tr.querySelector('.wl-outcome').value;
+  if (!outcome) {
+    markRow(tr, 'Выберите итог');
+    return;
+  }
+  saveWaitlist(tr.dataset.id, 'contacted', outcome, tr.dataset.source);
+}
+
+function askClose() {
+  const modal = $('confirmModal');
+  $('confirmText').textContent = 'Запись в Медиалоге ещё действует — отмените её в клиенте (правый щелчок → „Пациент не придёт“). Закрыть строку?';
+  modal.hidden = false;
+  return new Promise(resolve => {
+    const yes = $('confirmYes');
+    const no = $('confirmNo');
+    const done = value => {
+      modal.hidden = true;
+      yes.removeEventListener('click', onYes);
+      no.removeEventListener('click', onNo);
+      resolve(value);
+    };
+    const onYes = () => done(true);
+    const onNo = () => done(false);
+    yes.addEventListener('click', onYes);
+    no.addEventListener('click', onNo);
+  });
+}
+
+async function authStop(res) {
+  if (res.status === 401) {
+    window.location.href = '/dashboard/login';
+    return true;
+  }
+  if (res.status !== 403) return false;
+  let code = '';
+  try {
+    const body = await res.clone().json();
+    if (body.error_details) code = body.error_details.code || '';
+  } catch (e) {}
+  if (code === 'PASSWORD_CHANGE_REQUIRED') {
+    window.location.href = '/dashboard/password';
+    return true;
+  }
+  return false;
+}
+
+async function saveWaitlist(id, status, outcome, source) {
   try {
     const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}/${id}`, {
       method: 'POST',
@@ -917,12 +1082,9 @@ async function saveWaitlist(id, status, outcome) {
         'Content-Type': 'application/json',
         'X-Dashboard-Request': '1'
       },
-      body: JSON.stringify({status, outcome})
+      body: JSON.stringify({status, outcome, source: source || 'max'})
     });
-    if (res.status === 401 || res.status === 403) {
-      window.location.href = '/dashboard/login';
-      return;
-    }
+    if (await authStop(res)) return;
     if (res.status === 409) {
       let msg = 'Заявку уже обновил другой сотрудник — обновите страницу';
       try {
@@ -934,19 +1096,27 @@ async function saveWaitlist(id, status, outcome) {
       showBanner(msg);
       return;
     }
-    if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
-    const tr = document.querySelector(`#waitlistList tr[data-id="${id}"]`);
-    if (tr) {
-      tr._busyUntil = 0;
-      pendingWl.delete(String(id));
+    if (!res.ok) {
+      let msg = `сервер ответил ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body.error) msg = body.error;
+      } catch (e) {}
+      throw new Error(msg);
     }
-    await reloadWaitlistRow(id);
+    const key = (source || 'max') + ':' + id;
+    const tr = document.querySelector(`#waitlistList tr[data-key="${key}"]`);
+    if (tr) {
+      pendingWl.delete(tr.dataset.key);
+      markRow(tr, 'Сохранено');
+    }
+    await reloadWaitlistRow(id, source);
   } catch (err) {
     showBanner(`Не удалось сохранить: ${err.message}`);
   }
 }
 
-async function reloadWaitlistRow(id) {
+async function reloadWaitlistRow(id, source) {
   const q = waitlistURL();
   const res = await fetch(q.url, {credentials:'same-origin'});
   if (!res.ok) return;
@@ -954,9 +1124,19 @@ async function reloadWaitlistRow(id) {
   if (!body.success || !body.data) return;
   const data = body.data;
   $('waitlistCount').textContent = String(data.open_total || 0);
-  const item = (data.items || []).find(it => String(it.id) === String(id));
-  const tr = document.querySelector(`#waitlistList tr[data-id="${id}"]`);
-  if (item && tr) applyWaitlistItem(tr, item);
+  const item = (data.items || []).find(it => String(it.id) === String(id) && (!source || (it.source || 'max') === source));
+  const key = (source || (item && item.source) || 'max') + ':' + id;
+  const tr = document.querySelector(`#waitlistList tr[data-key="${key}"]`) || document.querySelector(`#waitlistList tr[data-id="${id}"]`);
+  if (item && tr) {
+    applyWaitlistItem(tr, item);
+    return;
+  }
+  if (tr) tr.remove();
+  const wrap = $('waitlistList');
+  if (!wrap.querySelector('tbody tr')) {
+    wrap.querySelectorAll('table,.empty').forEach(n => n.remove());
+    wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
+  }
 }
 
 function arm() {
@@ -993,15 +1173,178 @@ window.addEventListener('pageshow', event => {
   if (event.persisted || document.readyState === 'complete') load();
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+function storageGet(key) {
+  try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+}
+function storageSet(key, value) {
+  try { localStorage.setItem(key, value); } catch (e) {}
+}
+function restoreChoice(id, key) {
+  const saved = storageGet(key);
+  const el = $(id);
+  if (!el || !saved) return;
+  if ([...el.options].some(o => o.value === saved)) el.value = saved;
+}
+
+async function loadMe() {
+  restoreChoice('wlStatus', 'mk_dash_wl_scope');
+  restoreChoice('wlWork', 'mk_dash_wl_status');
+  restoreChoice('wlSource', 'mk_dash_wl_source');
+  try {
+    const res = await fetch(`${CONFIG.API_BASE}/dashboard/me`, {credentials: 'same-origin'});
+    if (res.status === 401) {
+      window.location.href = '/dashboard/login';
+      return;
+    }
+    if (!res.ok) return;
+    const body = await res.json();
+    if (!body.success || !body.data) return;
+    const me = body.data;
+    const sel = $('branch');
+    [...sel.options].slice(1).forEach(o => o.remove());
+    (me.branches || []).forEach(b => {
+      const o = document.createElement('option');
+      o.value = String(b.id);
+      o.textContent = b.name;
+      sel.appendChild(o);
+    });
+    const saved = storageGet('mk_dash_branch');
+    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+    if (me.role === 'admin') $('tabStaff').hidden = false;
+  } catch (e) {}
+}
+
+async function loadStaff() {
+  const box = $('staffTable');
+  box.replaceChildren();
+  try {
+    const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff`, {credentials: 'same-origin'});
+    if (await authStop(res)) return;
+    if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
+    const body = await res.json();
+    if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
+    const users = (body.data && body.data.users) || [];
+    const table = document.createElement('table');
+    const hr = document.createElement('tr');
+    ['Логин', 'Имя', 'Роль', 'Филиалы', 'Активен', ''].forEach(title => hr.appendChild(el('th', '', title)));
+    const thead = document.createElement('thead');
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tb = document.createElement('tbody');
+    users.forEach(u => {
+      const tr = document.createElement('tr');
+      tr.appendChild(el('td', '', u.login || ''));
+      tr.appendChild(el('td', '', u.full_name || ''));
+      const role = document.createElement('select');
+      [['registrar','Регистратор'],['manager','Директор / колл-центр'],['admin','ИТ']].forEach(([v,l]) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = l;
+        role.appendChild(o);
+      });
+      role.value = u.role;
+      const branches = document.createElement('input');
+      branches.value = u.branches || '';
+      const active = document.createElement('input');
+      active.type = 'checkbox';
+      active.checked = !!u.active;
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'btn';
+      save.textContent = 'Сохранить';
+      save.addEventListener('click', () => updateStaff(u.id, {role: role.value, branches: branches.value, active: active.checked}));
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'btn';
+      reset.textContent = 'Сбросить пароль';
+      reset.addEventListener('click', () => updateStaff(u.id, {role: role.value, branches: branches.value, active: active.checked, reset_password: true}));
+      tr.appendChild(el('td')).appendChild(role);
+      tr.appendChild(el('td')).appendChild(branches);
+      tr.appendChild(el('td')).appendChild(active);
+      const actions = el('td');
+      actions.appendChild(save);
+      actions.appendChild(reset);
+      tr.appendChild(actions);
+      tb.appendChild(tr);
+    });
+    table.appendChild(tb);
+    box.appendChild(table);
+  } catch (err) {
+    box.appendChild(el('div', 'empty', err.message));
+  }
+}
+
+async function updateStaff(id, payload) {
+  try {
+    const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff/${id}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-Dashboard-Request': '1'},
+      body: JSON.stringify(payload)
+    });
+    if (await authStop(res)) return;
+    const body = await res.json();
+    if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
+    if (body.data && body.data.temporary_password) $('staffTemp').textContent = 'Временный пароль: ' + body.data.temporary_password;
+    else $('staffTemp').textContent = 'Сохранено';
+    loadStaff();
+  } catch (err) {
+    $('staffTemp').textContent = err.message;
+  }
+}
+
 $('tabSchedule').addEventListener('click', () => setTab('schedule'));
 $('tabWaitlist').addEventListener('click', () => setTab('waitlist'));
-$('wlBranch').addEventListener('change', () => { wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
-$('wlStatus').addEventListener('change', () => { wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
+$('tabStaff').addEventListener('click', () => setTab('staff'));
+$('branch').addEventListener('change', () => {
+  storageSet('mk_dash_branch', $('branch').value);
+  viewEpoch++;
+  userScrolled.clear();
+  scheduleKey = '';
+  waitlistKey = '';
+  wlPage = 1;
+  load();
+});
+$('wlStatus').addEventListener('change', () => {
+  storageSet('mk_dash_wl_scope', $('wlStatus').value);
+  wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
+});
+$('wlWork').addEventListener('change', () => {
+  storageSet('mk_dash_wl_status', $('wlWork').value);
+  wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
+});
+$('wlSource').addEventListener('change', () => {
+  storageSet('mk_dash_wl_source', $('wlSource').value);
+  wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
+});
 $('wlPrev').addEventListener('click', () => { if (wlPage > 1) { wlPage--; viewEpoch++; waitlistKey = ''; loadWaitlist(); } });
 $('wlNext').addEventListener('click', () => { wlPage++; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
+$('staffForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-Dashboard-Request': '1'},
+      body: JSON.stringify({
+        login: $('staffLogin').value,
+        full_name: $('staffName').value,
+        role: $('staffRole').value,
+        branches: $('staffBranches').value
+      })
+    });
+    if (await authStop(res)) return;
+    const body = await res.json();
+    if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
+    $('staffTemp').textContent = body.data && body.data.temporary_password ? 'Временный пароль: ' + body.data.temporary_password : 'Сохранено';
+    $('staffForm').reset();
+    $('staffBranches').value = '106';
+    loadStaff();
+  } catch (err) {
+    $('staffTemp').textContent = err.message;
+  }
+});
 
-load();
-arm();
+loadMe().finally(() => { load(); arm(); });
 </script>
 </body>
 </html>
