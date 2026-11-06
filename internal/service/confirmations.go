@@ -19,5 +19,5 @@ func (s *Services) UpsertConfirmation(ctx context.Context, planningID, patientID
 	if apptVersion == "" || apptVersion != current {
 		return confirmations.Record{}, confirmations.ErrStaleReminder
 	}
-	return confirmations.NewRepo(s.SQLite).Upsert(ctx, planningID, patientID, status, source, appt.DateStart, current)
+	return confirmations.NewRepo(s.SQLite).Upsert(ctx, planningID, patientID, status, source, appt.DateStart, current, appt.BranchID)
 }

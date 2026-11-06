@@ -25,7 +25,7 @@ for v in DB_SERVER DB_PORT DB_NAME DB_USER DB_PASSWORD; do
   fi
 done
 
-IMG="${GO_IMAGE:-golang:1.22-alpine}"
+IMG="${GO_IMAGE:-golang:1.27-alpine}"
 
 echo "Running integration tests in ${IMG} on network ${NET}"
 echo "Repo: $(pwd)"

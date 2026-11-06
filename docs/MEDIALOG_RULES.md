@@ -10,6 +10,24 @@ Medialog — продакшн‑БД клиники. Наша интеграци
 - Поднимать уровень изоляции выше `READ COMMITTED` в пользовательском коде.
 - Использовать table hints (`UPDLOCK`, `HOLDLOCK`, `TABLOCK`, …) как способ “исправить гонки”.
 
+## Параметры даты и времени в SQL к Medialog
+
+go-mssqldb отдаёт `time.Time` как `datetimeoffset`. SQL Server сравнивает его с «наивным»
+`datetime` (`PLANNING.DATE_START`, `MOTCONSU.DATE_CONSULTATION` и т.п.) по UTC — граница
+съезжает на три часа.
+
+- В `sql.Named` для Medialog передавать **строку** московского «настенного» времени
+  `2006-01-02T15:04:05` (ISO с `T`, не зависит от языка сеанса) или `гггг-мм-дд` для `date`.
+- В запросе сравнивать через явное преобразование: `CONVERT(datetime, @now, 126)` (стиль 126)
+  или `CONVERT(date, @date, 23)` для календарной даты.
+- `time.Time`, `*time.Time` и `sql.NullTime` в `sql.Named` для Medialog **запрещены**.
+  Исключений сторожа нет: `me.go:Appointments` снят после мержа LK-1a.
+  `motconsu.go:ChangesSince` и `motconsu.go:PollAfter` передают строку `mssqlCursorLayout`
+  (`2006-01-02T15:04:05.0000000`, те же цифры, без сдвига на MSK) и
+  `CONVERT(datetime2(7), …, 126)`, чтобы курсор не терял доли секунды.
+
+Тест-сторож: `TestMSSQLNamedArgsForbidTimeTime` в `internal/repo`.
+
 ## Разрешено
 
 - `SELECT` для read-path’ов.

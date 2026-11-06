@@ -112,7 +112,7 @@ SELECT @NewID;`,
 		sql.Named("medID", medecinsID),
 		sql.Named("fmID", fmDepID),
 		sql.Named("depID", meddep),
-		sql.Named("dt", dateConsultation),
+		sql.Named("dt", dateConsultation.Format(mssqlReminderBoundLayout)),
 	).Scan(&motconsuID); err != nil || motconsuID == 0 {
 		return BookMeResult{}, fmt.Errorf("CreateMotconsu: %w", err)
 	}

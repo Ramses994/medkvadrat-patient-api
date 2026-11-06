@@ -14,6 +14,7 @@ type PlanningAppointment struct {
 	DateStart string // wall-clock "2006-01-02 15:04:05", empty if NULL
 	PlSubjID  int64
 	PlExamID  int64
+	BranchID  int // PL_SUBJ.FM_INTORG_ID at lookup time
 }
 
 // PlanningPatientID returns PATIENTS_ID for a scheduled appointment (read-only).
@@ -29,12 +30,14 @@ func PlanningPatientID(ctx context.Context, db *sql.DB, planningID int64) (int64
 func PlanningAppointmentByID(ctx context.Context, db *sql.DB, planningID int64) (PlanningAppointment, error) {
 	var patientID sql.NullInt64
 	var dateStart sql.NullString
-	var plSubj, plExam sql.NullInt64
+	var plSubj, plExam, branch sql.NullInt64
 	err := db.QueryRowContext(ctx, `
-SELECT PATIENTS_ID, CONVERT(varchar(19), DATE_START, 120), ISNULL(PL_SUBJ_ID,0), ISNULL(PL_EXAM_ID,0)
-FROM PLANNING WHERE PLANNING_ID = @id`,
+SELECT p.PATIENTS_ID, CONVERT(varchar(19), p.DATE_START, 120), ISNULL(p.PL_SUBJ_ID,0), ISNULL(p.PL_EXAM_ID,0), ISNULL(ps.FM_INTORG_ID,0)
+FROM PLANNING p
+LEFT JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
+WHERE p.PLANNING_ID = @id`,
 		sql.Named("id", planningID),
-	).Scan(&patientID, &dateStart, &plSubj, &plExam)
+	).Scan(&patientID, &dateStart, &plSubj, &plExam, &branch)
 	if err == sql.ErrNoRows {
 		return PlanningAppointment{}, confirmations.ErrAppointmentNotFound
 	}
@@ -53,5 +56,6 @@ FROM PLANNING WHERE PLANNING_ID = @id`,
 		DateStart: start,
 		PlSubjID:  plSubj.Int64,
 		PlExamID:  plExam.Int64,
+		BranchID:  int(branch.Int64),
 	}, nil
 }

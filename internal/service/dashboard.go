@@ -28,5 +28,16 @@ func (s *Services) DashboardSchedule(ctx context.Context, date time.Time) (repo.
 		overlay[id] = repo.ConfirmationOverlay{Status: o.Status, Version: o.Version}
 	}
 
-	return repo.BuildDashboardSchedule(date, rows, overlay), nil
+	sched := repo.BuildDashboardSchedule(date, rows, overlay)
+	open, err := confirmations.NewRepo(s.SQLite).OpenWaitlistPlanningIDs(ctx, ids)
+	if err != nil {
+		return repo.DashboardSchedule{}, err
+	}
+	for i := range sched.Branches {
+		for j := range sched.Branches[i].Appointments {
+			a := &sched.Branches[i].Appointments[j]
+			a.OnWaitlist = open[a.PlanningID]
+		}
+	}
+	return sched, nil
 }

@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// mssqlCursorLayout keeps fractional seconds of a clinic wall clock.
+// datetime stores 1/300 s, datetime2 up to 100 ns. No zone conversion.
+const mssqlCursorLayout = "2006-01-02T15:04:05.0000000"
+
+func mssqlCursorBound(t time.Time) string {
+	return t.Format(mssqlCursorLayout)
+}
+
 type MotconsuRepo struct {
 	db *sql.DB
 }
@@ -29,10 +37,12 @@ func (r *MotconsuRepo) ChangesSince(ctx context.Context, since time.Time) ([]Sch
 		FROM MOTCONSU m
 		LEFT JOIN PATIENTS p ON p.PATIENTS_ID = m.PATIENTS_ID
 		LEFT JOIN MEDECINS d ON d.MEDECINS_ID = m.MEDECINS_ID
-		WHERE m.KRN_MODIFY_DATE > @since
+		WHERE m.KRN_MODIFY_DATE > CONVERT(datetime2(7), @since, 126)
 		ORDER BY m.KRN_MODIFY_DATE DESC`
 
-	rows, err := r.db.QueryContext(ctx, query, sql.Named("since", since))
+	// since приходит из time.Parse без зоны: цифры — это naive datetime клиники.
+	// In(Moscow) сдвинул бы границу на +3ч. Дробная часть нужна, чтобы курсор не перечитывал ту же строку.
+	rows, err := r.db.QueryContext(ctx, query, sql.Named("since", mssqlCursorBound(since)))
 	if err != nil {
 		return nil, fmt.Errorf("query changes: %w", err)
 	}
@@ -65,10 +75,11 @@ func (r *MotconsuRepo) PollAfter(ctx context.Context, last time.Time) ([]PollRow
 		SELECT m.MOTCONSU_ID, m.PATIENTS_ID, m.MEDECINS_ID,
 			m.DATE_CONSULTATION, m.KRN_MODIFY_DATE
 		FROM MOTCONSU m
-		WHERE m.KRN_MODIFY_DATE > @lastDate
+		WHERE m.KRN_MODIFY_DATE > CONVERT(datetime2(7), @lastDate, 126)
 		ORDER BY m.KRN_MODIFY_DATE ASC`
 
-	rows, err := r.db.QueryContext(ctx, query, sql.Named("lastDate", last))
+	// last — scan datetime (цифры часов SQL, локация драйвера UTC). Без сдвига зоны.
+	rows, err := r.db.QueryContext(ctx, query, sql.Named("lastDate", mssqlCursorBound(last)))
 	if err != nil {
 		return nil, fmt.Errorf("query poll: %w", err)
 	}

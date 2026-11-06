@@ -60,7 +60,7 @@ func TestNotifyQueries_ReadOnlyLive(t *testing.T) {
 func assertNotifySQLReadOnly(t *testing.T) {
 	t.Helper()
 	root := filepath.Join("..", "repo")
-	files := []string{"reminders.go", "new_bookings.go", "dashboard_schedule.go", "planning_owner.go"}
+	files := []string{"reminders.go", "new_bookings.go", "dashboard_schedule.go", "planning_owner.go", "waitlist_medialog.go"}
 	for _, name := range files {
 		b, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {

@@ -34,6 +34,32 @@ func TestDashboardPage_ServesHTML(t *testing.T) {
 	if !strings.Contains(body, "/dashboard/data") {
 		t.Fatal("expected /dashboard/data endpoint")
 	}
+	if !strings.Contains(body, "/dashboard/waitlist") {
+		t.Fatal("expected waitlist endpoint")
+	}
+	if !strings.Contains(body, "Ответы пациентов в MAX") {
+		t.Fatal("expected waitlist caption")
+	}
+	if !strings.Contains(body, "a.textContent = it.patient_phone") {
+		t.Fatal("phone must be assigned via textContent")
+	}
+	if !strings.Contains(body, "it.patient_birth || '—'") {
+		t.Fatal("empty birth date must render as a dash")
+	}
+	if !strings.Contains(body, "res.status === 409") {
+		t.Fatal("waitlist save must handle WAITLIST_CHANGED")
+	}
+	save := body[strings.Index(body, "async function saveWaitlist"):]
+	block := save[strings.Index(save, "if (res.status === 409)"):strings.Index(save, "if (!res.ok)")]
+	if load, show := strings.Index(block, "await loadWaitlist()"), strings.Index(block, "showBanner(msg)"); load < 0 || show < load {
+		t.Fatal("409 banner must stay visible after the list refresh")
+	}
+	for _, line := range strings.Split(body, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.Contains(trim, "innerHTML") && !strings.Contains(trim, "board.innerHTML = ''") && !strings.Contains(trim, "wrap.innerHTML = ''") {
+			t.Fatalf("unexpected innerHTML: %s", trim)
+		}
+	}
 }
 
 func TestDashboardPage_NotConfigured(t *testing.T) {

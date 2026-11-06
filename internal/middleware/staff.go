@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -8,6 +9,19 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 )
+
+type staffCtxKey struct{}
+
+func StaffUpdatedBy(r *http.Request) string {
+	if v, ok := r.Context().Value(staffCtxKey{}).(string); ok && v != "" {
+		return v
+	}
+	return "staff"
+}
+
+func isDashboardJSON(path string) bool {
+	return strings.HasPrefix(path, "/dashboard/data") || strings.HasPrefix(path, "/dashboard/waitlist")
+}
 
 func staffNoStore(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -68,7 +82,7 @@ func (s RequireStaff) Wrap(next http.Handler) http.Handler {
 			ok, _ = staffsession.Valid(s.Secret, c.Value, s.now())
 		}
 		if !ok {
-			if strings.HasPrefix(r.URL.Path, "/dashboard/data") {
+			if isDashboardJSON(r.URL.Path) {
 				staffError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
 				return
 			}
@@ -76,6 +90,7 @@ func (s RequireStaff) Wrap(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/dashboard/login", http.StatusFound)
 			return
 		}
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), staffCtxKey{}, staffsession.UpdatedBy(c.Value))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -33,7 +33,7 @@ func TestRepo_FirstAnswerWinsUntilVersionChanges(t *testing.T) {
 	r := NewRepo(openTestDB(t))
 	ctx := context.Background()
 
-	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max", "2026-06-26 19:30:00", "ver-a")
+	rec, err := r.Upsert(ctx, 100, 200, "confirmed", "max", "2026-06-26 19:30:00", "ver-a", 106)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,13 +41,13 @@ func TestRepo_FirstAnswerWinsUntilVersionChanges(t *testing.T) {
 		t.Fatalf("%+v", rec)
 	}
 
-	_, err = r.Upsert(ctx, 100, 200, "declined", "max", "2026-06-26 19:30:00", "ver-a")
+	_, err = r.Upsert(ctx, 100, 200, "declined", "max", "2026-06-26 19:30:00", "ver-a", 106)
 	var already *AlreadyAnsweredError
 	if !asAlready(err, &already) || already.Record.Status != "confirmed" {
 		t.Fatalf("repeat: %v", err)
 	}
 
-	rec2, err := r.Upsert(ctx, 100, 200, "reschedule", "max", "2026-06-27 10:00:00", "ver-b")
+	rec2, err := r.Upsert(ctx, 100, 200, "reschedule", "max", "2026-06-27 10:00:00", "ver-b", 106)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +59,10 @@ func TestRepo_FirstAnswerWinsUntilVersionChanges(t *testing.T) {
 func TestRepo_NullVersionAllowsNewAnswer(t *testing.T) {
 	r := NewRepo(openTestDB(t))
 	ctx := context.Background()
-	if _, err := r.Upsert(ctx, 7, 1, "confirmed", "max", "", ""); err != nil {
+	if _, err := r.Upsert(ctx, 7, 1, "confirmed", "max", "", "", 0); err != nil {
 		t.Fatal(err)
 	}
-	rec, err := r.Upsert(ctx, 7, 1, "declined", "max", "2026-06-26 19:30:00", "ver-a")
+	rec, err := r.Upsert(ctx, 7, 1, "declined", "max", "2026-06-26 19:30:00", "ver-a", 3)
 	if err != nil {
 		t.Fatalf("null stored version must accept new answer: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestRepo_RaceOneWinner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := r.Upsert(ctx, 1, 2, "confirmed", "max", "2026-06-26 19:30:00", "abc")
+			_, err := r.Upsert(ctx, 1, 2, "confirmed", "max", "2026-06-26 19:30:00", "abc", 106)
 			if err == nil {
 				okN.Add(1)
 				return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 func Migrate(ctx context.Context, db *sql.DB) error {
@@ -66,6 +67,26 @@ CREATE TABLE IF NOT EXISTS medialog_write_log (
   error_code  TEXT
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_medialog_write_log_created ON medialog_write_log(created_at);`,
+		`
+CREATE TABLE IF NOT EXISTS waitlist (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  planning_id     INTEGER NOT NULL,
+  patient_id      INTEGER NOT NULL,
+  appt_version    TEXT NOT NULL,
+  appt_start      TEXT NOT NULL,
+  reason          TEXT NOT NULL,
+  source          TEXT NOT NULL DEFAULT 'max',
+  status          TEXT NOT NULL,
+  outcome         TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  created_at_msk  TEXT NOT NULL,
+  branch_id       INTEGER NOT NULL DEFAULT 0,
+  updated_by      TEXT
+);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_waitlist_planning_version ON waitlist(planning_id, appt_version);`,
+		`CREATE INDEX IF NOT EXISTS idx_waitlist_status_created ON waitlist(status, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_waitlist_branch_status ON waitlist(branch_id, status);`,
 	}
 
 	for i, s := range stmts {
@@ -77,6 +98,9 @@ CREATE TABLE IF NOT EXISTS medialog_write_log (
 		return err
 	}
 	if err := ensureColumn(ctx, db, "appointment_confirmations", "appt_version", "TEXT"); err != nil {
+		return err
+	}
+	if _, err := PurgeClosedWaitlist(ctx, db, time.Now().UTC()); err != nil {
 		return err
 	}
 	return nil

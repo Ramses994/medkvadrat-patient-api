@@ -79,6 +79,15 @@ func TestPasswordMatch(t *testing.T) {
 	}
 }
 
+func TestUpdatedBy(t *testing.T) {
+	if got := UpdatedBy("123|abcdef12ffff"); got != "staffabcdef12" {
+		t.Fatalf("got %q", got)
+	}
+	if got := UpdatedBy("bad"); got != "staff" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestClientIP(t *testing.T) {
 	if got := ClientIP("192.168.1.5:54321"); got != "192.168.1.5" {
 		t.Fatalf("got %q", got)

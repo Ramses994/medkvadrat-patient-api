@@ -55,7 +55,7 @@ VALUES (1, 'confirmed', 'max', 2, datetime('now'))`); err != nil {
 	if counts["confirmed"] != 0 {
 		t.Fatalf("counts=%v", counts)
 	}
-	rec, err := confirmations.NewRepo(db).Upsert(ctx, 1, 2, "declined", "max", "2026-06-26 19:30:00", "ver-new")
+	rec, err := confirmations.NewRepo(db).Upsert(ctx, 1, 2, "declined", "max", "2026-06-26 19:30:00", "ver-new", 106)
 	if err != nil {
 		t.Fatalf("new answer after migration: %v", err)
 	}

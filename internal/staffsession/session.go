@@ -70,6 +70,15 @@ func PasswordMatch(expected, candidate string) bool {
 }
 
 // ClientIP returns host from RemoteAddr (no X-Forwarded-For — trust only direct peer).
+// UpdatedBy is a non-PII staff marker: "staff" plus 8 hex characters of the cookie MAC.
+func UpdatedBy(cookieValue string) string {
+	parts := strings.Split(cookieValue, "|")
+	if len(parts) != 2 || len(parts[1]) < 8 {
+		return "staff"
+	}
+	return "staff" + parts[1][:8]
+}
+
 func ClientIP(remoteAddr string) string {
 	host := remoteAddr
 	if i := strings.LastIndex(remoteAddr, ":"); i >= 0 {
