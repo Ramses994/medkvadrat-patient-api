@@ -2,22 +2,17 @@ package handler
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
-	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
 )
 
 type ScheduleService interface {
 	ScheduleChanges(ctx context.Context, since time.Time) ([]repo.ScheduleChange, error)
-	Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error)
 }
 
 type ScheduleHandler struct {
@@ -68,70 +63,4 @@ func (h ScheduleHandler) Changes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.OK(w, out)
-}
-
-type bookRequest struct {
-	PlanningID int `json:"planning_id"`
-	PatientID  int `json:"patient_id"`
-	ModelsID   int `json:"models_id"`
-	MeddepID   int `json:"meddep_id"`
-}
-
-type bookResponse struct {
-	MotconsuID int `json:"motconsu_id"`
-}
-
-func (h ScheduleHandler) Book(w http.ResponseWriter, r *http.Request) {
-	medialogwrite.RespondFeatureDisabled(w)
-}
-
-// bookLegacy — Deprecated: wrong free-time model, see docs/lk/00 §3. Kept for LK-2a.
-func (h ScheduleHandler) bookLegacy(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		response.Error(w, http.StatusMethodNotAllowed, "VALIDATION", "POST only")
-		return
-	}
-	var req bookRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "Невалидный JSON")
-		return
-	}
-	if req.PlanningID == 0 || req.PatientID == 0 {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "planning_id и patient_id обязательны")
-		return
-	}
-	writeCtx, cancel := context.WithTimeout(r.Context(), medialogwrite.MedialogQueryTimeout)
-	defer cancel()
-	logID, ok := h.WriteGuard.GuardBook(writeCtx, w, r, "POST /api/schedule/book", int64(req.PatientID), int64(req.PlanningID))
-	if !ok {
-		return
-	}
-	rid := middleware.GetRequestID(r.Context())
-
-	res, err := h.Svc.Book(writeCtx, repo.BookInput{
-		PlanningID: req.PlanningID,
-		PatientID:  req.PatientID,
-		ModelsID:   req.ModelsID,
-		MeddepID:   req.MeddepID,
-	})
-	if err != nil {
-		if errors.Is(err, medialogwrite.ErrWriteNotConfigured) {
-			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "WRITE_NOT_CONFIGURED")
-			response.Error(w, http.StatusServiceUnavailable, "WRITE_NOT_CONFIGURED", medialogwrite.PatientForbiddenMessage)
-			return
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "NOT_FOUND")
-			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Слот не найден или уже занят")
-			return
-		}
-		medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "error", "INTERNAL")
-		h.Logger.Error("book failed", "err", err)
-		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
-		return
-	}
-
-	medialogwrite.FinishWriteLog(h.Logger, rid, h.WriteGuard.Log, logID, "ok", "")
-	h.Logger.Info("booked", "motconsu_id", res.MotconsuID, "planning_id", req.PlanningID, "patient_id", req.PatientID)
-	response.OK(w, bookResponse{MotconsuID: res.MotconsuID})
 }

@@ -30,6 +30,10 @@ type Config struct {
 	SlotTokenSecret            string
 	BookingMinHoursAhead       int
 	BookingMaxDays             int
+	BookingMaxFuture           int
+	LKAuthorMedecinsID         int64
+	LKAuthorMeddepID           int64
+	MedialogRWTimeout          time.Duration
 
 	HTTP      HTTPConfig
 	MSSQL     MSSQLConfig
@@ -127,6 +131,10 @@ func Load() (Config, error) {
 		SlotTokenSecret:            os.Getenv("SLOT_TOKEN_SECRET"),
 		BookingMinHoursAhead:       positiveOr(mustInt(getEnv("BOOKING_MIN_HOURS_AHEAD", "2"), 2), 2),
 		BookingMaxDays:             positiveOr(mustInt(getEnv("BOOKING_MAX_DAYS", "14"), 14), 14),
+		BookingMaxFuture:           positiveOr(mustInt(getEnv("BOOKING_MAX_FUTURE_PER_PATIENT", "3"), 3), 3),
+		LKAuthorMedecinsID:         authorMedecinsID(),
+		LKAuthorMeddepID:           authorMeddepID(),
+		MedialogRWTimeout:          time.Duration(positiveOr(mustInt(getEnv("MEDIALOG_RW_TIMEOUT_SECONDS", "30"), 30), 30)) * time.Second,
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
@@ -251,6 +259,34 @@ func ClampBookingMaxDays(n int) (int, bool) {
 func positiveOr(n, def int) int {
 	if n <= 0 {
 		return def
+	}
+	return n
+}
+
+func authorMedecinsID() int64 {
+	v, ok := os.LookupEnv("LK_AUTHOR_MEDECINS_ID")
+	if !ok || strings.TrimSpace(v) == "" {
+		return 2058
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// authorMeddepID defaults to the cabinet department. An explicit 0 or empty value disables booking.
+func authorMeddepID() int64 {
+	v, ok := os.LookupEnv("LK_AUTHOR_MEDDEP_ID")
+	if !ok {
+		return 10002309
+	}
+	if strings.TrimSpace(v) == "" || strings.TrimSpace(v) == "0" {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
 	}
 	return n
 }

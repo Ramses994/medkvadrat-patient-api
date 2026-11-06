@@ -87,6 +87,26 @@ CREATE TABLE IF NOT EXISTS waitlist (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_waitlist_planning_version ON waitlist(planning_id, appt_version);`,
 		`CREATE INDEX IF NOT EXISTS idx_waitlist_status_created ON waitlist(status, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_waitlist_branch_status ON waitlist(branch_id, status);`,
+		`
+CREATE TABLE IF NOT EXISTS lk_write_ops (
+  op_id TEXT PRIMARY KEY,
+  patient_id INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  intent_json TEXT NOT NULL,
+  context_json TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  code TEXT NOT NULL DEFAULT '',
+  planning_id INTEGER,
+  started_at TEXT NOT NULL,
+  started_at_msk TEXT NOT NULL,
+  finished_at TEXT,
+  resolved_by TEXT,
+  resolve_note_code TEXT,
+  unresolved_logged_at TEXT,
+  UNIQUE(patient_id, action, request_id)
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_lk_write_ops_patient_state ON lk_write_ops(patient_id, state);`,
 	}
 
 	for i, s := range stmts {

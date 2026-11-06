@@ -87,14 +87,6 @@ func (fakeMeSvc) LabPanels(ctx context.Context, patientID string, daysBack int) 
 	}, nil
 }
 
-func (fakeMeSvc) MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (int64, bool, error) {
-	return 555, false, nil
-}
-
-func (fakeMeSvc) MeCancelAppointment(ctx context.Context, patientID int64, motconsuID int64, now time.Time) error {
-	return nil
-}
-
 func TestGolden_Me_Profile_OK(t *testing.T) {
 	h := MeHandler{Svc: fakeMeSvc{}}
 	r := httptest.NewRequest(http.MethodGet, "/api/me/profile", nil)
