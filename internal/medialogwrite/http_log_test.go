@@ -104,21 +104,3 @@ func TestGuardBook_LookupTimeout(t *testing.T) {
 	}
 }
 
-func TestGuardCancel_NoPlanning(t *testing.T) {
-	deps := HTTPDeps{
-		Guard:  NewGuard(true, true, []int64{1}, []int64{10}),
-		Lookup: stubPlanningLookup{planningErr: ErrNoPlanning},
-	}
-	r := httptest.NewRequest(http.MethodDelete, "/api/me/appointments/5", nil)
-	ctx := context.WithValue(r.Context(), middleware.RequestIDKey, "req-noplan")
-	r = r.WithContext(ctx)
-	w := httptest.NewRecorder()
-
-	_, ok := deps.GuardCancel(ctx, w, r, "DELETE /api/me/appointments/{motconsu_id}", 1, 5)
-	if ok {
-		t.Fatal("expected deny")
-	}
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-}

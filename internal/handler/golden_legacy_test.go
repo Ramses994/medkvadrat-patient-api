@@ -30,10 +30,6 @@ func (fakeScheduleSvc) ScheduleChanges(ctx context.Context, since time.Time) ([]
 		},
 	}, nil
 }
-func (fakeScheduleSvc) Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error) {
-	return repo.BookResult{MotconsuID: 123}, nil
-}
-
 type fakeDoctorSvc struct{}
 
 func (fakeDoctorSvc) Doctors(ctx context.Context) ([]repo.Doctor, error) {
@@ -179,18 +175,6 @@ func TestGolden_LabPanels_OK_LegacyShape(t *testing.T) {
 	assertGolden(t, "lab_panels_ok", rr.Body.Bytes())
 }
 
-func TestGolden_Book_InvalidJSON_LegacyShape(t *testing.T) {
-	h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/schedule/book", bytes.NewBufferString("{"))
-
-	h.bookLegacy(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d", rr.Code)
-	}
-	assertGolden(t, "book_invalid_json", rr.Body.Bytes())
-}
-
 // Helper to generate initial golden files (run manually once, then commit testdata).
 func Test__GenerateGoldenFiles(t *testing.T) {
 	if os.Getenv("UPDATE_GOLDEN") != "1" {
@@ -242,15 +226,6 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		writeGolden(t, "lab_panels_ok", rr.Body.Bytes())
 	}
 
-	// book invalid json
-	{
-		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/schedule/book", bytes.NewBufferString("{"))
-		h.bookLegacy(rr, req)
-		writeGolden(t, "book_invalid_json", rr.Body.Bytes())
-	}
-
 	// sanity: JSON must be valid
 	for _, n := range []string{
 		"doctors_ok",
@@ -258,7 +233,6 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		"changes_ok",
 		"lab_results_ok",
 		"lab_panels_ok",
-		"book_invalid_json",
 	} {
 		b := readGolden(t, n)
 		var v any

@@ -69,6 +69,7 @@ func main() {
 	defaultModelsID := service.ParseDefaultModelsID(os.Getenv("DEFAULT_MODELS_ID"))
 	services := service.New(mssql, mssqlWrite, sqlite, repos, logger, defaultModelsID, cfg)
 	services.RefreshBookingPairs(ctxBackground())
+	services.RefreshRWLanguage(ctxBackground())
 
 	router := api.NewRouter(cfg, services, logger)
 
@@ -93,6 +94,7 @@ func main() {
 				return
 			case <-ticker.C:
 				services.RefreshBookingPairs(context.Background())
+				services.RefreshRWLanguage(context.Background())
 			}
 		}
 	}()
