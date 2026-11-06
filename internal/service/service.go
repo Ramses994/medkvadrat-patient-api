@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"log/slog"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
@@ -25,6 +27,10 @@ type Services struct {
 	Config          config.Config
 	WriteGuard      medialogwrite.Guard
 	WriteLog        *medialogwrite.LogRepo
+	book            *bookingState
+	eng             *BookingEngine
+	engOnce         sync.Once
+	rwLang          atomic.Bool
 }
 
 func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int, cfg config.Config) *Services {
@@ -39,6 +45,7 @@ func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logge
 		MSSQL: mssql, MSSQLWrite: mssqlWrite, SQLite: sqlite,
 		Repos: repos, Logger: logger, DefaultModelsID: defaultModelsID, Config: cfg,
 		WriteGuard: guard, WriteLog: medialogwrite.NewLogRepo(sqlite),
+		book: &bookingState{active: map[string]repo.BookingOption{}, slots: map[string]slotCache{}},
 	}
 }
 
@@ -65,10 +72,6 @@ func (s *Services) CatalogDepartments(ctx context.Context) ([]repo.Department, e
 
 func (s *Services) CatalogDoctors(ctx context.Context, specialtyID *int, meddepID *int) ([]repo.CatalogDoctor, error) {
 	return s.Repos.Catalog.Doctors(ctx, specialtyID, meddepID)
-}
-
-func (s *Services) CatalogSlots(ctx context.Context, doctorID int, dateFrom, dateTo time.Time) ([]repo.Slot, error) {
-	return s.Repos.Catalog.Slots(ctx, doctorID, dateFrom, dateTo)
 }
 
 func (s *Services) MeProfile(ctx context.Context, patientID int64) (repo.Profile, error) {
@@ -118,48 +121,12 @@ func (s *Services) attachConfirmations(ctx context.Context, rows []repo.Planning
 	return rows, nil
 }
 
-func (s *Services) MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (motconsuID int64, restored bool, err error) {
-	db := s.MSSQLWrite
-	if db == nil {
-		return 0, false, medialogwrite.ErrWriteNotConfigured
-	}
-	res, err := repo.BookMe(ctx, db, s.Repos.Planning, s.Repos.Motconsu, planningID, patientID, s.DefaultModelsID, now)
-	if err != nil {
-		return 0, false, err
-	}
-	return res.MotconsuID, res.Restored, nil
-}
-
-func (s *Services) MeCancelAppointment(ctx context.Context, patientID int64, motconsuID int64, now time.Time) error {
-	minH := s.Config.CancelMinHoursBefore
-	if minH <= 0 {
-		minH = 24
-	}
-	db := s.MSSQLWrite
-	if db == nil {
-		return medialogwrite.ErrWriteNotConfigured
-	}
-	return repo.CancelMe(ctx, db, motconsuID, patientID, time.Duration(minH)*time.Hour, now)
-}
-
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
 	return s.Repos.Patient.SearchByPhone(ctx, repo.CleanPhoneLast10(phone))
 }
 
 func (s *Services) ScheduleChanges(ctx context.Context, since time.Time) ([]repo.ScheduleChange, error) {
 	return s.Repos.Motconsu.ChangesSince(ctx, since)
-}
-
-func (s *Services) FreeSlots(ctx context.Context, doctorID, date string) ([]repo.FreeSlot, error) {
-	return s.Repos.Planning.FreeSlots(ctx, doctorID, date)
-}
-
-func (s *Services) Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error) {
-	db := s.MSSQLWrite
-	if db == nil {
-		return repo.BookResult{}, medialogwrite.ErrWriteNotConfigured
-	}
-	return repo.Book(ctx, db, s.Repos.Planning, s.Repos.Motconsu, in, s.DefaultModelsID)
 }
 
 func (s *Services) LabResults(ctx context.Context, patientID string, daysBack int) ([]repo.LabResult, error) {

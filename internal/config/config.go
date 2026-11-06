@@ -26,6 +26,14 @@ type Config struct {
 	MotconsuPollEnabled        bool
 	CORSAllowedOrigins         []string
 	WaitlistExamIDs            []int64
+	BookingPairs               []BookingPair
+	SlotTokenSecret            string
+	BookingMinHoursAhead       int
+	BookingMaxDays             int
+	BookingMaxFuture           int
+	LKAuthorMedecinsID         int64
+	LKAuthorMeddepID           int64
+	MedialogRWTimeout          time.Duration
 
 	HTTP      HTTPConfig
 	MSSQL     MSSQLConfig
@@ -35,6 +43,12 @@ type Config struct {
 	SMTP      SMTPConfig
 	SQLite    SQLiteConfig
 	Dashboard DashboardConfig
+}
+
+// BookingPair is one pilot line and exam (LK_BOOKING_PAIRS).
+type BookingPair struct {
+	PlSubjID int64
+	PlExamID int64
 }
 
 type DashboardConfig struct {
@@ -113,6 +127,14 @@ func Load() (Config, error) {
 		MotconsuPollEnabled:        mustBool(getEnv("MOTCONSU_POLL_ENABLED", "false")),
 		CORSAllowedOrigins:         splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "")),
 		WaitlistExamIDs:            mustInt64CSV(os.Getenv("WAITLIST_EXAM_IDS")),
+		BookingPairs:               ParseBookingPairs(os.Getenv("LK_BOOKING_PAIRS")),
+		SlotTokenSecret:            os.Getenv("SLOT_TOKEN_SECRET"),
+		BookingMinHoursAhead:       positiveOr(mustInt(getEnv("BOOKING_MIN_HOURS_AHEAD", "2"), 2), 2),
+		BookingMaxDays:             positiveOr(mustInt(getEnv("BOOKING_MAX_DAYS", "14"), 14), 14),
+		BookingMaxFuture:           positiveOr(mustInt(getEnv("BOOKING_MAX_FUTURE_PER_PATIENT", "3"), 3), 3),
+		LKAuthorMedecinsID:         authorMedecinsID(),
+		LKAuthorMeddepID:           authorMeddepID(),
+		MedialogRWTimeout:          time.Duration(positiveOr(mustInt(getEnv("MEDIALOG_RW_TIMEOUT_SECONDS", "30"), 30), 30)) * time.Second,
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
@@ -223,6 +245,68 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// ClampBookingMaxDays reports whether BOOKING_MAX_DAYS was above the hard cap.
+// The caller logs a warning at startup and stores 14.
+func ClampBookingMaxDays(n int) (int, bool) {
+	if n > 14 {
+		return 14, true
+	}
+	return n, false
+}
+
+func positiveOr(n, def int) int {
+	if n <= 0 {
+		return def
+	}
+	return n
+}
+
+func authorMedecinsID() int64 {
+	v, ok := os.LookupEnv("LK_AUTHOR_MEDECINS_ID")
+	if !ok || strings.TrimSpace(v) == "" {
+		return 2058
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// authorMeddepID defaults to the cabinet department. An explicit 0 or empty value disables booking.
+func authorMeddepID() int64 {
+	v, ok := os.LookupEnv("LK_AUTHOR_MEDDEP_ID")
+	if !ok {
+		return 10002309
+	}
+	if strings.TrimSpace(v) == "" || strings.TrimSpace(v) == "0" {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// ParseBookingPairs reads "1119:10000688,..." . Malformed items are skipped.
+func ParseBookingPairs(s string) []BookingPair {
+	out := make([]BookingPair, 0)
+	for _, part := range splitCSV(s) {
+		sub, exam, ok := strings.Cut(part, ":")
+		if !ok {
+			continue
+		}
+		a, errA := strconv.ParseInt(strings.TrimSpace(sub), 10, 64)
+		b, errB := strconv.ParseInt(strings.TrimSpace(exam), 10, 64)
+		if errA != nil || errB != nil || a <= 0 || b <= 0 {
+			continue
+		}
+		out = append(out, BookingPair{PlSubjID: a, PlExamID: b})
+	}
+	return out
 }
 
 func mustInt(s string, def int) int {

@@ -131,20 +131,3 @@ SELECT PL_SUBJ_ID FROM PLANNING WHERE PLANNING_ID = @id`,
 	}
 	return id, nil
 }
-
-// PlanningIDForMotconsu returns planning_id for a patient's appointment (read-only).
-func PlanningIDForMotconsu(ctx context.Context, db *sql.DB, motconsuID, patientID int64) (int64, error) {
-	var planningID sql.NullInt64
-	err := db.QueryRowContext(ctx, `
-SELECT PLANNING_ID FROM MOTCONSU WHERE MOTCONSU_ID = @mid AND PATIENTS_ID = @pid`,
-		sql.Named("mid", motconsuID),
-		sql.Named("pid", patientID),
-	).Scan(&planningID)
-	if err != nil {
-		return 0, err
-	}
-	if !planningID.Valid || planningID.Int64 <= 0 {
-		return 0, ErrNoPlanning
-	}
-	return planningID.Int64, nil
-}

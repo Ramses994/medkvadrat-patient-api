@@ -98,14 +98,3 @@ func (r *MotconsuRepo) PollAfter(ctx context.Context, last time.Time) ([]PollRow
 	}
 	return out, nil
 }
-
-func (r *MotconsuRepo) SetPlanningAndStatus(tx *sql.Tx, ctx context.Context, motconsuID int, planningID int, status string) error {
-	_, err := tx.ExecContext(ctx, `
-		UPDATE MOTCONSU SET PLANNING_ID = @planID, REC_STATUS = @st
-		WHERE MOTCONSU_ID = @motID`,
-		sql.Named("planID", planningID),
-		sql.Named("st", status),
-		sql.Named("motID", motconsuID),
-	)
-	return err
-}

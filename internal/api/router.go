@@ -1,7 +1,10 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 
@@ -23,6 +26,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	wg := svc.WriteGuardDeps()
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger, WriteGuard: wg}
 	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
+	bookingH := handler.BookingCatalogHandler{Svc: svc, Logger: logger, SlotTokenSecret: cfg.SlotTokenSecret}
 	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WaitlistExamIDs: cfg.WaitlistExamIDs, WriteGuard: wg}
 	confirmationsH := handler.ConfirmationsHandler{Svc: svc, Logger: logger}
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
@@ -49,8 +53,6 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 
 	// Protected (step 1: protect all existing /api/* endpoints except /api/health)
 	mux.HandleFunc("/api/schedule/changes", scheduleH.Changes)
-	mux.HandleFunc("/api/schedule/slots", scheduleH.FreeSlots)
-	mux.HandleFunc("/api/schedule/book", scheduleH.Book)
 	mux.HandleFunc("/api/doctors", doctorH.List)
 	mux.HandleFunc("/api/patients/search", patientH.Search)
 	mux.HandleFunc("/api/patients/lab-results", patientH.LabResults)
@@ -64,12 +66,16 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("GET /api/catalog/specialties", catalogH.Specialties)
 	mux.HandleFunc("GET /api/catalog/departments", catalogH.Departments)
 	mux.HandleFunc("GET /api/catalog/doctors", catalogH.Doctors)
-	mux.HandleFunc("GET /api/catalog/slots", catalogH.Slots)
+	mux.HandleFunc("GET /api/catalog/booking-options", bookingH.Options)
+	mux.HandleFunc("GET /api/catalog/slots", bookingH.Slots)
 	mux.HandleFunc("GET /api/me/profile", meH.Profile)
 	mux.HandleFunc("GET /api/me/appointments", meH.Appointments)
 	mux.HandleFunc("GET /api/me/visits", meH.Visits)
-	mux.HandleFunc("POST /api/me/appointments", meH.BookAppointment)
-	mux.HandleFunc("DELETE /api/me/appointments/{motconsu_id}", meH.CancelAppointment)
+	bookH := handler.BookingHandler{API: svc, Actor: tokenLabel(cfg.APIToken), LAN: middleware.AllowCIDRs{Nets: cidrNetsOrDefault(cfg)}}
+	mux.HandleFunc("POST /api/me/appointments", bookH.Book)
+	mux.HandleFunc("DELETE /api/me/appointments/{planning_id}", bookH.Cancel)
+	mux.HandleFunc("GET /api/internal/write-ops", bookH.List)
+	mux.HandleFunc("POST /api/internal/write-ops/{op_id}/resolve", bookH.Resolve)
 	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
 
 	// Server-to-server (API_TOKEN), same as /api/reminders/due
@@ -130,4 +136,21 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	h = middleware.CORS(cfg.CORSAllowedOrigins, h)
 
 	return h
+}
+
+func tokenLabel(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "dev"
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:4])
+}
+
+func cidrNetsOrDefault(cfg config.Config) []*net.IPNet {
+	nets, err := middleware.ParseCIDRList(cfg.Dashboard.AllowedCIDRs)
+	if err != nil || len(nets) == 0 {
+		nets, _ = middleware.ParseCIDRList([]string{"192.168.0.0/16", "127.0.0.1/32"})
+	}
+	return nets
 }

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	MedialogQueryTimeout = 10 * time.Second
+	MedialogQueryTimeout  = 10 * time.Second
 	writeLogFinishTimeout = 3 * time.Second
 )
 
@@ -97,53 +97,6 @@ func (d HTTPDeps) GuardBook(ctx context.Context, w http.ResponseWriter, r *http.
 	qCtx, cancel := context.WithTimeout(ctx, MedialogQueryTimeout)
 	defer cancel()
 
-	plSubj, err := d.Lookup.PlSubjIDForPlanning(qCtx, planningID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Слот не найден")
-			return 0, false
-		}
-		d.logLookupError(r, "PlSubjIDForPlanning", err)
-		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
-		return 0, false
-	}
-	if deny := d.Guard.CheckPlSubj(plSubj); deny != nil {
-		d.deny(w, r, route, patientID, planningID, plSubj, deny)
-		return 0, false
-	}
-	if deny := d.Guard.CheckRWConfigured(); deny != nil {
-		d.deny(w, r, route, patientID, planningID, plSubj, deny)
-		return 0, false
-	}
-	return d.beginWriteAttempt(ctx, w, r, route, patientID, planningID, plSubj)
-}
-
-func (d HTTPDeps) GuardCancel(ctx context.Context, w http.ResponseWriter, r *http.Request, route string, patientID, motconsuID int64) (logID int64, ok bool) {
-	if deny := d.Guard.CheckEnabled(); deny != nil {
-		d.deny(w, r, route, patientID, 0, 0, deny)
-		return 0, false
-	}
-	if deny := d.Guard.CheckPatient(patientID); deny != nil {
-		d.deny(w, r, route, patientID, 0, 0, deny)
-		return 0, false
-	}
-	qCtx, cancel := context.WithTimeout(ctx, MedialogQueryTimeout)
-	defer cancel()
-
-	planningID, err := d.Lookup.PlanningIDForMotconsu(qCtx, motconsuID, patientID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Запись не найдена")
-			return 0, false
-		}
-		if errors.Is(err, ErrNoPlanning) {
-			response.Error(w, http.StatusConflict, "CANCEL_NOT_SUPPORTED", "Эту запись можно отменить только через регистратуру +7 (499) 288-88-14")
-			return 0, false
-		}
-		d.logLookupError(r, "PlanningIDForMotconsu", err)
-		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
-		return 0, false
-	}
 	plSubj, err := d.Lookup.PlSubjIDForPlanning(qCtx, planningID)
 	if err != nil {
 		if err == sql.ErrNoRows {

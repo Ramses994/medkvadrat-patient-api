@@ -16,7 +16,7 @@ func New(db *sql.DB) Repos {
 	return Repos{
 		Patient:  &PatientRepo{db: db},
 		Doctor:   &DoctorRepo{db: db},
-		Planning: &PlanningRepo{db: db},
+		Planning: &PlanningRepo{},
 		Motconsu: &MotconsuRepo{db: db},
 		Health:   &HealthRepo{db: db},
 		Catalog:  &CatalogRepo{db: db},
