@@ -29,6 +29,7 @@
   }
 
   *{box-sizing:border-box}
+  [hidden]{display:none !important}
   html,body{height:100%}
   body{
     margin:0;background:var(--paper);color:var(--ink);
@@ -96,7 +97,7 @@
   .stat.ok b{color:var(--ok)} .stat.no b{color:var(--no)}
   .stat.move b{color:var(--move)} .stat.wait b{color:var(--wait)}
 
-  .list{flex:1;overflow-y:auto;padding:8px 10px 24px;min-height:0;scrollbar-width:thin}
+  .list{flex:1;overflow-y:auto;padding:8px 10px 24px;min-height:0;scrollbar-width:thin;overflow-anchor:none}
 
   /* ---------- карточка приёма ---------- */
   .row{
@@ -165,7 +166,7 @@
 <header class="top">
   <div class="brand">МедКвадрат <span>расписание филиалов</span></div>
   <div class="top-right">
-    <input type="date" id="date" aria-label="Дата расписания">
+    <input type="date" id="date" autocomplete="off" aria-label="Дата расписания">
     <button class="btn" id="today">Сегодня</button>
     <div class="live"><span class="dot" id="dot"></span><span id="liveText">подключение…</span></div>
     <div class="clock" id="clock">--:--:--</div>
@@ -233,6 +234,11 @@ const LABEL = {
 };
 
 // ─────────── состояние ───────────
+const msk = d => new Date(d.toLocaleString('en-US', {timeZone: 'Europe/Moscow'}));
+const todayISO = () => {
+  const d = msk(new Date());
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
 let lastSeen = new Map();   // planning_id -> confirmation (для диффа)
 let freshUntil = new Map(); // planning_id -> timestamp
 let lastOkAt = 0;
@@ -241,6 +247,18 @@ let activeTab = 'schedule';
 let wlPage = 1;
 let wlSeen = new Map();
 let wlFresh = new Map();
+let viewEpoch = 0;
+let scheduleBusy = false;
+let waitlistBusy = false;
+let scheduleQueued = false;
+let waitlistQueued = false;
+let programmaticScroll = false;
+let userScrolled = new Set();
+let followedDay = '';
+let scheduleKey = '';
+let waitlistKey = '';
+const pendingWl = new Map();
+const BUSY_MS = 5000;
 const BRANCH_NAME = {106:'Каширка', 3:'Куркино', 496:'Куркино 2'};
 const REASON_LABEL = {declined:'не придёт', reschedule:'перенос'};
 const OUTCOMES = [
@@ -253,73 +271,139 @@ const OUTCOMES = [
 
 const $ = id => document.getElementById(id);
 const board = $('board'), banner = $('banner'), dot = $('dot'), liveText = $('liveText');
-
-// ─────────── дата и часы ───────────
-const msk = d => new Date(d.toLocaleString('en-US', {timeZone: 'Europe/Moscow'}));
-const todayISO = () => {
-  const d = msk(new Date());
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-};
-$('date').value = todayISO();
+$('date').autocomplete = 'off';
+followedDay = todayISO();
+$('date').value = followedDay;
 
 setInterval(() => {
   const d = msk(new Date());
   $('clock').textContent = d.toTimeString().slice(0,8);
   renderStaleness();
+  const day = todayISO();
+  if ($('date').value === followedDay && day !== followedDay) {
+    followedDay = day;
+    $('date').value = day;
+    viewEpoch++;
+    userScrolled.clear();
+    scheduleKey = '';
+    load();
+  }
+  if (activeTab === 'schedule') {
+    document.querySelectorAll('.col').forEach(col => {
+      const list = col.querySelector('.list');
+      if (!list) return;
+      const nowEl = list.querySelector('.now');
+      const beforeId = nowEl && nowEl.nextElementSibling ? nowEl.nextElementSibling.dataset.id || '' : '';
+      const keep = list.scrollTop;
+      const anchor = captureAnchor(list);
+      placeNow(list, $('date').value === todayISO(), minutesNow());
+      list.querySelectorAll('.row').forEach(row => {
+        const past = $('date').value === todayISO() && toMinutes(row.dataset.time) <= minutesNow();
+        row.classList.toggle('past', past);
+      });
+      const nowEl2 = list.querySelector('.now');
+      const afterId = nowEl2 && nowEl2.nextElementSibling ? nowEl2.nextElementSibling.dataset.id || '' : '';
+      if (beforeId === afterId) {
+        if (list.scrollTop !== keep) {
+          programmaticScroll = true;
+          list.scrollTop = keep;
+          programmaticScroll = false;
+        }
+      } else restoreAnchor(list, anchor);
+    });
+  }
 }, 1000);
 
-// ─────────── запрос ───────────
-async function load() {
-  if (activeTab === 'waitlist') {
-    await loadWaitlist();
-    return;
-  }
+function load() {
+  if (activeTab === 'waitlist') return loadWaitlist();
+  return loadSchedule();
+}
+
+async function loadSchedule() {
+  if (scheduleBusy) { scheduleQueued = true; return; }
+  scheduleBusy = true;
+  const epoch = viewEpoch;
   const date = $('date').value || todayISO();
   const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINT}?date=${encodeURIComponent(date)}`;
-
   try {
     const res = await fetch(url, {credentials: 'same-origin'});
+    if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || activeTab !== 'schedule') return;
     if (res.status === 401 || res.status === 403) {
       window.location.href = '/dashboard/login';
       return;
     }
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
-
     const body = await res.json();
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
-
+    if (epoch !== viewEpoch || selectingText()) return;
     lastOkAt = Date.now();
     hideBanner();
-    render(body.data);
+    paintSchedule(body.data);
     await refreshWaitlistCount();
   } catch (err) {
-    showBanner(`Не удалось обновить расписание: ${err.message}. Показаны последние полученные данные.`);
+    if (epoch === viewEpoch) showBanner(`Не удалось обновить расписание: ${err.message}. Показаны последние полученные данные.`);
+  } finally {
+    scheduleBusy = false;
+    if (scheduleQueued || epoch !== viewEpoch) {
+      scheduleQueued = false;
+      if (activeTab === 'schedule') loadSchedule();
+      else arm();
+    } else arm();
   }
 }
 
-// ─────────── отрисовка ───────────
-function render(data) {
+function paintSchedule(data) {
   const branches = data.branches || [];
-  const isToday = (data.date || $('date').value) === todayISO();
-  const nowMin = minutesNow();
-
-  // диффим подтверждения, чтобы подсветить изменения (в т.ч. пришедшие из MAX)
+  const date = data.date || $('date').value;
+  const key = date + '|' + branches.map(b => b.branch_id).join(',');
+  const fresh = key !== scheduleKey;
+  if (fresh) {
+    scheduleKey = key;
+    board.innerHTML = '';
+    branches.forEach(b => board.appendChild(buildColumn(b)));
+  }
   const seenNow = new Map();
   branches.forEach(b => (b.appointments || []).forEach(a => {
-    const key = a.planning_id;
+    const id = a.planning_id;
     const val = a.confirmation || 'pending';
-    seenNow.set(key, val);
-    if (lastSeen.size && lastSeen.has(key) && lastSeen.get(key) !== val) {
-      freshUntil.set(key, Date.now() + CONFIG.FRESH_MS);
+    seenNow.set(id, val);
+    if (lastSeen.size && lastSeen.has(id) && lastSeen.get(id) !== val) {
+      freshUntil.set(id, Date.now() + CONFIG.FRESH_MS);
     }
   }));
   lastSeen = seenNow;
-
-  board.innerHTML = '';
-  branches.forEach(b => board.appendChild(renderBranch(b, isToday, nowMin)));
+  const isToday = date === todayISO();
+  const nowMin = minutesNow();
+  branches.forEach(b => syncColumn(b, isToday, nowMin, fresh));
+  [...board.querySelectorAll('.col')].forEach(col => {
+    if (!branches.some(b => String(b.branch_id) === col.dataset.branch)) col.remove();
+  });
 }
 
-function renderBranch(branch, isToday, nowMin) {
+function buildColumn(branch) {
+  const col = el('section', 'col');
+  col.dataset.branch = String(branch.branch_id);
+  const head = el('div', 'col-head');
+  head.appendChild(el('div', 'col-name', branch.name || branch.branch_code || '—'));
+  head.appendChild(el('div', 'col-addr', ADDRESSES[branch.branch_id] || ''));
+  const stats = el('div', 'col-stats');
+  [['ok','придут'],['wait','молчат'],['move','перенос'],['no','откажутся']].forEach(([kind, label]) => {
+    stats.appendChild(stat(kind, 0, label));
+  });
+  head.appendChild(stats);
+  col.appendChild(head);
+  const list = el('div', 'list');
+  list.addEventListener('scroll', () => {
+    if (programmaticScroll) return;
+    userScrolled.add(String(branch.branch_id));
+  }, {passive: true});
+  col.appendChild(list);
+  return col;
+}
+
+function syncColumn(branch, isToday, nowMin, auto) {
+  const col = board.querySelector(`.col[data-branch="${branch.branch_id}"]`);
+  if (!col) return;
   const items = branch.appointments || [];
   const counts = {confirmed:0, declined:0, reschedule:0, pending:0};
   items.forEach(a => {
@@ -327,52 +411,92 @@ function renderBranch(branch, isToday, nowMin) {
     if (a.confirmation_hint && !a.confirmation) return;
     counts[a.confirmation || 'pending']++;
   });
-
-  const col = el('section', 'col');
-  const head = el('div', 'col-head');
-  head.appendChild(el('div', 'col-name', branch.name || branch.branch_code || '—'));
-  head.appendChild(el('div', 'col-addr', ADDRESSES[branch.branch_id] || ''));
-
-  const stats = el('div', 'col-stats');
-  stats.appendChild(stat('ok',   counts.confirmed,  'придут'));
-  stats.appendChild(stat('wait', counts.pending,    'молчат'));
-  stats.appendChild(stat('move', counts.reschedule, 'перенос'));
-  stats.appendChild(stat('no',   counts.declined,   'откажутся'));
-  head.appendChild(stats);
-  col.appendChild(head);
-
-  const list = el('div', 'list');
+  const map = {ok: counts.confirmed, wait: counts.pending, move: counts.reschedule, no: counts.declined};
+  Object.entries(map).forEach(([kind, value]) => {
+    const b = col.querySelector(`.stat.${kind} b`);
+    const text = String(value);
+    if (b && b.textContent !== text) b.textContent = text;
+  });
+  const name = col.querySelector('.col-name');
+  const title = branch.name || branch.branch_code || '—';
+  if (name.textContent !== title) name.textContent = title;
+  const list = col.querySelector('.list');
+  const ids = items.map(a => String(a.planning_id));
+  const prev = [...list.querySelectorAll('.row')].map(r => r.dataset.id);
+  const same = prev.length === ids.length && prev.every((id, i) => id === ids[i]);
+  const anchor = same ? null : captureAnchor(list);
+  const keepScroll = list.scrollTop;
   if (!items.length) {
-    list.appendChild(el('div', 'empty', 'На этот день записей нет.'));
+    list.querySelectorAll('.row,.now').forEach(n => n.remove());
+    if (!list.querySelector('.empty')) list.appendChild(el('div', 'empty', 'На этот день записей нет.'));
   } else {
-    let nowDrawn = false;
+    const empty = list.querySelector('.empty');
+    if (empty) empty.remove();
     items.forEach(a => {
-      const mins = toMinutes(a.time);
-      if (isToday && !nowDrawn && mins > nowMin) {
-        list.appendChild(nowLine());
-        nowDrawn = true;
+      let row = list.querySelector(`.row[data-id="${a.planning_id}"]`);
+      const fp = apptFp(a);
+      if (!row) {
+        row = renderRow(a);
+        list.appendChild(row);
+      } else if (row.dataset.fp !== fp) {
+        paintRow(row, a);
       }
-      list.appendChild(renderRow(a, isToday && mins <= nowMin));
+      const past = isToday && toMinutes(a.time) <= nowMin;
+      row.classList.toggle('past', past);
+      row.classList.toggle('fresh', (freshUntil.get(a.planning_id) || 0) > Date.now());
     });
-    if (isToday && !nowDrawn) list.appendChild(nowLine());
+    [...list.querySelectorAll('.row')].forEach(row => {
+      if (!ids.includes(row.dataset.id)) row.remove();
+    });
+    const savedNow = list.querySelector('.now');
+    if (savedNow) savedNow.remove();
+    let after = null;
+    ids.forEach(id => {
+      const row = list.querySelector(`.row[data-id="${id}"]`);
+      if (!row) return;
+      if (row.previousElementSibling !== after) list.insertBefore(row, after ? after.nextSibling : list.firstChild);
+      after = row;
+    });
+    if (savedNow) list.appendChild(savedNow);
   }
-  col.appendChild(list);
-  return col;
+  placeNow(list, isToday && items.length > 0, nowMin);
+  if (auto && !userScrolled.has(String(branch.branch_id))) autoScroll(list, isToday);
+  else if (same) {
+    programmaticScroll = true;
+    list.scrollTop = keepScroll;
+    programmaticScroll = false;
+  } else restoreAnchor(list, anchor);
 }
 
-function renderRow(a, isPast) {
-  const state = a.is_waitlist ? 'waitlist' : (a.confirmation || 'pending');
-  const row = el('article', `row ${state}`);
-  if (isPast) row.classList.add('past');
-  if ((freshUntil.get(a.planning_id) || 0) > Date.now()) row.classList.add('fresh');
-
-  row.appendChild(el('div', 'time', a.time || '--:--'));
-
+function renderRow(a) {
+  const row = el('article', 'row');
+  row.dataset.id = String(a.planning_id);
+  row.appendChild(el('div', 'time'));
   const who = el('div', 'who');
-  who.appendChild(el('div', 'patient', a.patient_name || 'Без имени'));
-  if (a.doctor_name) who.appendChild(el('div', 'doctor', a.doctor_name));
+  who.appendChild(el('div', 'patient'));
+  who.appendChild(el('div', 'doctor'));
+  who.appendChild(el('div', 'tagline'));
+  row.appendChild(who);
+  paintRow(row, a);
+  return row;
+}
 
-  const tags = el('div', 'tagline');
+function paintRow(row, a) {
+  const state = a.is_waitlist ? 'waitlist' : (a.confirmation || 'pending');
+  const past = row.classList.contains('past');
+  const fresh = row.classList.contains('fresh');
+  row.className = `row ${state}`;
+  if (past) row.classList.add('past');
+  if (fresh) row.classList.add('fresh');
+  row.dataset.time = a.time || '';
+  row.dataset.fp = apptFp(a);
+  row.querySelector('.time').textContent = a.time || '--:--';
+  row.querySelector('.patient').textContent = a.patient_name || 'Без имени';
+  const doctor = row.querySelector('.doctor');
+  doctor.textContent = a.doctor_name || '';
+  doctor.hidden = !a.doctor_name;
+  const tags = row.querySelector('.tagline');
+  tags.replaceChildren();
   if (a.is_waitlist) {
     tags.appendChild(el('span', 'pill waitlist', 'лист ожидания'));
   } else if (a.confirmation_hint && !a.confirmation) {
@@ -384,10 +508,79 @@ function renderRow(a, isPast) {
   if (a.on_waitlist && (state === 'declined' || state === 'reschedule')) {
     tags.appendChild(el('span', 'pill waitlist', 'в листе ожидания'));
   }
-  who.appendChild(tags);
+}
 
-  row.appendChild(who);
-  return row;
+function apptFp(a) {
+  return JSON.stringify({
+    t: a.time || '', n: a.patient_name || '', d: a.doctor_name || '',
+    c: a.confirmation || '', h: a.confirmation_hint || '',
+    w: !!a.is_waitlist, o: !!a.on_waitlist
+  });
+}
+
+function placeNow(list, isToday, nowMin) {
+  let nowEl = list.querySelector('.now');
+  if (!isToday) {
+    if (nowEl) nowEl.remove();
+    return;
+  }
+  if (!nowEl) nowEl = nowLine();
+  const label = `СЕЙЧАС ${msk(new Date()).toTimeString().slice(0,5)}`;
+  const span = nowEl.querySelector('span');
+  if (span.textContent !== label) span.textContent = label;
+  let before = null;
+  for (const row of list.querySelectorAll('.row')) {
+    if (toMinutes(row.dataset.time) > nowMin) { before = row; break; }
+  }
+  if (before) {
+    if (nowEl.nextSibling !== before) list.insertBefore(nowEl, before);
+  } else if (list.lastElementChild !== nowEl) {
+    list.appendChild(nowEl);
+  }
+}
+
+function autoScroll(list, isToday) {
+  programmaticScroll = true;
+  if (!isToday) {
+    list.scrollTop = 0;
+    programmaticScroll = false;
+    return;
+  }
+  const threshold = minutesNow() - 30;
+  let target = null;
+  for (const row of list.querySelectorAll('.row')) {
+    if (toMinutes(row.dataset.time) >= threshold) { target = row; break; }
+  }
+  if (!target) {
+    const rows = list.querySelectorAll('.row');
+    target = rows[rows.length - 1] || null;
+  }
+  if (!target) list.scrollTop = 0;
+  else {
+    const delta = target.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    list.scrollTop += delta;
+  }
+  programmaticScroll = false;
+}
+
+function captureAnchor(list) {
+  const edge = list.getBoundingClientRect().top;
+  for (const row of list.querySelectorAll('.row')) {
+    const box = row.getBoundingClientRect();
+    if (box.bottom > edge + 1) return {id: row.dataset.id, delta: box.top - edge};
+  }
+  return null;
+}
+
+function restoreAnchor(list, anchor) {
+  if (!anchor) return;
+  const row = list.querySelector(`.row[data-id="${anchor.id}"]`);
+  if (!row) return;
+  const delta = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  if (Math.abs(delta - anchor.delta) < 1) return;
+  programmaticScroll = true;
+  list.scrollTop += delta - anchor.delta;
+  programmaticScroll = false;
 }
 
 function nowLine() {
@@ -396,7 +589,6 @@ function nowLine() {
   return wrap;
 }
 
-// ─────────── мелочи ───────────
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -417,6 +609,13 @@ function minutesNow() {
   const d = msk(new Date());
   return d.getHours() * 60 + d.getMinutes();
 }
+function selectingText() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+  const node = sel.anchorNode;
+  const host = node && (node.nodeType === 1 ? node : node.parentElement);
+  return !!(host && (board.contains(host) || $('waitlistPanel').contains(host)));
+}
 
 function renderStaleness() {
   if (!lastOkAt) return;
@@ -435,9 +634,10 @@ function renderStaleness() {
 function showBanner(msg){ banner.textContent = msg; banner.classList.add('show'); }
 function hideBanner(){ banner.classList.remove('show'); }
 
-// ─────────── управление ───────────
 function setTab(name) {
+  if (activeTab === name) return;
   activeTab = name;
+  viewEpoch++;
   const schedule = name === 'schedule';
   $('tabSchedule').classList.toggle('active', schedule);
   $('tabWaitlist').classList.toggle('active', !schedule);
@@ -445,25 +645,45 @@ function setTab(name) {
   $('noteSchedule').hidden = !schedule;
   $('waitlistPanel').hidden = schedule;
   $('noteWaitlist').hidden = schedule;
+  if (schedule) scheduleKey = '';
+  else waitlistKey = '';
   load();
 }
 
 async function refreshWaitlistCount() {
+  if (waitlistBusy) return;
+  waitlistBusy = true;
   try {
     const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}?status=open&page=1&per_page=1`, {credentials:'same-origin'});
     if (!res.ok) return;
     const body = await res.json();
     if (body.success && body.data) $('waitlistCount').textContent = String(body.data.open_total || 0);
-  } catch (e) {}
+  } catch (e) {
+  } finally {
+    waitlistBusy = false;
+    if (waitlistQueued) {
+      waitlistQueued = false;
+      if (activeTab === 'waitlist') loadWaitlist();
+    }
+  }
 }
 
-async function loadWaitlist() {
+function waitlistURL() {
   const status = $('wlStatus').value || 'open';
   const branch = $('wlBranch').value;
   const params = new URLSearchParams({status, page: String(wlPage), per_page: '50'});
   if (branch) params.set('branch', branch);
+  return {key: `${status}|${branch}|${wlPage}`, url: `${CONFIG.API_BASE}${CONFIG.WAITLIST}?${params}`};
+}
+
+async function loadWaitlist() {
+  if (waitlistBusy) { waitlistQueued = true; return; }
+  waitlistBusy = true;
+  const epoch = viewEpoch;
+  const q = waitlistURL();
   try {
-    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}?${params}`, {credentials:'same-origin'});
+    const res = await fetch(q.url, {credentials:'same-origin'});
+    if (epoch !== viewEpoch || q.key !== waitlistURL().key) return;
     if (res.status === 401 || res.status === 403) {
       window.location.href = '/dashboard/login';
       return;
@@ -471,101 +691,110 @@ async function loadWaitlist() {
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
+    if (epoch !== viewEpoch || selectingText()) return;
     lastOkAt = Date.now();
     hideBanner();
-    renderWaitlist(body.data);
+    paintWaitlist(body.data, q.key);
   } catch (err) {
-    showBanner(`Не удалось обновить лист ожидания: ${err.message}.`);
+    if (epoch === viewEpoch) showBanner(`Не удалось обновить лист ожидания: ${err.message}.`);
+  } finally {
+    waitlistBusy = false;
+    if (waitlistQueued || epoch !== viewEpoch) {
+      waitlistQueued = false;
+      if (activeTab === 'waitlist') loadWaitlist();
+      else arm();
+    } else arm();
   }
 }
 
-function renderWaitlist(data) {
+function paintWaitlist(data, key) {
   const items = data.items || [];
   $('waitlistCount').textContent = String(data.open_total || 0);
   $('wlPageLabel').textContent = `${data.page || 1} / ${Math.max(1, Math.ceil((data.total || 0) / (data.per_page || 50)))}`;
   const wrap = $('waitlistList');
-  wrap.innerHTML = '';
+  const rebuild = key !== waitlistKey;
+  if (rebuild) {
+    waitlistKey = key;
+    pendingWl.clear();
+    wrap.innerHTML = '';
+  }
   if (!items.length) {
-    wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
+    if (rebuild || !wrap.querySelector('.empty')) {
+      if (rebuild) wrap.innerHTML = '';
+      wrap.querySelectorAll('table,.empty').forEach(n => n.remove());
+      wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
+    }
+    wlSeen = new Map();
     return;
   }
-  const table = document.createElement('table');
-  table.className = 'waitlist-table';
-  const thead = document.createElement('thead');
-  const hr = document.createElement('tr');
-  ['Ответ','Пациент','Исходная запись','В Медиалоге','Новая будущая запись','Работа'].forEach(title => {
-    hr.appendChild(el('th', '', title));
-  });
-  thead.appendChild(hr);
-  table.appendChild(thead);
-  const tbody = document.createElement('tbody');
-  const seenNow = new Map();
+  wrap.querySelectorAll('.empty').forEach(n => n.remove());
+  let table = wrap.querySelector('table');
+  if (!table) {
+    table = document.createElement('table');
+    table.className = 'waitlist-table';
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    ['Ответ','Пациент','Исходная запись','В Медиалоге','Новая будущая запись','Работа'].forEach(title => {
+      hr.appendChild(el('th', '', title));
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    table.appendChild(document.createElement('tbody'));
+    wrap.appendChild(table);
+  }
+  const tbody = table.querySelector('tbody');
+  const ids = items.map(it => String(it.id));
   items.forEach(it => {
-    seenNow.set(it.id, it.status);
-    if (wlSeen.size && (!wlSeen.has(it.id) || wlSeen.get(it.id) !== it.status)) {
-      wlFresh.set(it.id, Date.now() + CONFIG.FRESH_MS);
+    let tr = tbody.querySelector(`tr[data-id="${it.id}"]`);
+    if (!tr) {
+      tr = renderWaitlistRow(it);
+      tbody.appendChild(tr);
+      if (wlSeen.size) wlFresh.set(it.id, Date.now() + CONFIG.FRESH_MS);
+      wlSeen.set(it.id, it.status);
+    } else if (rowBusy(tr)) {
+      if ((it.status || '') !== tr.dataset.status) showConflict(tr);
+      pendingWl.set(String(it.id), it);
+    } else {
+      applyWaitlistItem(tr, it);
     }
-    tbody.appendChild(renderWaitlistRow(it));
+    tr.classList.toggle('fresh', (wlFresh.get(it.id) || 0) > Date.now());
   });
-  wlSeen = seenNow;
-  table.appendChild(tbody);
-  wrap.appendChild(table);
+  [...tbody.querySelectorAll('tr')].forEach(tr => {
+    if (!ids.includes(tr.dataset.id)) {
+      pendingWl.delete(tr.dataset.id);
+      tr.remove();
+    }
+  });
+  let after = null;
+  ids.forEach(id => {
+    const tr = tbody.querySelector(`tr[data-id="${id}"]`);
+    if (!tr) return;
+    if (tr.previousElementSibling !== after) tbody.insertBefore(tr, after ? after.nextSibling : tbody.firstChild);
+    after = tr;
+  });
 }
 
 function renderWaitlistRow(it) {
   const tr = document.createElement('tr');
-  if ((wlFresh.get(it.id) || 0) > Date.now()) tr.classList.add('fresh');
-
-  const answer = el('td');
-  answer.appendChild(el('div', '', it.created_at_msk || it.created_at || ''));
-  answer.appendChild(el('div', '', REASON_LABEL[it.reason] || it.reason || ''));
-  tr.appendChild(answer);
-
-  const patient = el('td');
-  patient.appendChild(el('div', '', it.patient_name || ''));
-  if (it.patient_phone) {
-    const a = document.createElement('a');
-    a.href = 'tel:' + String(it.patient_phone);
-    a.textContent = it.patient_phone;
-    patient.appendChild(a);
-  }
-  patient.appendChild(el('div', '', it.patient_birth || '—'));
-  tr.appendChild(patient);
-
-  const orig = el('td');
-  orig.appendChild(el('div', '', it.orig_date_start || ''));
-  orig.appendChild(el('div', '', BRANCH_NAME[it.branch_id] || String(it.branch_id || '')));
-  orig.appendChild(el('div', '', it.orig_doctor || ''));
-  orig.appendChild(el('div', '', it.orig_service || ''));
-  tr.appendChild(orig);
-
-  tr.appendChild(el('td', '', it.medialog_state || ''));
-
-  const fut = el('td');
-  fut.appendChild(el('div', '', it.future_label || '—'));
-  if (it.future_date_start) fut.appendChild(el('div', '', it.future_date_start));
-  if (it.future_doctor) fut.appendChild(el('div', '', it.future_doctor));
-  if (it.future_service) fut.appendChild(el('div', '', it.future_service));
-  tr.appendChild(fut);
-
+  tr.dataset.id = String(it.id);
+  tr.appendChild(el('td'));
+  tr.appendChild(el('td'));
+  tr.appendChild(el('td'));
+  tr.appendChild(el('td'));
+  tr.appendChild(el('td'));
   const work = el('td');
   const st = document.createElement('select');
+  st.className = 'wl-status';
   [['contacted','связались'],['rebooked','перезаписан'],['closed','закрыт']].forEach(([v,l]) => {
     const o = document.createElement('option');
     o.value = v; o.textContent = l;
-    if (it.status === v) o.selected = true;
     st.appendChild(o);
   });
-  if (it.status === 'new') {
-    const o = document.createElement('option');
-    o.value = 'new'; o.textContent = 'новый'; o.selected = true;
-    st.insertBefore(o, st.firstChild);
-  }
   const oc = document.createElement('select');
+  oc.className = 'wl-outcome';
   OUTCOMES.forEach(([v,l]) => {
     const o = document.createElement('option');
     o.value = v; o.textContent = l;
-    if (it.outcome === v) o.selected = true;
     oc.appendChild(o);
   });
   const btn = document.createElement('button');
@@ -577,7 +806,105 @@ function renderWaitlistRow(it) {
   work.appendChild(oc);
   work.appendChild(btn);
   tr.appendChild(work);
+  tr.addEventListener('focusin', () => touchRow(tr));
+  tr.addEventListener('change', () => touchRow(tr));
+  tr.addEventListener('pointerdown', () => touchRow(tr));
+  tr.addEventListener('keydown', () => touchRow(tr));
+  tr.addEventListener('focusout', () => scheduleRelease(tr));
+  applyWaitlistItem(tr, it);
   return tr;
+}
+
+function applyWaitlistItem(tr, it) {
+  const cells = tr.children;
+  const answer = cells[0];
+  answer.replaceChildren();
+  answer.appendChild(el('div', '', it.created_at_msk || it.created_at || ''));
+  answer.appendChild(el('div', '', REASON_LABEL[it.reason] || it.reason || ''));
+
+  const patient = cells[1];
+  patient.replaceChildren();
+  patient.appendChild(el('div', '', it.patient_name || ''));
+  if (it.patient_phone) {
+    const a = document.createElement('a');
+    a.href = 'tel:' + String(it.patient_phone);
+    a.textContent = it.patient_phone;
+    patient.appendChild(a);
+  }
+  patient.appendChild(el('div', '', it.patient_birth || '—'));
+
+  const orig = cells[2];
+  orig.replaceChildren();
+  orig.appendChild(el('div', '', it.orig_date_start || ''));
+  orig.appendChild(el('div', '', BRANCH_NAME[it.branch_id] || String(it.branch_id || '')));
+  orig.appendChild(el('div', '', it.orig_doctor || ''));
+  orig.appendChild(el('div', '', it.orig_service || ''));
+
+  cells[3].textContent = it.medialog_state || '';
+
+  const fut = cells[4];
+  fut.replaceChildren();
+  fut.appendChild(el('div', '', it.future_label || '—'));
+  if (it.future_date_start) fut.appendChild(el('div', '', it.future_date_start));
+  if (it.future_doctor) fut.appendChild(el('div', '', it.future_doctor));
+  if (it.future_service) fut.appendChild(el('div', '', it.future_service));
+
+  const work = cells[5];
+  const st = work.querySelector('.wl-status');
+  if (it.status === 'new' && !st.querySelector('option[value="new"]')) {
+    const o = document.createElement('option');
+    o.value = 'new'; o.textContent = 'новый';
+    st.insertBefore(o, st.firstChild);
+  }
+  if ([...st.options].some(o => o.value === it.status)) st.value = it.status;
+  const oc = work.querySelector('.wl-outcome');
+  if (it.outcome && [...oc.options].some(o => o.value === it.outcome)) oc.value = it.outcome;
+  tr.dataset.status = it.status || '';
+  tr.dataset.outcome = it.outcome || '';
+  const note = work.querySelector('.wl-conflict');
+  if (note) note.remove();
+  pendingWl.delete(String(it.id));
+  if (wlSeen.size && wlSeen.get(it.id) !== it.status) wlFresh.set(it.id, Date.now() + CONFIG.FRESH_MS);
+  wlSeen.set(it.id, it.status);
+}
+
+function showConflict(tr) {
+  const work = tr.children[5];
+  if (work.querySelector('.wl-conflict')) return;
+  const box = el('div', 'wl-conflict');
+  box.appendChild(el('div', '', 'Изменено другим сотрудником'));
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn';
+  btn.textContent = 'Обновить строку';
+  btn.addEventListener('click', () => {
+    const item = pendingWl.get(tr.dataset.id);
+    if (item) applyWaitlistItem(tr, item);
+  });
+  box.appendChild(btn);
+  work.appendChild(box);
+}
+
+function touchRow(tr) {
+  tr._busyUntil = Date.now() + BUSY_MS;
+  clearTimeout(tr._release);
+}
+function rowBusy(tr) {
+  if (tr.contains(document.activeElement)) return true;
+  return Date.now() < (tr._busyUntil || 0);
+}
+function scheduleRelease(tr) {
+  setTimeout(() => {
+    if (tr.contains(document.activeElement)) return;
+    const wait = Math.max(0, (tr._busyUntil || 0) - Date.now());
+    clearTimeout(tr._release);
+    tr._release = setTimeout(() => releaseRow(tr), wait);
+  }, 0);
+}
+function releaseRow(tr) {
+  if (rowBusy(tr)) return;
+  const item = pendingWl.get(tr.dataset.id);
+  if (item) applyWaitlistItem(tr, item);
 }
 
 async function saveWaitlist(id, status, outcome) {
@@ -603,29 +930,78 @@ async function saveWaitlist(id, status, outcome) {
         if (body.error_details && body.error_details.message) msg = body.error_details.message;
         else if (body.error) msg = body.error;
       } catch (e) {}
-      await loadWaitlist();
+      await reloadWaitlistRow(id);
       showBanner(msg);
       return;
     }
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
-    await loadWaitlist();
+    const tr = document.querySelector(`#waitlistList tr[data-id="${id}"]`);
+    if (tr) {
+      tr._busyUntil = 0;
+      pendingWl.delete(String(id));
+    }
+    await reloadWaitlistRow(id);
   } catch (err) {
     showBanner(`Не удалось сохранить: ${err.message}`);
   }
 }
 
-$('date').addEventListener('change', load);
-$('today').addEventListener('click', () => { $('date').value = todayISO(); load(); });
+async function reloadWaitlistRow(id) {
+  const q = waitlistURL();
+  const res = await fetch(q.url, {credentials:'same-origin'});
+  if (!res.ok) return;
+  const body = await res.json();
+  if (!body.success || !body.data) return;
+  const data = body.data;
+  $('waitlistCount').textContent = String(data.open_total || 0);
+  const item = (data.items || []).find(it => String(it.id) === String(id));
+  const tr = document.querySelector(`#waitlistList tr[data-id="${id}"]`);
+  if (item && tr) applyWaitlistItem(tr, item);
+}
+
+function arm() {
+  clearTimeout(timer);
+  if (document.hidden) return;
+  timer = setTimeout(() => { load(); }, CONFIG.POLL_MS);
+}
+
+function pinToday() {
+  followedDay = todayISO();
+  $('date').value = followedDay;
+  userScrolled.clear();
+  scheduleKey = '';
+  viewEpoch++;
+}
+
+$('date').addEventListener('change', () => {
+  viewEpoch++;
+  userScrolled.clear();
+  if ($('date').value === todayISO()) followedDay = todayISO();
+  scheduleKey = '';
+  load();
+});
+$('today').addEventListener('click', () => {
+  $('date').value = todayISO();
+  followedDay = todayISO();
+  viewEpoch++;
+  userScrolled.clear();
+  scheduleKey = '';
+  load();
+});
+window.addEventListener('pageshow', event => {
+  pinToday();
+  if (event.persisted || document.readyState === 'complete') load();
+});
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 $('tabSchedule').addEventListener('click', () => setTab('schedule'));
 $('tabWaitlist').addEventListener('click', () => setTab('waitlist'));
-$('wlBranch').addEventListener('change', () => { wlPage = 1; loadWaitlist(); });
-$('wlStatus').addEventListener('change', () => { wlPage = 1; loadWaitlist(); });
-$('wlPrev').addEventListener('click', () => { if (wlPage > 1) { wlPage--; loadWaitlist(); } });
-$('wlNext').addEventListener('click', () => { wlPage++; loadWaitlist(); });
+$('wlBranch').addEventListener('change', () => { wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
+$('wlStatus').addEventListener('change', () => { wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
+$('wlPrev').addEventListener('click', () => { if (wlPage > 1) { wlPage--; viewEpoch++; waitlistKey = ''; loadWaitlist(); } });
+$('wlNext').addEventListener('click', () => { wlPage++; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
 
 load();
-timer = setInterval(load, CONFIG.POLL_MS);
+arm();
 </script>
 </body>
 </html>
