@@ -51,8 +51,8 @@ func TestDashboardPage_ServesHTML(t *testing.T) {
 	}
 	save := body[strings.Index(body, "async function saveWaitlist"):]
 	block := save[strings.Index(save, "if (res.status === 409)"):strings.Index(save, "if (!res.ok)")]
-	if load, show := strings.Index(block, "await loadWaitlist()"), strings.Index(block, "showBanner(msg)"); load < 0 || show < load {
-		t.Fatal("409 banner must stay visible after the list refresh")
+	if load, show := strings.Index(block, "await reloadWaitlistRow(id)"), strings.Index(block, "showBanner(msg)"); load < 0 || show < load {
+		t.Fatal("409 banner must stay visible after the row refresh")
 	}
 	for _, line := range strings.Split(body, "\n") {
 		trim := strings.TrimSpace(line)

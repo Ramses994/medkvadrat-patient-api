@@ -1,0 +1,11 @@
+{
+  "name": "dashboard-live-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:live": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}
