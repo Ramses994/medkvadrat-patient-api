@@ -23,7 +23,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	wg := svc.WriteGuardDeps()
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger, WriteGuard: wg}
 	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
-	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WriteGuard: wg}
+	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WaitlistExamIDs: cfg.WaitlistExamIDs, WriteGuard: wg}
 	confirmationsH := handler.ConfirmationsHandler{Svc: svc, Logger: logger}
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
 	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger}
@@ -66,6 +66,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("GET /api/catalog/slots", catalogH.Slots)
 	mux.HandleFunc("GET /api/me/profile", meH.Profile)
 	mux.HandleFunc("GET /api/me/appointments", meH.Appointments)
+	mux.HandleFunc("GET /api/me/visits", meH.Visits)
 	mux.HandleFunc("POST /api/me/appointments", meH.BookAppointment)
 	mux.HandleFunc("DELETE /api/me/appointments/{motconsu_id}", meH.CancelAppointment)
 	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)

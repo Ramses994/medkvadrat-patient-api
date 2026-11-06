@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
@@ -19,26 +20,28 @@ import (
 
 type MeService interface {
 	MeProfile(ctx context.Context, patientID int64) (repo.Profile, error)
-	MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.Appointment, error)
+	MeAppointments(ctx context.Context, patientID int64, now time.Time, kind string) ([]repo.PlanningVisit, error)
+	MeVisits(ctx context.Context, patientID int64, from, to time.Time) ([]repo.PlanningVisit, error)
 	LabPanels(ctx context.Context, patientID string, daysBack int) ([]repo.LabPanel, error)
 	MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (motconsuID int64, restored bool, err error)
 	MeCancelAppointment(ctx context.Context, patientID int64, motconsuID int64, now time.Time) error
 }
 
 type MeHandler struct {
-	Svc         MeService
-	Logger      *slog.Logger
-	WriteGuard  medialogwrite.HTTPDeps
-	CancelMinHours int
+	Svc             MeService
+	Logger          *slog.Logger
+	WriteGuard      medialogwrite.HTTPDeps
+	CancelMinHours  int
+	WaitlistExamIDs []int64
 }
 
 type meProfileDTO struct {
-	PatientID  int64   `json:"patient_id"`
-	FullName   string  `json:"full_name"`
-	Phone      string  `json:"phone"`
-	BirthDate  *string `json:"birth_date,omitempty"`  // YYYY-MM-DD from NE_LE
-	BirthYear  *int    `json:"birth_year,omitempty"`  // from GOD_ROGDENIQ when NE_LE empty
-	Email      string  `json:"email"`
+	PatientID int64   `json:"patient_id"`
+	FullName  string  `json:"full_name"`
+	Phone     string  `json:"phone"`
+	BirthDate *string `json:"birth_date,omitempty"` // YYYY-MM-DD from NE_LE
+	BirthYear *int    `json:"birth_year,omitempty"` // from GOD_ROGDENIQ when NE_LE empty
+	Email     string  `json:"email"`
 }
 
 func (h MeHandler) Profile(w http.ResponseWriter, r *http.Request) {
@@ -67,16 +70,54 @@ func (h MeHandler) Profile(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, out)
 }
 
-type meAppointmentDTO struct {
-	MotconsuID       int64  `json:"motconsu_id"`
-	DoctorID         int64  `json:"doctor_id"`
-	DoctorName       string `json:"doctor_name"`
-	DateConsultation string `json:"date_consultation"`
-	RecStatus        string `json:"rec_status"`
-	PlanningID       *int64 `json:"planning_id,omitempty"`
+type meBranchDTO struct {
+	ID      int     `json:"id"`
+	Name    string  `json:"name"`
+	Address *string `json:"address"`
+}
 
-	CanCancel       bool   `json:"can_cancel"`
-	CanCancelReason string `json:"can_cancel_reason"`
+type meDoctorDTO struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+type mePlanningDTO struct {
+	PlanningID   int64        `json:"planning_id"`
+	StartsAt     string       `json:"starts_at"`
+	DurationMin  int          `json:"duration_min"`
+	State        string       `json:"state"`
+	IsWaitlist   bool         `json:"is_waitlist"`
+	Branch       *meBranchDTO `json:"branch"`
+	Doctor       *meDoctorDTO `json:"doctor"`
+	ExamName     *string      `json:"exam_name"`
+	Confirmation *string      `json:"confirmation"`
+}
+
+func planningDTO(v repo.PlanningVisit, now time.Time, forceAttended bool, waitlistIDs []int64) mePlanningDTO {
+	waitlist := repo.IsWaitlistExam(v.ExamName, v.PlExamID, waitlistIDs)
+	state := repo.PlanningVisitState(v.Cancelled, v.Arrived, v.StartsAtFull, now, waitlist)
+	if forceAttended {
+		state = "attended"
+	}
+	dto := mePlanningDTO{
+		PlanningID:   v.PlanningID,
+		StartsAt:     v.StartsAt,
+		DurationMin:  v.DurationMin,
+		State:        state,
+		IsWaitlist:   waitlist,
+		Confirmation: v.Confirmation,
+	}
+	if name, addr, ok := repo.PlanningBranch(v.BranchID, v.BranchCode); ok {
+		dto.Branch = &meBranchDTO{ID: v.BranchID, Name: name, Address: addr}
+	}
+	if v.MedecinsID.Valid && v.MedecinsID.Int64 > 0 {
+		dto.Doctor = &meDoctorDTO{ID: v.MedecinsID.Int64, Name: v.DoctorName}
+	}
+	if v.ExamName != "" {
+		exam := v.ExamName
+		dto.ExamName = &exam
+	}
+	return dto
 }
 
 func (h MeHandler) Appointments(w http.ResponseWriter, r *http.Request) {
@@ -93,47 +134,69 @@ func (h MeHandler) Appointments(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusBadRequest, "VALIDATION", "status: upcoming|past")
 			return
 		}
-		h.Logger.Error("me appointments failed", "err", err)
+		h.Logger.Error("me appointments failed", "err", err, "patient_id", pid)
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
-	minH := h.CancelMinHours
-	if minH <= 0 {
-		minH = 24
-	}
-	out := make([]meAppointmentDTO, 0, len(rows))
-	for _, a := range rows {
-		can, reason := canCancel(a, now, time.Duration(minH)*time.Hour)
-		out = append(out, meAppointmentDTO{
-			MotconsuID:       a.MotconsuID,
-			DoctorID:         a.DoctorID,
-			DoctorName:       a.DoctorName,
-			DateConsultation: a.DateConsultation.Format("2006-01-02 15:04"),
-			RecStatus:        a.RecStatus,
-			PlanningID:       a.PlanningID,
-			CanCancel:        can,
-			CanCancelReason:  reason,
-		})
+	out := make([]mePlanningDTO, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, planningDTO(row, now, false, h.WaitlistExamIDs))
 	}
 	response.OK(w, out)
 }
 
-func canCancel(a repo.Appointment, now time.Time, minBefore time.Duration) (bool, string) {
-	switch a.RecStatus {
-	case "W":
-		// ok
-	case "D":
-		return false, "already_cancelled"
-	default:
-		return false, "not_supported"
+func (h MeHandler) Visits(w http.ResponseWriter, r *http.Request) {
+	pid, ok := middleware.PatientIDFromContext(r.Context())
+	if !ok {
+		response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized")
+		return
 	}
-	if a.PlanningID == nil {
-		return false, "not_supported"
+	now := time.Now()
+	from, to, err := parseVisitWindow(r.URL.Query().Get("from"), r.URL.Query().Get("to"), now)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", err.Error())
+		return
 	}
-	if a.DateConsultation.Before(now.Add(minBefore)) {
-		return false, "too_late"
+	rows, err := h.Svc.MeVisits(r.Context(), pid, from, to)
+	if err != nil {
+		h.Logger.Error("me visits failed", "err", err, "patient_id", pid)
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		return
 	}
-	return true, "ok"
+	out := make([]mePlanningDTO, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, planningDTO(row, now, true, h.WaitlistExamIDs))
+	}
+	response.OK(w, out)
+}
+
+func parseVisitWindow(fromRaw, toRaw string, now time.Time) (time.Time, time.Time, error) {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		loc = time.FixedZone("MSK", 3*3600)
+	}
+	today := now.In(loc)
+	to := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc)
+	from := to.AddDate(-1, 0, 0)
+	if strings.TrimSpace(fromRaw) != "" {
+		from, err = time.ParseInLocation("2006-01-02", fromRaw, loc)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("from: формат YYYY-MM-DD")
+		}
+	}
+	if strings.TrimSpace(toRaw) != "" {
+		to, err = time.ParseInLocation("2006-01-02", toRaw, loc)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("to: формат YYYY-MM-DD")
+		}
+	}
+	if to.Before(from) {
+		return time.Time{}, time.Time{}, fmt.Errorf("to раньше from")
+	}
+	if from.Before(to.AddDate(-3, 0, 0)) {
+		return time.Time{}, time.Time{}, fmt.Errorf("окно не больше 3 лет")
+	}
+	return from, to, nil
 }
 
 func (h MeHandler) LabPanels(w http.ResponseWriter, r *http.Request) {
