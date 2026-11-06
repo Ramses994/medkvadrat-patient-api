@@ -28,10 +28,11 @@ type MeService interface {
 }
 
 type MeHandler struct {
-	Svc            MeService
-	Logger         *slog.Logger
-	WriteGuard     medialogwrite.HTTPDeps
-	CancelMinHours int
+	Svc             MeService
+	Logger          *slog.Logger
+	WriteGuard      medialogwrite.HTTPDeps
+	CancelMinHours  int
+	WaitlistExamIDs []int64
 }
 
 type meProfileDTO struct {
@@ -85,14 +86,16 @@ type mePlanningDTO struct {
 	StartsAt     string       `json:"starts_at"`
 	DurationMin  int          `json:"duration_min"`
 	State        string       `json:"state"`
+	IsWaitlist   bool         `json:"is_waitlist"`
 	Branch       *meBranchDTO `json:"branch"`
 	Doctor       *meDoctorDTO `json:"doctor"`
 	ExamName     *string      `json:"exam_name"`
 	Confirmation *string      `json:"confirmation"`
 }
 
-func planningDTO(v repo.PlanningVisit, now time.Time, forceAttended bool) mePlanningDTO {
-	state := repo.PlanningVisitState(v.Cancelled, v.Arrived, v.StartsAt, now)
+func planningDTO(v repo.PlanningVisit, now time.Time, forceAttended bool, waitlistIDs []int64) mePlanningDTO {
+	waitlist := repo.IsWaitlistExam(v.ExamName, v.PlExamID, waitlistIDs)
+	state := repo.PlanningVisitState(v.Cancelled, v.Arrived, v.StartsAtFull, now, waitlist)
 	if forceAttended {
 		state = "attended"
 	}
@@ -101,6 +104,7 @@ func planningDTO(v repo.PlanningVisit, now time.Time, forceAttended bool) mePlan
 		StartsAt:     v.StartsAt,
 		DurationMin:  v.DurationMin,
 		State:        state,
+		IsWaitlist:   waitlist,
 		Confirmation: v.Confirmation,
 	}
 	if name, addr, ok := repo.PlanningBranch(v.BranchID, v.BranchCode); ok {
@@ -136,7 +140,7 @@ func (h MeHandler) Appointments(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]mePlanningDTO, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, planningDTO(row, now, false))
+		out = append(out, planningDTO(row, now, false, h.WaitlistExamIDs))
 	}
 	response.OK(w, out)
 }
@@ -147,7 +151,8 @@ func (h MeHandler) Visits(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized")
 		return
 	}
-	from, to, err := parseVisitWindow(r.URL.Query().Get("from"), r.URL.Query().Get("to"), time.Now())
+	now := time.Now()
+	from, to, err := parseVisitWindow(r.URL.Query().Get("from"), r.URL.Query().Get("to"), now)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", err.Error())
 		return
@@ -160,7 +165,7 @@ func (h MeHandler) Visits(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]mePlanningDTO, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, planningDTO(row, time.Now(), true))
+		out = append(out, planningDTO(row, now, true, h.WaitlistExamIDs))
 	}
 	response.OK(w, out)
 }

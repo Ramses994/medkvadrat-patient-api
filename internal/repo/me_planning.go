@@ -11,7 +11,8 @@ import (
 // PlanningVisit is one PLANNING row for the patient cabinet (read-only).
 type PlanningVisit struct {
 	PlanningID   int64
-	StartsAt     string
+	StartsAt     string // minute precision, display only
+	StartsAtFull string // DATE_START with seconds: state boundary and ApptVersion
 	DurationMin  int
 	Cancelled    int
 	Arrived      int
@@ -19,6 +20,8 @@ type PlanningVisit struct {
 	BranchCode   string
 	MedecinsID   sql.NullInt64
 	DoctorName   string
+	PlSubjID     int64
+	PlExamID     int64
 	ExamName     string
 	Confirmation *string
 }
@@ -28,6 +31,7 @@ func planningVisitSelect() string {
 SELECT TOP (%d)
   p.PLANNING_ID,
   CONVERT(varchar(16), p.DATE_START, 120) AS STARTS_AT,
+  CONVERT(varchar(19), p.DATE_START, 120) AS STARTS_AT_FULL,
   ISNULL(p.DUREE, 0) AS DURATION_MIN,
   CAST(ISNULL(p.CANCELLED, 0) AS int) AS CANCELLED,
   CAST(ISNULL(p.PATIENT_ARRIVEE, 0) AS int) AS ARRIVED,
@@ -35,6 +39,8 @@ SELECT TOP (%d)
   ISNULL(o.CODE, '') AS BRANCH_CODE,
   ps.MEDECINS_ID,
   LTRIM(RTRIM(ISNULL(m.NOM,'') + ' ' + ISNULL(m.PRENOM,'') + ' ' + ISNULL(m.PATRONYME,''))) AS DOCTOR_NAME,
+  ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
+  ISNULL(p.PL_EXAM_ID, 0) AS PL_EXAM_ID,
   ISNULL(ex.NAME, '') AS EXAM_NAME
 FROM PLANNING p
 LEFT JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
@@ -94,8 +100,8 @@ func scanPlanningVisits(ctx context.Context, db *sql.DB, q string, args ...any) 
 		var cancelled, arrived bitInt
 		var doctor, exam sql.NullString
 		if err := rows.Scan(
-			&v.PlanningID, &v.StartsAt, &v.DurationMin, &cancelled, &arrived,
-			&v.BranchID, &v.BranchCode, &v.MedecinsID, &doctor, &exam,
+			&v.PlanningID, &v.StartsAt, &v.StartsAtFull, &v.DurationMin, &cancelled, &arrived,
+			&v.BranchID, &v.BranchCode, &v.MedecinsID, &doctor, &v.PlSubjID, &v.PlExamID, &exam,
 		); err != nil {
 			return nil, fmt.Errorf("scan planning visit: %w", err)
 		}
@@ -112,16 +118,21 @@ func scanPlanningVisits(ctx context.Context, db *sql.DB, q string, args ...any) 
 }
 
 // PlanningVisitState maps Medialog flags to a patient-facing state.
+// startsAtFull is DATE_START with seconds, compared to the same Moscow now
+// that the SQL window sends as CONVERT(datetime, @now, 126).
 // warned_absent is "Пациент не придёт", not a no-show verdict.
-func PlanningVisitState(cancelled, arrived int, startsAt string, now time.Time) string {
+func PlanningVisitState(cancelled, arrived int, startsAtFull string, now time.Time, waitlist bool) string {
 	if cancelled != 0 {
 		return "warned_absent"
 	}
 	if arrived != 0 {
 		return "attended"
 	}
-	nowWall := now.In(moscowLocation()).Format("2006-01-02 15:04")
-	if startsAt >= nowWall {
+	nowWall := now.In(moscowLocation()).Format("2006-01-02 15:04:05")
+	if startsAtFull >= nowWall {
+		if waitlist {
+			return "waitlist"
+		}
 		return "scheduled"
 	}
 	return "not_marked"

@@ -34,7 +34,7 @@ func (fakeMeSvc) MeAppointments(ctx context.Context, patientID int64, now time.T
 func (fakeMeSvc) MeVisits(ctx context.Context, patientID int64, from, to time.Time) ([]repo.PlanningVisit, error) {
 	confirmed := "confirmed"
 	return []repo.PlanningVisit{{
-		PlanningID: 11737097, StartsAt: "2026-06-26 19:30", DurationMin: 30,
+		PlanningID: 11737097, StartsAt: "2026-06-26 19:30", StartsAtFull: "2026-06-26 19:30:00", DurationMin: 30,
 		Arrived: 1, BranchID: 3, BranchCode: "Куркино",
 		MedecinsID: sql.NullInt64{Int64: 1828, Valid: true},
 		DoctorName: "Гаевой Эдуард Валерьевич", ExamName: "Приём стоматолога",
@@ -46,14 +46,14 @@ func upcomingPlanningVisits() []repo.PlanningVisit {
 	confirmed := "confirmed"
 	return []repo.PlanningVisit{
 		{
-			PlanningID: 11737097, StartsAt: "2099-06-26 19:30", DurationMin: 30,
+			PlanningID: 11737097, StartsAt: "2099-06-26 19:30", StartsAtFull: "2099-06-26 19:30:00", DurationMin: 30,
 			BranchID: 3, BranchCode: "Куркино",
 			MedecinsID: sql.NullInt64{Int64: 1828, Valid: true},
 			DoctorName: "Гаевой Эдуард Валерьевич", ExamName: "Приём стоматолога",
 			Confirmation: &confirmed,
 		},
 		{
-			PlanningID: 11737098, StartsAt: "2099-06-27 10:00", DurationMin: 20,
+			PlanningID: 11737098, StartsAt: "2099-06-27 10:00", StartsAtFull: "2099-06-27 10:00:00", DurationMin: 20,
 			Cancelled: 1, BranchID: 999, BranchCode: "Склад",
 			ExamName: "Консультация",
 		},
@@ -63,13 +63,13 @@ func upcomingPlanningVisits() []repo.PlanningVisit {
 func pastPlanningVisits() []repo.PlanningVisit {
 	return []repo.PlanningVisit{
 		{
-			PlanningID: 100, StartsAt: "2020-01-10 09:00", DurationMin: 30, Arrived: 1,
+			PlanningID: 100, StartsAt: "2020-01-10 09:00", StartsAtFull: "2020-01-10 09:00:00", DurationMin: 30, Arrived: 1,
 			BranchID: 106, BranchCode: "Каширка",
 			MedecinsID: sql.NullInt64{Int64: 5, Valid: true}, DoctorName: "Петров Пётр",
 			ExamName: "Терапевт",
 		},
 		{
-			PlanningID: 101, StartsAt: "2020-01-11 11:00", DurationMin: 15,
+			PlanningID: 101, StartsAt: "2020-01-11 11:00", StartsAtFull: "2020-01-11 11:00:00", DurationMin: 15,
 			BranchID: 496, BranchCode: "Куркино 2",
 		},
 	}
@@ -153,6 +153,26 @@ func TestGolden_Me_Visits(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Visits(w, r)
 	assertGolden(t, "me_visits_ok", w.Body.Bytes())
+}
+
+type waitlistPlanningSvc struct{ fakeMeSvc }
+
+func (waitlistPlanningSvc) MeAppointments(context.Context, int64, time.Time, string) ([]repo.PlanningVisit, error) {
+	return []repo.PlanningVisit{{
+		PlanningID: 3118001, StartsAt: "2099-06-26 19:30", StartsAtFull: "2099-06-26 19:30:00",
+		DurationMin: 10, BranchID: 3, BranchCode: "Куркино",
+		MedecinsID: sql.NullInt64{Int64: 1828, Valid: true},
+		DoctorName: "Гаевой Эдуард Валерьевич", PlExamID: 3118, ExamName: "Приём терапевта",
+	}}, nil
+}
+
+func TestGolden_Me_Appointments_Waitlist(t *testing.T) {
+	h := MeHandler{Svc: waitlistPlanningSvc{}}
+	r := httptest.NewRequest(http.MethodGet, "/api/me/appointments", nil)
+	r = r.WithContext(middleware.WithPatientID(r.Context(), 1548055))
+	w := httptest.NewRecorder()
+	h.Appointments(w, r)
+	assertGolden(t, "me_appointments_waitlist", w.Body.Bytes())
 }
 
 func TestGolden_Me_Appointments_ValidationError(t *testing.T) {

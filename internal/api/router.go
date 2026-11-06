@@ -23,7 +23,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	wg := svc.WriteGuardDeps()
 	scheduleH := handler.ScheduleHandler{Svc: svc, Logger: logger, WriteGuard: wg}
 	catalogH := handler.CatalogHandler{Svc: svc, Logger: logger}
-	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WriteGuard: wg}
+	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WaitlistExamIDs: cfg.WaitlistExamIDs, WriteGuard: wg}
 	confirmationsH := handler.ConfirmationsHandler{Svc: svc, Logger: logger}
 	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
 	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger}

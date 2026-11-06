@@ -99,15 +99,21 @@ func (s *Services) attachConfirmations(ctx context.Context, rows []repo.Planning
 	for _, row := range rows {
 		ids = append(ids, row.PlanningID)
 	}
-	overlay, err := confirmations.NewRepo(s.SQLite).StatusByPlanningIDs(ctx, ids)
+	overlay, err := confirmations.NewRepo(s.SQLite).OverlayByPlanningIDs(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
 	for i := range rows {
-		if st, ok := overlay[rows[i].PlanningID]; ok && st != "" {
-			status := st
-			rows[i].Confirmation = &status
+		o, ok := overlay[rows[i].PlanningID]
+		if !ok || o.Status == "" || o.Version == "" {
+			continue
 		}
+		current := repo.ApptVersion(rows[i].StartsAtFull, rows[i].PlSubjID, rows[i].PlExamID)
+		if o.Version != current {
+			continue
+		}
+		status := o.Status
+		rows[i].Confirmation = &status
 	}
 	return rows, nil
 }
