@@ -30,18 +30,6 @@ func (fakeScheduleSvc) ScheduleChanges(ctx context.Context, since time.Time) ([]
 		},
 	}, nil
 }
-func (fakeScheduleSvc) FreeSlots(ctx context.Context, doctorID, date string) ([]repo.FreeSlot, error) {
-	return []repo.FreeSlot{
-		{
-			PlanningID: 10,
-			DoctorName: "Терапевт",
-			PlSubjID:   20,
-			DateCons:   time.Date(2026, 4, 24, 0, 0, 0, 0, time.Local),
-			Heure:      930,
-			Duration:   15,
-		},
-	}, nil
-}
 func (fakeScheduleSvc) Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error) {
 	return repo.BookResult{MotconsuID: 123}, nil
 }
@@ -155,18 +143,6 @@ func TestGolden_PatientSearch_OK_LegacyShape(t *testing.T) {
 	assertGolden(t, "patients_search_ok", rr.Body.Bytes())
 }
 
-func TestGolden_ScheduleSlots_OK_LegacyShape(t *testing.T) {
-	h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots?doctor_id=1&date=2026-04-24", nil)
-
-	h.freeSlotsLegacy(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status=%d", rr.Code)
-	}
-	assertGolden(t, "slots_ok", rr.Body.Bytes())
-}
-
 func TestGolden_ScheduleChanges_OK_LegacyShape(t *testing.T) {
 	h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
 	rr := httptest.NewRecorder()
@@ -201,18 +177,6 @@ func TestGolden_LabPanels_OK_LegacyShape(t *testing.T) {
 		t.Fatalf("status=%d", rr.Code)
 	}
 	assertGolden(t, "lab_panels_ok", rr.Body.Bytes())
-}
-
-func TestGolden_Slots_ValidationError_LegacyShape(t *testing.T) {
-	h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots", nil)
-
-	h.freeSlotsLegacy(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d", rr.Code)
-	}
-	assertGolden(t, "slots_validation_error", rr.Body.Bytes())
 }
 
 func TestGolden_Book_InvalidJSON_LegacyShape(t *testing.T) {
@@ -251,15 +215,6 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		writeGolden(t, "patients_search_ok", rr.Body.Bytes())
 	}
 
-	// slots
-	{
-		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots?doctor_id=1&date=2026-04-24", nil)
-		h.freeSlotsLegacy(rr, req)
-		writeGolden(t, "slots_ok", rr.Body.Bytes())
-	}
-
 	// changes
 	{
 		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
@@ -287,15 +242,6 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 		writeGolden(t, "lab_panels_ok", rr.Body.Bytes())
 	}
 
-	// slots validation error
-	{
-		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/schedule/slots", nil)
-		h.freeSlotsLegacy(rr, req)
-		writeGolden(t, "slots_validation_error", rr.Body.Bytes())
-	}
-
 	// book invalid json
 	{
 		h := ScheduleHandler{Svc: fakeScheduleSvc{}, Logger: nil}
@@ -309,11 +255,9 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 	for _, n := range []string{
 		"doctors_ok",
 		"patients_search_ok",
-		"slots_ok",
 		"changes_ok",
 		"lab_results_ok",
 		"lab_panels_ok",
-		"slots_validation_error",
 		"book_invalid_json",
 	} {
 		b := readGolden(t, n)

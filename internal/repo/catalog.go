@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 )
 
 type CatalogRepo struct {
@@ -101,51 +100,6 @@ WHERE ISNULL(m.NOM,'') != ''
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows doctors: %w", err)
-	}
-	return out, nil
-}
-
-type Slot struct {
-	PlanningID int
-	DoctorID   int
-	DoctorName string
-	DateCons   time.Time
-	Heure      int
-	Duration   int
-}
-
-func (r *CatalogRepo) Slots(ctx context.Context, doctorID int, dateFrom, dateTo time.Time) ([]Slot, error) {
-	rows, err := r.db.QueryContext(ctx, `
-SELECT p.PLANNING_ID, ps.MEDECINS_ID,
-  ISNULL(m.NOM,'') + ' ' + ISNULL(m.PRENOM,'') AS DOC_NAME,
-  p.DATE_CONS, p.HEURE, p.DUREE
-FROM PLANNING p
-JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
-LEFT JOIN MEDECINS m ON m.MEDECINS_ID = ps.MEDECINS_ID
-WHERE ps.MEDECINS_ID = @doc
-  AND p.DATE_CONS >= @from AND p.DATE_CONS < @to
-  AND p.PATIENTS_ID IS NULL
-  AND p.STATUS = 0
-ORDER BY p.DATE_CONS, p.HEURE`,
-		sql.Named("doc", doctorID),
-		sql.Named("from", dateFrom.Format("2006-01-02")),
-		sql.Named("to", dateTo.Format("2006-01-02")),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query slots: %w", err)
-	}
-	defer rows.Close()
-
-	var out []Slot
-	for rows.Next() {
-		var s Slot
-		if err := rows.Scan(&s.PlanningID, &s.DoctorID, &s.DoctorName, &s.DateCons, &s.Heure, &s.Duration); err != nil {
-			return nil, fmt.Errorf("scan slots: %w", err)
-		}
-		out = append(out, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows slots: %w", err)
 	}
 	return out, nil
 }

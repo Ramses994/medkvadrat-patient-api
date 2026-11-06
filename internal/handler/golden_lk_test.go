@@ -10,22 +10,6 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 )
 
-func TestGolden_LK_FeatureDisabled_ScheduleSlots(t *testing.T) {
-	h := ScheduleHandler{}
-	r := httptest.NewRequest(http.MethodGet, "/api/schedule/slots?doctor_id=1&date=2026-06-26", nil)
-	w := httptest.NewRecorder()
-	h.FreeSlots(w, r)
-	assertGolden(t, "lk_feature_disabled_schedule_slots", w.Body.Bytes())
-}
-
-func TestGolden_LK_FeatureDisabled_CatalogSlots(t *testing.T) {
-	h := CatalogHandler{}
-	r := httptest.NewRequest(http.MethodGet, "/api/catalog/slots?doctor_id=1&date_from=2026-06-26&date_to=2026-06-27", nil)
-	w := httptest.NewRecorder()
-	h.Slots(w, r)
-	assertGolden(t, "lk_feature_disabled_catalog_slots", w.Body.Bytes())
-}
-
 func TestGolden_LK_FeatureDisabled_ScheduleBook(t *testing.T) {
 	h := ScheduleHandler{}
 	r := httptest.NewRequest(http.MethodPost, "/api/schedule/book", bytes.NewBufferString(`{"planning_id":1,"patient_id":2}`))
@@ -62,16 +46,6 @@ func Test__GenerateLKGolden(t *testing.T) {
 		name string
 		run  func() []byte
 	}{
-		{"lk_feature_disabled_schedule_slots", func() []byte {
-			w := httptest.NewRecorder()
-			ScheduleHandler{}.FreeSlots(w, httptest.NewRequest(http.MethodGet, "/api/schedule/slots", nil))
-			return w.Body.Bytes()
-		}},
-		{"lk_feature_disabled_catalog_slots", func() []byte {
-			w := httptest.NewRecorder()
-			CatalogHandler{}.Slots(w, httptest.NewRequest(http.MethodGet, "/api/catalog/slots", nil))
-			return w.Body.Bytes()
-		}},
 		{"lk_feature_disabled_schedule_book", func() []byte {
 			w := httptest.NewRecorder()
 			ScheduleHandler{}.Book(w, httptest.NewRequest(http.MethodPost, "/api/schedule/book", nil))
@@ -106,7 +80,6 @@ func TestLegacyWriteHandlers_Preserved(t *testing.T) {
 	var ch CatalogHandler
 	_ = mh.bookAppointmentLegacy
 	_ = mh.cancelAppointmentLegacy
-	_ = sh.freeSlotsLegacy
 	_ = sh.bookLegacy
-	_ = ch.slotsLegacy
+	_ = ch
 }

@@ -26,6 +26,10 @@ type Config struct {
 	MotconsuPollEnabled        bool
 	CORSAllowedOrigins         []string
 	WaitlistExamIDs            []int64
+	BookingPairs               []BookingPair
+	SlotTokenSecret            string
+	BookingMinHoursAhead       int
+	BookingMaxDays             int
 
 	HTTP      HTTPConfig
 	MSSQL     MSSQLConfig
@@ -35,6 +39,12 @@ type Config struct {
 	SMTP      SMTPConfig
 	SQLite    SQLiteConfig
 	Dashboard DashboardConfig
+}
+
+// BookingPair is one pilot line and exam (LK_BOOKING_PAIRS).
+type BookingPair struct {
+	PlSubjID int64
+	PlExamID int64
 }
 
 type DashboardConfig struct {
@@ -113,6 +123,10 @@ func Load() (Config, error) {
 		MotconsuPollEnabled:        mustBool(getEnv("MOTCONSU_POLL_ENABLED", "false")),
 		CORSAllowedOrigins:         splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "")),
 		WaitlistExamIDs:            mustInt64CSV(os.Getenv("WAITLIST_EXAM_IDS")),
+		BookingPairs:               ParseBookingPairs(os.Getenv("LK_BOOKING_PAIRS")),
+		SlotTokenSecret:            os.Getenv("SLOT_TOKEN_SECRET"),
+		BookingMinHoursAhead:       positiveOr(mustInt(getEnv("BOOKING_MIN_HOURS_AHEAD", "2"), 2), 2),
+		BookingMaxDays:             positiveOr(mustInt(getEnv("BOOKING_MAX_DAYS", "14"), 14), 14),
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
@@ -223,6 +237,40 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// ClampBookingMaxDays reports whether BOOKING_MAX_DAYS was above the hard cap.
+// The caller logs a warning at startup and stores 14.
+func ClampBookingMaxDays(n int) (int, bool) {
+	if n > 14 {
+		return 14, true
+	}
+	return n, false
+}
+
+func positiveOr(n, def int) int {
+	if n <= 0 {
+		return def
+	}
+	return n
+}
+
+// ParseBookingPairs reads "1119:10000688,..." . Malformed items are skipped.
+func ParseBookingPairs(s string) []BookingPair {
+	out := make([]BookingPair, 0)
+	for _, part := range splitCSV(s) {
+		sub, exam, ok := strings.Cut(part, ":")
+		if !ok {
+			continue
+		}
+		a, errA := strconv.ParseInt(strings.TrimSpace(sub), 10, 64)
+		b, errB := strconv.ParseInt(strings.TrimSpace(exam), 10, 64)
+		if errA != nil || errB != nil || a <= 0 || b <= 0 {
+			continue
+		}
+		out = append(out, BookingPair{PlSubjID: a, PlExamID: b})
+	}
+	return out
 }
 
 func mustInt(s string, def int) int {
