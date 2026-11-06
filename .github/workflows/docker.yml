@@ -31,7 +31,8 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Playwright 1.56 has no Chromium build for ubuntu-latest once that label is Ubuntu 26.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
