@@ -4,19 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	mssql "github.com/denisenkom/go-mssqldb"
 )
 
 // ProcResult is the transport outcome of one RW batch. The result text is for classification only.
 type ProcResult struct {
-	Sent       bool
-	Finished   bool
-	HasRow     bool
-	PlanningID *int64
-	Result     string
-	State      int
-	Err        error
+	Sent         bool
+	Finished     bool
+	HasRow       bool
+	PlanningID   *int64
+	Result       string
+	State        int
+	Err          error
+	Precondition bool
 }
 
 type AddVisitParams struct {
@@ -66,14 +68,11 @@ const rwLanguageSQL = `SELECT @@LANGUAGE`
 
 func classifyRWErr(err error) ProcResult {
 	if err == nil {
-		return ProcResult{Sent: true, Finished: true}
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return ProcResult{Sent: true, Finished: true, HasRow: false}
+		return ProcResult{Sent: true, Finished: false}
 	}
 	var ms mssql.Error
-	if errors.As(err, &ms) {
-		return ProcResult{Sent: true, Finished: true, Err: err}
+	if errors.As(err, &ms) && strings.Contains(strings.ToLower(ms.Message), "open tran") {
+		return ProcResult{Sent: true, Finished: false, Precondition: true, Err: err}
 	}
 	return ProcResult{Sent: true, Finished: false, Err: err}
 }

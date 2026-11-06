@@ -128,6 +128,8 @@ func main() {
 		}
 	}()
 
+	services.StartWriteMaintenance(ctx)
+
 	go func() {
 		logger.Info("http server starting", "addr", cfg.HTTP.ListenAddr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

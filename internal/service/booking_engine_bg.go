@@ -17,6 +17,116 @@ var resolveNotes = map[string]bool{
 }
 
 // Sweep moves crashed in-flight rows to unknown and reconciles unknown rows by reading only.
+// StartMaintenance retires leftover in-flight rows, then reconciles unknown rows until ctx ends.
+func (e *BookingEngine) StartMaintenance(ctx context.Context) {
+	if e == nil || e.Ops == nil || e.Ops.DB == nil {
+		return
+	}
+	e.recMu.Lock()
+	if e.lastReconcile == nil {
+		e.lastReconcile = map[string]time.Time{}
+	}
+	e.recMu.Unlock()
+	e.retireAllInFlight(context.WithoutCancel(ctx))
+	go e.maintain(ctx)
+}
+
+func (e *BookingEngine) retireAllInFlight(ctx context.Context) {
+	rows, err := e.Ops.ListStates(ctx, []string{writeops.StateInFlight})
+	if err != nil {
+		return
+	}
+	now := e.now()
+	for _, op := range rows {
+		code := "BOOKING_UNKNOWN"
+		if op.Action == writeops.ActionCancel {
+			code = "CANCEL_UNKNOWN"
+		}
+		_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
+			State: writeops.StateUnknown, Code: code, PlanningID: op.PlanningID,
+			ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+func (e *BookingEngine) maintain(ctx context.Context) {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			e.safeTick(ctx)
+		}
+	}
+}
+
+func (e *BookingEngine) safeTick(ctx context.Context) {
+	defer func() {
+		if recover() != nil {
+			e.log().Error("lk write maintenance panic")
+		}
+	}()
+	e.expireStale(ctx)
+	e.reconcileDue(ctx)
+	e.warnUnresolved(ctx, e.now())
+}
+
+func (e *BookingEngine) expireStale(ctx context.Context) {
+	now := e.now()
+	stale, err := e.Ops.StaleInFlight(ctx, now.Add(-2*time.Minute))
+	if err != nil {
+		return
+	}
+	for _, op := range stale {
+		code := "BOOKING_UNKNOWN"
+		if op.Action == writeops.ActionCancel {
+			code = "CANCEL_UNKNOWN"
+		}
+		_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
+			State: writeops.StateUnknown, Code: code, PlanningID: op.PlanningID,
+			ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+func (e *BookingEngine) reconcileDue(ctx context.Context) {
+	now := e.now()
+	rows, err := e.Ops.ListStates(ctx, []string{writeops.StateUnknown})
+	if err != nil {
+		return
+	}
+	for _, op := range rows {
+		if !dueReconcile(op, now) {
+			continue
+		}
+		e.recMu.Lock()
+		last := e.lastReconcile[op.OpID]
+		if !last.IsZero() && now.Sub(last) < time.Minute {
+			e.recMu.Unlock()
+			continue
+		}
+		if e.lastReconcile == nil {
+			e.lastReconcile = map[string]time.Time{}
+		}
+		e.lastReconcile[op.OpID] = now
+		e.recMu.Unlock()
+		e.reconcile(ctx, op, now)
+	}
+}
+
+func dueReconcile(op writeops.Op, now time.Time) bool {
+	if !op.FinishedAt.Valid || op.FinishedAt.String == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, op.FinishedAt.String)
+	if err != nil {
+		return false
+	}
+	return now.Sub(at) >= 2*time.Second
+}
+
 func (e *BookingEngine) Sweep(ctx context.Context) {
 	now := e.now()
 	stale, err := e.Ops.StaleInFlight(ctx, now.Add(-2*time.Minute))
