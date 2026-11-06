@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -18,7 +17,6 @@ import (
 
 type ScheduleService interface {
 	ScheduleChanges(ctx context.Context, since time.Time) ([]repo.ScheduleChange, error)
-	FreeSlots(ctx context.Context, doctorID, date string) ([]repo.FreeSlot, error)
 	Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error)
 }
 
@@ -66,50 +64,6 @@ func (h ScheduleHandler) Changes(w http.ResponseWriter, r *http.Request) {
 			DoctorName:  c.DoctorName,
 			DateConsult: c.DateConsult.Format("2006-01-02 15:04"),
 			ModifyDate:  c.ModifyDate.Format("2006-01-02 15:04:05"),
-		})
-	}
-
-	response.OK(w, out)
-}
-
-type freeSlotDTO struct {
-	PlanningID int    `json:"planning_id"`
-	DoctorName string `json:"doctor_name"`
-	PlSubjID   int    `json:"pl_subj_id"`
-	Date       string `json:"date"`
-	Time       string `json:"time"`
-	Duration   int    `json:"duration_min"`
-}
-
-func (h ScheduleHandler) FreeSlots(w http.ResponseWriter, r *http.Request) {
-	medialogwrite.RespondFeatureDisabled(w)
-}
-
-// freeSlotsLegacy — Deprecated: wrong free-time model, see docs/lk/00 §3. Kept for LK-2a.
-func (h ScheduleHandler) freeSlotsLegacy(w http.ResponseWriter, r *http.Request) {
-	doctorID := r.URL.Query().Get("doctor_id")
-	date := r.URL.Query().Get("date")
-	if doctorID == "" || date == "" {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "Нужны doctor_id и date (YYYY-MM-DD)")
-		return
-	}
-
-	slots, err := h.Svc.FreeSlots(r.Context(), doctorID, date)
-	if err != nil {
-		h.Logger.Error("free slots failed", "err", err)
-		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
-		return
-	}
-
-	out := make([]freeSlotDTO, 0, len(slots))
-	for _, s := range slots {
-		out = append(out, freeSlotDTO{
-			PlanningID: s.PlanningID,
-			DoctorName: s.DoctorName,
-			PlSubjID:   s.PlSubjID,
-			Date:       s.DateCons.Format("2006-01-02"),
-			Time:       fmt.Sprintf("%02d:%02d", s.Heure/100, s.Heure%100),
-			Duration:   s.Duration,
 		})
 	}
 

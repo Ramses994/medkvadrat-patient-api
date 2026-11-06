@@ -64,6 +64,8 @@ func main() {
 	repos := repo.New(mssql)
 	defaultModelsID := service.ParseDefaultModelsID(os.Getenv("DEFAULT_MODELS_ID"))
 	services := service.New(mssql, mssqlWrite, sqlite, repos, logger, defaultModelsID, cfg)
+	services.RefreshBookingPairs(ctxBackground())
+
 	router := api.NewRouter(cfg, services, logger)
 
 	server := &http.Server{
@@ -77,6 +79,19 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				services.RefreshBookingPairs(context.Background())
+			}
+		}
+	}()
 
 	// Start polling (best-effort, logs only for now).
 	poller := poll.NewMotconsuPoller(services, logger, cfg.PollInterval)

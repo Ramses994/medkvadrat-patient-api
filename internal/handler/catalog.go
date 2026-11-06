@@ -2,13 +2,10 @@ package handler
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
 
-	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
 )
@@ -17,7 +14,6 @@ type CatalogService interface {
 	CatalogSpecialties(ctx context.Context) ([]repo.Specialty, error)
 	CatalogDepartments(ctx context.Context) ([]repo.Department, error)
 	CatalogDoctors(ctx context.Context, specialtyID *int, meddepID *int) ([]repo.CatalogDoctor, error)
-	CatalogSlots(ctx context.Context, doctorID int, dateFrom, dateTo time.Time) ([]repo.Slot, error)
 }
 
 type CatalogHandler struct {
@@ -103,74 +99,6 @@ func (h CatalogHandler) Doctors(w http.ResponseWriter, r *http.Request) {
 	for _, d := range rows {
 		out = append(out, catalogDoctorDTO{
 			DoctorID: d.DoctorID, FullName: d.FullName, SpecialtyID: d.SpecialtyID, Specialty: d.Specialty, MeddepID: d.MeddepID,
-		})
-	}
-	response.OK(w, out)
-}
-
-type slotDTO struct {
-	PlanningID int    `json:"planning_id"`
-	DoctorID   int    `json:"doctor_id"`
-	DoctorName string `json:"doctor_name"`
-	Date       string `json:"date"`
-	Time       string `json:"time"`
-	Duration   int    `json:"duration_min"`
-}
-
-func (h CatalogHandler) Slots(w http.ResponseWriter, r *http.Request) {
-	medialogwrite.RespondFeatureDisabled(w)
-}
-
-// slotsLegacy — Deprecated: wrong free-time model, see docs/lk/00 §3. Kept for LK-2a.
-func (h CatalogHandler) slotsLegacy(w http.ResponseWriter, r *http.Request) {
-	docStr := r.URL.Query().Get("doctor_id")
-	if docStr == "" {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "Нужен doctor_id")
-		return
-	}
-	docID, err := strconv.Atoi(docStr)
-	if err != nil || docID <= 0 {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "doctor_id должен быть числом")
-		return
-	}
-	dfStr := r.URL.Query().Get("date_from")
-	dtStr := r.URL.Query().Get("date_to")
-	if dfStr == "" || dtStr == "" {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "Нужны date_from и date_to (YYYY-MM-DD)")
-		return
-	}
-	df, err := time.Parse("2006-01-02", dfStr)
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "date_from: формат YYYY-MM-DD")
-		return
-	}
-	// date_to is inclusive in API; convert to [from, to+1day) for MSSQL.
-	dt, err := time.Parse("2006-01-02", dtStr)
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "date_to: формат YYYY-MM-DD")
-		return
-	}
-	dt = dt.AddDate(0, 0, 1)
-	if !dt.After(df) {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "date_to должен быть >= date_from")
-		return
-	}
-
-	rows, err := h.Svc.CatalogSlots(r.Context(), docID, df, dt)
-	if err != nil {
-		h.Logger.Error("catalog slots failed", "err", err)
-		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
-		return
-	}
-	out := make([]slotDTO, 0, len(rows))
-	for _, s := range rows {
-		out = append(out, slotDTO{
-			PlanningID: s.PlanningID,
-			DoctorID:   s.DoctorID,
-			DoctorName: s.DoctorName,
-			Date:       s.DateCons.Format("2006-01-02"),
-			Time:       fmt.Sprintf("%02d:%02d", s.Heure/100, s.Heure%100),
-			Duration:   s.Duration,
 		})
 	}
 	response.OK(w, out)

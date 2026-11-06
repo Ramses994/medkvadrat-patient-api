@@ -18,6 +18,10 @@ The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OT
 
 `GET /api/me/profile` exposes `birth_date` (`YYYY-MM-DD`) from Medialog `PATIENTS.NE_LE` when set, otherwise `birth_year` from `GOD_ROGDENIQ`. Clients should show one or the other, not both.
 
+## Booking slots (LK-2a)
+
+`GET /api/catalog/booking-options` and `GET /api/catalog/slots` (patient JWT) read free time from `pl_TelemedGetAvaliableSlots` for pairs in `LK_BOOKING_PAIRS`. The old `GET /api/schedule/slots` route is removed. `SLOT_TOKEN_SECRET` must be at least 32 bytes or slots answer `503`. Times are Moscow wall-clock strings without an offset.
+
 ## Staff dashboard
 
 Internal schedule board for three branches (staff session, not `API_TOKEN`):
