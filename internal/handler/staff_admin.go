@@ -161,7 +161,9 @@ func (h StaffHandler) writeStaffErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, staff.ErrBadRole):
 		response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Роль: admin, manager или registrar")
 	case errors.Is(err, staff.ErrLastAdmin):
-		response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Нельзя выключить последнего администратора")
+		response.Error(w, http.StatusConflict, "LAST_ADMIN", "Нельзя выключить последнего администратора")
+	case errors.Is(err, staff.ErrNoBranches):
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "У регистратора нет филиалов")
 	case errors.Is(err, staff.ErrNotFound):
 		response.Error(w, http.StatusNotFound, "NOT_FOUND", "Сотрудник не найден")
 	default:

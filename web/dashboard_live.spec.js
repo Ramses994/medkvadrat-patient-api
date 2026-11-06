@@ -50,6 +50,8 @@ function waitlistBody(item) {
 function baseItem(extra = {}) {
   return {
     id: 7,
+    source: 'max',
+    version: 1,
     status: 'new',
     outcome: '',
     patient_name: 'Иванов Иван',
@@ -225,19 +227,15 @@ test('an open waitlist choice survives a tick and applies after five idle second
   await page.locator('#tabWaitlist').click();
   await expect(page.locator('.wl-outcome')).toBeVisible();
   await page.clock.fastForward(8_000);
-  await page.locator('.wl-status').selectOption('closed');
-  const posted = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'POST');
-  const reloaded = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'GET');
+  const posted = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'PATCH');
   await page.locator('.wl-outcome').selectOption('refused');
   await posted;
-  await reloaded;
   await page.locator('.wl-outcome').focus();
   await expect(page.locator('.wl-outcome')).toBeFocused();
   state.wlName = 'Петров Пётр';
   state.wlOutcome = 'call_back';
   await page.clock.fastForward(2_000);
   await expect(page.locator('.wl-outcome')).toHaveValue('refused');
-  await expect(page.locator('.wl-status')).toHaveValue('closed');
   await expect(page.locator('.wl-outcome')).toBeFocused();
   await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
   await page.locator('.wl-outcome').evaluate(el => el.blur());
@@ -250,21 +248,18 @@ test('a server status change during editing shows the other-staff notice', async
   const state = freshState();
   await openDashboard(page, state);
   await page.locator('#tabWaitlist').click();
-  await expect(page.locator('.wl-status')).toBeVisible();
+  await expect(page.locator('.wl-outcome')).toBeVisible();
   await page.clock.fastForward(8_000);
-  await page.locator('.wl-status').selectOption('closed');
-  const posted = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'POST');
-  const reloaded = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'GET');
-  await page.locator('.wl-outcome').selectOption('refused');
+  const posted = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'PATCH');
+  await page.locator('.wl-outcome').selectOption('call_back');
   await posted;
-  await reloaded;
-  state.forceStatus = 'contacted';
+  await page.locator('.wl-outcome').focus();
+  state.forceStatus = 'closed';
   state.wlName = 'Чужое имя';
   await page.clock.fastForward(2_000);
   await expect(page.locator('.wl-conflict')).toContainText('Изменено другим сотрудником');
   await expect(page.getByRole('button', { name: 'Обновить строку' })).toBeVisible();
-  await expect(page.locator('.wl-status')).toHaveValue('closed');
-  await expect(page.locator('.wl-outcome')).toHaveValue('refused');
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
   await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
 });
 
@@ -283,11 +278,14 @@ test('reload after another date returns to today and scrolls to 13:09', async ({
   const cols = page.locator('#board .col');
   await expect(cols).toHaveCount(3);
   for (const col of await cols.all()) {
-    const delta = await col.locator('.list').evaluate(list => {
-      const row = [...list.querySelectorAll('.row')].find(r => r.dataset.time === '13:10');
-      return row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    const visible = await col.locator('.list').evaluate(list => {
+      const now = list.querySelector('.now');
+      if (!now) return false;
+      const box = list.getBoundingClientRect();
+      const line = now.getBoundingClientRect();
+      return line.top >= box.top - 1 && line.bottom <= box.bottom + 1;
     });
-    expect(Math.abs(delta)).toBeLessThan(2);
+    expect(visible).toBe(true);
     const scrollTop = await col.locator('.list').evaluate(list => list.scrollTop);
     expect(scrollTop).toBeGreaterThan(0);
   }

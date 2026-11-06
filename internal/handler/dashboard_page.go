@@ -62,7 +62,7 @@ func (h DashboardPageHandler) Page(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h DashboardPageHandler) LoginForm(w http.ResponseWriter, r *http.Request) {
-	h.writeLogin(w, "")
+	h.writeLogin(w, http.StatusOK, "")
 }
 
 func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +88,7 @@ func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.writeLogin(w, "Неверный логин или пароль")
+		h.writeLogin(w, http.StatusBadRequest, "Неверный логин или пароль")
 		return
 	}
 	login := r.FormValue("login")
@@ -99,34 +99,21 @@ func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) 
 			h.Logger.Info("dashboard login failed", "ip", ip, "login", strings.TrimSpace(login))
 		}
 		if errors.Is(err, staff.ErrLocked) {
-			h.writeLogin(w, "Слишком много попыток, попробуйте через 15 минут")
+			h.writeLogin(w, http.StatusTooManyRequests, "Слишком много попыток, попробуйте через 15 минут")
 			return
 		}
-		h.writeLogin(w, "Неверный логин или пароль")
+		if errors.Is(err, staff.ErrNoBranches) {
+			h.writeLogin(w, http.StatusForbidden, "нет филиалов — обратитесь в ИТ")
+			return
+		}
+		if errors.Is(err, staff.ErrJournal) {
+			h.writeLogin(w, http.StatusServiceUnavailable, "Вход временно недоступен")
+			return
+		}
+		h.writeLogin(w, http.StatusUnauthorized, "Неверный логин или пароль")
 		return
 	}
-
-	ttl := h.SessionTTL
-	if ttl <= 0 {
-		ttl = 12 * time.Hour
-	}
-	exp := h.now().Add(ttl)
-	cookieVal, err := staffsession.Sign(h.Secret, principal.ID, exp)
-	if err != nil {
-		w.Header().Set("Cache-Control", "no-store")
-		http.Error(w, "Dashboard not configured", http.StatusServiceUnavailable)
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     staffsession.CookieName,
-		Value:    cookieVal,
-		Path:     "/dashboard",
-		Expires:  exp,
-		MaxAge:   int(ttl.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		Secure:   h.CookieSecure,
-	})
+	h.setStaffCookie(w, principal.ID, principal.SessionVersion)
 	if principal.MustChangePassword {
 		http.Redirect(w, r, "/dashboard/password", http.StatusFound)
 		return
@@ -157,7 +144,35 @@ func (h DashboardPageHandler) PasswordPost(w http.ResponseWriter, r *http.Reques
 		h.writePassword(w, "Неверный текущий пароль")
 		return
 	}
+	fresh, err := h.Users.ByID(r.Context(), p.ID)
+	if err != nil {
+		h.writePassword(w, "Не удалось сменить пароль")
+		return
+	}
+	h.setStaffCookie(w, fresh.ID, fresh.SessionVersion)
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
+}
+
+func (h DashboardPageHandler) setStaffCookie(w http.ResponseWriter, userID int64, version int) {
+	ttl := h.SessionTTL
+	if ttl <= 0 {
+		ttl = 12 * time.Hour
+	}
+	exp := h.now().Add(ttl)
+	cookieVal, err := staffsession.Sign(h.Secret, userID, version, exp)
+	if err != nil {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     staffsession.CookieName,
+		Value:    cookieVal,
+		Path:     "/dashboard",
+		Expires:  exp,
+		MaxAge:   int(ttl.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   h.CookieSecure,
+	})
 }
 
 func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -173,14 +188,17 @@ func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dashboard/login", http.StatusFound)
 }
 
-func (h DashboardPageHandler) writeLogin(w http.ResponseWriter, errMsg string) {
+func (h DashboardPageHandler) writeLogin(w http.ResponseWriter, status int, errMsg string) {
 	if !h.configured() {
 		dashboardUnavailable(w)
 		return
 	}
+	if status == 0 {
+		status = http.StatusOK
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	var b strings.Builder
 	b.WriteString(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`)
 	b.WriteString(`<title>Вход — дашборд МедКвадрат</title>`)

@@ -20,6 +20,7 @@ func TestWaitlistMisSQL_FiltersExamWindowAndActive(t *testing.T) {
 		"p.COMMENTAIRE",
 		"MEDECINS_CREATOR_ID",
 		"FM_INTORG_ID IN (106, 3, 496)",
+		"COALESCE(NULLIF(LTRIM(RTRIM(pt.MOBIL_TELEFON)),''), NULLIF(LTRIM(RTRIM(pt.TEL)),''), NULLIF(LTRIM(RTRIM(pt.RAB_TEL)),''), '')",
 		"SUBSTRING(ISNULL(p.COMMENTAIRE, ''), 1, 200)",
 	} {
 		if !strings.Contains(q, want) {

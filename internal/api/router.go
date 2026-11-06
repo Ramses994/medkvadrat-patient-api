@@ -81,17 +81,17 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 
 	// Staff dashboard (session cookie; not API_TOKEN)
 	mux.HandleFunc("GET /dashboard/login", dashboardPageH.LoginForm)
-	mux.HandleFunc("POST /dashboard/login", dashboardPageH.LoginPost)
-	mux.HandleFunc("POST /dashboard/logout", dashboardPageH.Logout)
+	mux.Handle("POST /dashboard/login", middleware.RequireSameOrigin(http.HandlerFunc(dashboardPageH.LoginPost)))
+	mux.Handle("POST /dashboard/logout", middleware.RequireSameOrigin(http.HandlerFunc(dashboardPageH.Logout)))
 
 	staffMW := middleware.RequireStaff{Secret: []byte(cfg.Dashboard.Secret), Lookup: users.ByID}
 	mux.Handle("GET /dashboard", staffMW.Wrap(http.HandlerFunc(dashboardPageH.Page)))
 	mux.Handle("GET /dashboard/password", staffMW.Wrap(http.HandlerFunc(dashboardPageH.PasswordForm)))
-	mux.Handle("POST /dashboard/password", staffMW.Wrap(http.HandlerFunc(dashboardPageH.PasswordPost)))
+	mux.Handle("POST /dashboard/password", staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(dashboardPageH.PasswordPost))))
 	mux.Handle("GET /dashboard/me", staffMW.Wrap(http.HandlerFunc(staffH.Me)))
 	mux.Handle("GET /dashboard/data", staffMW.Wrap(http.HandlerFunc(dashboardH.Schedule)))
 	mux.Handle("GET /dashboard/waitlist", staffMW.Wrap(http.HandlerFunc(waitlistH.List)))
-	mux.Handle("POST /dashboard/waitlist/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(waitlistH.Update))))
+	mux.Handle("PATCH /dashboard/waitlist/{source}/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(waitlistH.Patch))))
 	mux.Handle("GET /dashboard/staff", staffMW.Wrap(http.HandlerFunc(staffH.List)))
 	mux.Handle("POST /dashboard/staff", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Create))))
 	mux.Handle("POST /dashboard/staff/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Update))))

@@ -9,11 +9,14 @@ func TestSignValid(t *testing.T) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	exp := now.Add(12 * time.Hour)
-	val, err := Sign(secret, 7, exp)
+	val, err := Sign(secret, 7, 1, exp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	userID, ok, err := Open(secret, val, now)
+	userID, version, ok, err := Open(secret, val, now)
+	if version != 1 {
+		t.Fatalf("version %d", version)
+	}
 	if err != nil || !ok || userID != 7 {
 		t.Fatalf("expected user 7, id=%d ok=%v err=%v", userID, ok, err)
 	}
@@ -29,7 +32,7 @@ func TestSignValid(t *testing.T) {
 func TestValidTampered(t *testing.T) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
 	now := time.Now().UTC()
-	val, err := Sign(secret, 7, now.Add(time.Hour))
+	val, err := Sign(secret, 7, 1, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,10 +54,10 @@ func TestValidTampered(t *testing.T) {
 
 func TestSignValid_WeakSecret(t *testing.T) {
 	now := time.Now().UTC()
-	if _, err := Sign(nil, 7, now.Add(time.Hour)); err != ErrWeakSecret {
+	if _, err := Sign(nil, 7, 1, now.Add(time.Hour)); err != ErrWeakSecret {
 		t.Fatalf("empty secret: %v", err)
 	}
-	if _, err := Sign([]byte("short"), 7, now.Add(time.Hour)); err != ErrWeakSecret {
+	if _, err := Sign([]byte("short"), 7, 1, now.Add(time.Hour)); err != ErrWeakSecret {
 		t.Fatalf("short secret: %v", err)
 	}
 	ok, err := Valid(nil, "1|ab", now)

@@ -47,6 +47,20 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Playwright
+        working-directory: web
+        env:
+          CI: true
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
+          npx playwright test
+
   build-and-push:
     needs: test
     if: github.event_name == 'push'

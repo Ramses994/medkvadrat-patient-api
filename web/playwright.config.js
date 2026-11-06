@@ -7,7 +7,7 @@ export default defineConfig({
   workers: 1,
   use: {
     headless: true,
-    channel: 'chrome',
+    ...(process.env.CI ? {} : { channel: 'chrome' }),
     viewport: { width: 1100, height: 560 },
   },
 });

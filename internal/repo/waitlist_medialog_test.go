@@ -110,12 +110,18 @@ func TestWaitlistOriginalsSQL_UsesNE_LE(t *testing.T) {
 	if strings.Contains(q, "DATENAISS") {
 		t.Fatal("DATENAISS is not the confirmed birth column")
 	}
+	if !strings.Contains(q, "COALESCE(NULLIF(LTRIM(RTRIM(pt.MOBIL_TELEFON)),''), NULLIF(LTRIM(RTRIM(pt.TEL)),''), NULLIF(LTRIM(RTRIM(pt.RAB_TEL)),''), '')") {
+		t.Fatal("phone must skip a blank mobile number")
+	}
 }
 
 func TestWaitlistFuturesSQL_ConvertDatetime126(t *testing.T) {
 	q, _ := waitlistFutureSQL([]int64{1}, nil)
 	if !strings.Contains(q, "p.DATE_START > CONVERT(datetime, @now, 126)") {
 		t.Fatalf("need CONVERT 126, got %s", q)
+	}
+	if !strings.Contains(q, "ISNULL(ps.FM_INTORG_ID, 0) AS BRANCH_ID") {
+		t.Fatal("future visit must carry the branch")
 	}
 }
 
