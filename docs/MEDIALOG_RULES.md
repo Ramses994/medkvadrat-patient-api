@@ -21,9 +21,10 @@ go-mssqldb отдаёт `time.Time` как `datetimeoffset`. SQL Server срав
 - В запросе сравнивать через явное преобразование: `CONVERT(datetime, @now, 126)` (стиль 126)
   или `CONVERT(date, @date, 23)` для календарной даты.
 - `time.Time`, `*time.Time` и `sql.NullTime` в `sql.Named` для Medialog **запрещены**.
-  До мержа LK-1a (PR #21) точечные исключения сторожа: `me.go:Appointments`,
-  `motconsu.go:ChangesSince`, `motconsu.go:PollAfter`. Новый вызов в тех же файлах
-  не исключается. После мержа #21 список исключений удалить.
+  Единственное исключение сторожа до мержа LK-1a (PR #21): `me.go:Appointments`.
+  `motconsu.go:ChangesSince` и `motconsu.go:PollAfter` передают строку тех же цифр
+  (`time.Parse` без зоны и scan `datetime`) и `CONVERT(datetime, …, 126)`, без сдвига на MSK.
+  После мержа #21 снять `me.go:Appointments`.
 
 Тест-сторож: `TestMSSQLNamedArgsForbidTimeTime` в `internal/repo`.
 

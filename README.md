@@ -1,5 +1,7 @@
 # medkvadrat-patient-api
 
+Сборка и тесты: Go 1.27.x (см. `toolchain` в go.mod).
+
 Документация ЛК и Medialog: в репозитории [medkvadrat-deploy](https://github.com/Ramses994/medkvadrat-deploy) каталог `docs/lk/`.
 
 Переменные LK-0 (см. `.env.example`): `MEDIALOG_WRITE_*`, `DB_RW_*`, `MOTCONSU_POLL_ENABLED`, `CORS_ALLOWED_ORIGINS`, `DB_APP_NAME`. Read-логин по умолчанию `svc_patient_api_ro`.
@@ -44,7 +46,7 @@ Run:
 ./scripts/integration-test.sh
 ```
 
-The script runs `go test -tags=integration ./internal/integration/... -v` inside a throwaway `golang:1.22-alpine` container on `medkvadrat-internal` network and cleans up.
+The script runs `go test -tags=integration ./internal/integration/... -v` inside a throwaway `golang:1.27-alpine` container on `medkvadrat-internal` network and cleans up.
 
 Override network if running outside compose context:
 

@@ -29,10 +29,12 @@ func (r *MotconsuRepo) ChangesSince(ctx context.Context, since time.Time) ([]Sch
 		FROM MOTCONSU m
 		LEFT JOIN PATIENTS p ON p.PATIENTS_ID = m.PATIENTS_ID
 		LEFT JOIN MEDECINS d ON d.MEDECINS_ID = m.MEDECINS_ID
-		WHERE m.KRN_MODIFY_DATE > @since
+		WHERE m.KRN_MODIFY_DATE > CONVERT(datetime, @since, 126)
 		ORDER BY m.KRN_MODIFY_DATE DESC`
 
-	rows, err := r.db.QueryContext(ctx, query, sql.Named("since", since))
+	// since приходит из time.Parse без зоны: цифры — это naive datetime клиники.
+	// In(Moscow) сдвинул бы границу на +3ч. CONVERT сравнивает те же цифры.
+	rows, err := r.db.QueryContext(ctx, query, sql.Named("since", since.Format(mssqlReminderBoundLayout)))
 	if err != nil {
 		return nil, fmt.Errorf("query changes: %w", err)
 	}
@@ -65,10 +67,11 @@ func (r *MotconsuRepo) PollAfter(ctx context.Context, last time.Time) ([]PollRow
 		SELECT m.MOTCONSU_ID, m.PATIENTS_ID, m.MEDECINS_ID,
 			m.DATE_CONSULTATION, m.KRN_MODIFY_DATE
 		FROM MOTCONSU m
-		WHERE m.KRN_MODIFY_DATE > @lastDate
+		WHERE m.KRN_MODIFY_DATE > CONVERT(datetime, @lastDate, 126)
 		ORDER BY m.KRN_MODIFY_DATE ASC`
 
-	rows, err := r.db.QueryContext(ctx, query, sql.Named("lastDate", last))
+	// last — scan datetime (цифры часов SQL, локация драйвера UTC). Без сдвига зоны.
+	rows, err := r.db.QueryContext(ctx, query, sql.Named("lastDate", last.Format(mssqlReminderBoundLayout)))
 	if err != nil {
 		return nil, fmt.Errorf("query poll: %w", err)
 	}

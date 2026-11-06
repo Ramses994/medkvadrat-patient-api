@@ -11,12 +11,10 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// Удалить после LK-1a (PR #21). Исключения точечные: новый sql.Named(time.Time)
-// в том же файле сторож уже ловит.
+// me.go:Appointments — снять после мержа LK-1a (PR #21).
+// motconsu.go:ChangesSince и PollAfter передают строку CONVERT(..., 126) и в списке не состоят.
 var allowMSSQLTimeNamed = map[string]bool{
-	"me.go:Appointments":       true,
-	"motconsu.go:ChangesSince": true,
-	"motconsu.go:PollAfter":    true,
+	"me.go:Appointments": true,
 }
 
 func TestMSSQLNamedArgsForbidTimeTime(t *testing.T) {
@@ -69,12 +67,12 @@ func mssqlNamedTimeCalls(t *testing.T, patterns []string, allow map[string]bool)
 	}
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("сторож не смог загрузить типы: проверьте версию Go/x/tools: %v", err)
 	}
 	var out []string
 	for _, pkg := range pkgs {
-		if len(pkg.Errors) > 0 {
-			t.Fatalf("load %s: %v", pkg.PkgPath, pkg.Errors)
+		if len(pkg.Errors) > 0 || pkg.TypesInfo == nil {
+			t.Fatalf("сторож не смог загрузить типы: проверьте версию Go/x/tools: %s: %v", pkg.PkgPath, pkg.Errors)
 		}
 		for _, file := range pkg.Syntax {
 			name := pkg.Fset.Position(file.Pos()).Filename
