@@ -35,6 +35,7 @@ type WaitlistFutureVisit struct {
 	DoctorName string
 	Service    string
 	IsWaitlist bool
+	BranchID   int
 }
 
 func waitlistIN(prefix string, ids []int64) (string, []any) {
@@ -59,7 +60,7 @@ SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS PATIENT_NAME,
-  ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))) AS PHONE,
+  COALESCE(NULLIF(LTRIM(RTRIM(pt.MOBIL_TELEFON)),''), NULLIF(LTRIM(RTRIM(pt.TEL)),''), NULLIF(LTRIM(RTRIM(pt.RAB_TEL)),''), '') AS PHONE,
   ISNULL(CONVERT(varchar(10), pt.NE_LE, 23), '') AS DOB,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START,
   CAST(ISNULL(p.CANCELLED,0) AS int) AS CANCELLED,
@@ -84,6 +85,7 @@ SELECT
   p.PATIENTS_ID,
   CONVERT(varchar(19), p.CREATE_DATE_TIME, 120) AS CREATED_AT,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START,
+  ISNULL(ps.FM_INTORG_ID, 0) AS BRANCH_ID,
 ` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
 ` + examSQL + `
 FROM PLANNING p
@@ -154,7 +156,7 @@ func WaitlistFutures(ctx context.Context, db *sql.DB, patientIDs []int64, now ti
 		var isWL bitInt
 		var created, dateStart, doctor, webName, examName sql.NullString
 		if err := rs.Scan(
-			&row.PlanningID, &row.PatientID, &created, &dateStart,
+			&row.PlanningID, &row.PatientID, &created, &dateStart, &row.BranchID,
 			&doctor, &webName, &examName, &isWL,
 		); err != nil {
 			return nil, err

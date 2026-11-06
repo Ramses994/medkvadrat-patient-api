@@ -88,9 +88,10 @@ func (s RequireStaff) Wrap(next http.Handler) http.Handler {
 		}
 		c, err := r.Cookie(staffsession.CookieName)
 		var userID int64
+		var version int
 		ok := false
 		if err == nil && c != nil {
-			userID, ok, _ = staffsession.Open(s.Secret, c.Value, s.now())
+			userID, version, ok, _ = staffsession.Open(s.Secret, c.Value, s.now())
 		}
 		if !ok {
 			if wantsDashboardJSON(r) {
@@ -101,10 +102,10 @@ func (s RequireStaff) Wrap(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/dashboard/login", http.StatusFound)
 			return
 		}
-		principal := staff.Principal{ID: userID, Login: "staff", All: true, BranchIDs: append([]int(nil), staff.DashboardBranchIDs...)}
+		principal := staff.Principal{ID: userID, Login: "staff", All: true, BranchIDs: append([]int(nil), staff.DashboardBranchIDs...), SessionVersion: version}
 		if s.Lookup != nil {
 			principal, err = s.Lookup(r.Context(), userID)
-			if err != nil {
+			if err != nil || principal.SessionVersion != version {
 				if wantsDashboardJSON(r) {
 					staffError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
 					return

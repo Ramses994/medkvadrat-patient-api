@@ -15,6 +15,7 @@ type MisWork struct {
 	Outcome    string
 	UpdatedBy  string
 	UpdatedAt  string
+	Version    int
 }
 
 func (r *Repo) MisWorkMap(ctx context.Context, planningIDs []int64) (map[int64]MisWork, error) {
@@ -23,7 +24,7 @@ func (r *Repo) MisWorkMap(ctx context.Context, planningIDs []int64) (map[int64]M
 		return out, nil
 	}
 	q := `
-SELECT planning_id, status, IFNULL(outcome,''), IFNULL(updated_by,''), updated_at
+SELECT planning_id, status, IFNULL(outcome,''), IFNULL(updated_by,''), updated_at, IFNULL(version,1)
 FROM waitlist_mis_work WHERE planning_id IN (` + placeholders(len(planningIDs)) + `)`
 	args := make([]any, len(planningIDs))
 	for i, id := range planningIDs {
@@ -36,7 +37,7 @@ FROM waitlist_mis_work WHERE planning_id IN (` + placeholders(len(planningIDs)) 
 	defer rs.Close()
 	for rs.Next() {
 		var row MisWork
-		if err := rs.Scan(&row.PlanningID, &row.Status, &row.Outcome, &row.UpdatedBy, &row.UpdatedAt); err != nil {
+		if err := rs.Scan(&row.PlanningID, &row.Status, &row.Outcome, &row.UpdatedBy, &row.UpdatedAt, &row.Version); err != nil {
 			return nil, err
 		}
 		out[row.PlanningID] = row
@@ -102,9 +103,9 @@ WHERE planning_id = ? AND status = ?`,
 func (r *Repo) misWork(ctx context.Context, planningID int64) (MisWork, bool, error) {
 	var row MisWork
 	err := r.db.QueryRowContext(ctx, `
-SELECT planning_id, status, IFNULL(outcome,''), IFNULL(updated_by,''), updated_at
+SELECT planning_id, status, IFNULL(outcome,''), IFNULL(updated_by,''), updated_at, IFNULL(version,1)
 FROM waitlist_mis_work WHERE planning_id = ?`, planningID).Scan(
-		&row.PlanningID, &row.Status, &row.Outcome, &row.UpdatedBy, &row.UpdatedAt,
+		&row.PlanningID, &row.Status, &row.Outcome, &row.UpdatedBy, &row.UpdatedAt, &row.Version,
 	)
 	if err == sql.ErrNoRows {
 		return MisWork{}, false, nil

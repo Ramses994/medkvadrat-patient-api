@@ -59,6 +59,7 @@ type DashboardItem struct {
 	UpdatedBy       string
 	UpdatedAt       string
 	ApptStart       string
+	Version         int
 }
 
 type DashboardPage struct {
@@ -85,6 +86,7 @@ type WaitlistRow struct {
 	CreatedAtMSK string
 	BranchID     int
 	UpdatedBy    string
+	Version      int
 }
 
 func ValidOutcome(outcome string) bool {
@@ -158,7 +160,7 @@ func (r *Repo) ListWaitlist(ctx context.Context, f WaitlistListFilter) (rows []W
 
 	q := `
 SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
-       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,'')
+       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1)
 FROM waitlist` + where + `
 ORDER BY created_at DESC, id DESC
 LIMIT ? OFFSET ?`
@@ -173,7 +175,7 @@ LIMIT ? OFFSET ?`
 		if err := rs.Scan(
 			&row.ID, &row.PlanningID, &row.PatientID, &row.ApptVersion, &row.ApptStart,
 			&row.Reason, &row.Source, &row.Status, &row.Outcome, &row.CreatedAt, &row.UpdatedAt,
-			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy,
+			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy, &row.Version,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -183,6 +185,13 @@ LIMIT ? OFFSET ?`
 		rows = []WaitlistRow{}
 	}
 	return rows, total, rs.Err()
+}
+
+func (r *Repo) CountWaitlist(ctx context.Context, f WaitlistListFilter) (int, error) {
+	where, args := waitlistWhere(f)
+	var n int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM waitlist`+where, args...).Scan(&n)
+	return n, err
 }
 
 func (r *Repo) CountOpenWaitlist(ctx context.Context) (int, error) {
@@ -228,10 +237,9 @@ func (r *Repo) ListWaitlistMatching(ctx context.Context, f WaitlistListFilter) (
 	where, args := waitlistWhere(f)
 	q := `
 SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
-       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,'')
+       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1)
 FROM waitlist` + where + `
-ORDER BY created_at DESC, id DESC
-LIMIT 500`
+ORDER BY created_at DESC, id DESC`
 	rs, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list waitlist matching: %w", err)
@@ -243,7 +251,7 @@ LIMIT 500`
 		if err := rs.Scan(
 			&row.ID, &row.PlanningID, &row.PatientID, &row.ApptVersion, &row.ApptStart,
 			&row.Reason, &row.Source, &row.Status, &row.Outcome, &row.CreatedAt, &row.UpdatedAt,
-			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy,
+			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy, &row.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -306,9 +314,9 @@ func (r *Repo) UpdateWaitlist(ctx context.Context, id int64, status, outcome, up
 
 	updated := FormatWaitlistUTC(now)
 	res, err := r.db.ExecContext(ctx, `
-UPDATE waitlist SET status = ?, outcome = ?, updated_at = ?, updated_by = ?
-WHERE id = ? AND status = ?`,
-		status, outcome, updated, updatedBy, id, row.Status)
+UPDATE waitlist SET status = ?, outcome = ?, updated_at = ?, updated_by = ?, version = version + 1
+WHERE id = ? AND status = ? AND version = ?`,
+		status, outcome, updated, updatedBy, id, row.Status, row.Version)
 	if err != nil {
 		return WaitlistRow{}, fmt.Errorf("update waitlist: %w", err)
 	}
@@ -326,6 +334,7 @@ WHERE id = ? AND status = ?`,
 	row.Outcome = outcome
 	row.UpdatedAt = updated
 	row.UpdatedBy = updatedBy
+	row.Version++
 	return row, nil
 }
 
@@ -352,11 +361,11 @@ func (r *Repo) getWaitlist(ctx context.Context, id int64) (WaitlistRow, error) {
 	var row WaitlistRow
 	err := r.db.QueryRowContext(ctx, `
 SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
-       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,'')
+       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1)
 FROM waitlist WHERE id = ?`, id).Scan(
 		&row.ID, &row.PlanningID, &row.PatientID, &row.ApptVersion, &row.ApptStart,
 		&row.Reason, &row.Source, &row.Status, &row.Outcome, &row.CreatedAt, &row.UpdatedAt,
-		&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy,
+		&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy, &row.Version,
 	)
 	if err == sql.ErrNoRows {
 		return WaitlistRow{}, ErrWaitlistNotFound

@@ -6,8 +6,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -32,6 +35,8 @@ var (
 	ErrShortPassword   = errors.New("password too short")
 	ErrLastAdmin       = errors.New("last admin")
 	ErrBranchForbidden = errors.New("BRANCH_FORBIDDEN")
+	ErrNoBranches      = errors.New("no branches")
+	ErrJournal         = errors.New("login journal")
 )
 
 // Dashboard branch ids in display order: Каширка, Куркино, Куркино 2.
@@ -48,6 +53,7 @@ type User struct {
 	CreatedAt          string
 	UpdatedAt          string
 	LastLoginAt        string
+	SessionVersion     int
 }
 
 type Principal struct {
@@ -58,6 +64,7 @@ type Principal struct {
 	All                bool
 	BranchIDs          []int
 	MustChangePassword bool
+	SessionVersion     int
 }
 
 func (p Principal) Allows(branch int) bool {
@@ -89,7 +96,8 @@ func (p Principal) VisibleBranches() []int {
 }
 
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	Compare func(hash, password []byte) error
 }
 
 func New(db *sql.DB) *Store {
@@ -114,11 +122,15 @@ func knownBranch(id int) bool {
 	return false
 }
 
-// ParseBranches accepts "*" or a CSV of 106, 3, 496.
+// ParseBranches accepts "*" (all branches) or a CSV of 106, 3, 496.
+// An empty list is an error. Only admin and manager may keep "*".
 func ParseBranches(raw string) (all bool, ids []int, err error) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "*" {
+	if raw == "*" {
 		return true, append([]int(nil), DashboardBranchIDs...), nil
+	}
+	if raw == "" {
+		return false, nil, errors.New("branches empty")
 	}
 	seen := map[int]bool{}
 	for _, part := range strings.Split(raw, ",") {
@@ -149,16 +161,20 @@ func principalFrom(u User) (Principal, error) {
 		return Principal{}, ErrBadRole
 	}
 	all, ids, err := ParseBranches(u.Branches)
-	if err != nil {
-		return Principal{}, err
-	}
 	if u.Role == RoleAdmin || u.Role == RoleManager {
 		all = true
 		ids = append([]int(nil), DashboardBranchIDs...)
+	} else if err != nil || all || len(ids) == 0 {
+		return Principal{}, ErrNoBranches
+	}
+	ver := u.SessionVersion
+	if ver < 1 {
+		ver = 1
 	}
 	return Principal{
 		ID: u.ID, Login: u.Login, FullName: u.FullName, Role: u.Role,
 		All: all, BranchIDs: ids, MustChangePassword: u.MustChangePassword,
+		SessionVersion: ver,
 	}, nil
 }
 
@@ -173,7 +189,7 @@ func (s *Store) ByID(ctx context.Context, id int64) (Principal, error) {
 func (s *Store) userByID(ctx context.Context, id int64) (User, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, login, full_name, role, branches, active, must_change_password,
-       created_at, updated_at, IFNULL(last_login_at,'')
+       created_at, updated_at, IFNULL(last_login_at,''), IFNULL(session_version,1)
 FROM staff_users WHERE id = ?`, id)
 	return scanUser(row)
 }
@@ -184,10 +200,10 @@ func (s *Store) userByLogin(ctx context.Context, login string) (User, string, er
 	var active, must int
 	err := s.db.QueryRowContext(ctx, `
 SELECT id, login, full_name, password_hash, role, branches, active, must_change_password,
-       created_at, updated_at, IFNULL(last_login_at,'')
+       created_at, updated_at, IFNULL(last_login_at,''), IFNULL(session_version,1)
 FROM staff_users WHERE login = ?`, login).Scan(
 		&u.ID, &u.Login, &u.FullName, &hash, &u.Role, &u.Branches, &active, &must,
-		&u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
+		&u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &u.SessionVersion,
 	)
 	if err == sql.ErrNoRows {
 		return User{}, "", ErrNotFound
@@ -209,7 +225,7 @@ func scanUser(row scanner) (User, error) {
 	var active, must int
 	err := row.Scan(
 		&u.ID, &u.Login, &u.FullName, &u.Role, &u.Branches, &active, &must,
-		&u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
+		&u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &u.SessionVersion,
 	)
 	if err == sql.ErrNoRows {
 		return User{}, ErrNotFound
@@ -281,43 +297,105 @@ INSERT INTO staff_login_log (login, ip, success, created_at) VALUES (?, ?, ?, ?)
 	return err
 }
 
-// Authenticate checks the lock, the password and the role. It always writes the journal.
+// Authenticate reserves one journal row before bcrypt. A journal error refuses the login.
 func (s *Store) Authenticate(ctx context.Context, login, password, ip string, now time.Time) (Principal, error) {
 	login = strings.TrimSpace(login)
-	locked, err := s.Locked(ctx, login, now)
+	logID, allowed, err := s.reserveAttempt(ctx, login, ip, now)
 	if err != nil {
 		return Principal{}, err
 	}
-	if locked {
-		_ = s.logAttempt(ctx, login, ip, false, now)
+	if !allowed {
 		return Principal{}, ErrLocked
 	}
 	u, hash, err := s.userByLogin(ctx, login)
-	if err != nil {
-		_ = s.logAttempt(ctx, login, ip, false, now)
-		if errors.Is(err, ErrNotFound) {
-			return Principal{}, ErrBadCredentials
-		}
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Principal{}, err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil || !u.Active {
-		_ = s.logAttempt(ctx, login, ip, false, now)
+	compare := s.compare
+	if errors.Is(err, ErrNotFound) || !u.Active {
+		_ = compare(dummyPasswordHash(), []byte(password))
+		return Principal{}, ErrBadCredentials
+	}
+	if compare([]byte(hash), []byte(password)) != nil {
 		return Principal{}, ErrBadCredentials
 	}
 	p, err := principalFrom(u)
 	if err != nil {
-		_ = s.logAttempt(ctx, login, ip, false, now)
 		return Principal{}, err
 	}
-	if err := s.logAttempt(ctx, login, ip, true, now); err != nil {
-		return Principal{}, err
+	if _, err := s.db.ExecContext(ctx, `UPDATE staff_login_log SET success = 1 WHERE id = ?`, logID); err != nil {
+		return Principal{}, ErrJournal
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE staff_users SET last_login_at = ? WHERE id = ?`, now.UTC().Format(time.RFC3339), u.ID)
 	return p, nil
 }
 
+func (s *Store) compare(hash, password []byte) error {
+	if s.Compare != nil {
+		return s.Compare(hash, password)
+	}
+	return bcrypt.CompareHashAndPassword(hash, password)
+}
+
+func (s *Store) reserveAttempt(ctx context.Context, login, ip string, now time.Time) (int64, bool, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, false, ErrJournal
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return 0, false, ErrJournal
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	res, err := conn.ExecContext(ctx, `
+INSERT INTO staff_login_log (login, ip, success, created_at) VALUES (?, ?, 0, ?)`,
+		login, ip, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, false, ErrJournal
+	}
+	logID, err := res.LastInsertId()
+	if err != nil {
+		return 0, false, ErrJournal
+	}
+	since := now.Add(-LockWindow).UTC().Format(time.RFC3339)
+	var n int
+	if err := conn.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM staff_login_log
+WHERE login = ? AND success = 0 AND created_at >= ?
+  AND id > IFNULL((SELECT MAX(id) FROM staff_login_log WHERE login = ? AND success = 1), 0)`,
+		login, since, login).Scan(&n); err != nil {
+		return 0, false, ErrJournal
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return 0, false, ErrJournal
+	}
+	committed = true
+	return logID, n <= LockFailures, nil
+}
+
+var (
+	dummyHash     []byte
+	dummyHashOnce sync.Once
+)
+
+func dummyPasswordHash() []byte {
+	dummyHashOnce.Do(func() {
+		dummyHash, _ = bcrypt.GenerateFromPassword([]byte("staff-unknown-user"), BcryptCost)
+	})
+	return dummyHash
+}
+
+func passwordLongEnough(password string) bool {
+	return utf8.RuneCountInString(password) >= MinPasswordLen
+}
+
 func (s *Store) ChangePassword(ctx context.Context, id int64, current, next string) error {
-	if len(next) < MinPasswordLen {
+	if !passwordLongEnough(next) {
 		return ErrShortPassword
 	}
 	u, hash, err := s.userByIDWithHash(ctx, id)
@@ -340,7 +418,7 @@ func (s *Store) userByIDWithHash(ctx context.Context, id int64) (User, string, e
 }
 
 func (s *Store) setPassword(ctx context.Context, id int64, password string, mustChange bool) error {
-	if len(password) < MinPasswordLen {
+	if !passwordLongEnough(password) {
 		return ErrShortPassword
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
@@ -353,7 +431,7 @@ func (s *Store) setPassword(ctx context.Context, id int64, password string, must
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx, `
-UPDATE staff_users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ?`,
+UPDATE staff_users SET password_hash = ?, must_change_password = ?, session_version = session_version + 1, updated_at = ? WHERE id = ?`,
 		string(hash), must, now, id)
 	return err
 }
@@ -375,9 +453,11 @@ func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error)
 	if !ValidRole(in.Role) {
 		return User{}, "", ErrBadRole
 	}
-	if _, _, err := ParseBranches(in.Branches); err != nil {
+	branches, err := normalizeBranches(in.Role, in.Branches)
+	if err != nil {
 		return User{}, "", err
 	}
+	in.Branches = branches
 	temp := ""
 	password := in.Password
 	must := false
@@ -390,7 +470,7 @@ func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error)
 		temp = password
 		must = true
 	}
-	if len(password) < MinPasswordLen {
+	if !passwordLongEnough(password) {
 		return User{}, "", ErrShortPassword
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
@@ -435,31 +515,62 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 		}
 	}
 	branches := u.Branches
+	branchSource := u.Branches
 	if in.Branches != "" {
-		if _, _, err := ParseBranches(in.Branches); err != nil {
+		branchSource = in.Branches
+	}
+	if in.Branches != "" || role != u.Role {
+		branches, err = normalizeBranches(role, branchSource)
+		if err != nil {
 			return User{}, "", err
 		}
-		branches = strings.TrimSpace(in.Branches)
 	}
 	active := u.Active
 	if in.Active != nil {
 		active = *in.Active
-	}
-	if u.Role == RoleAdmin && u.Active && (!active || role != RoleAdmin) {
-		if err := s.keepAdmin(ctx, id); err != nil {
-			return User{}, "", err
-		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	bit := 0
 	if active {
 		bit = 1
 	}
-	if _, err := s.db.ExecContext(ctx, `
-UPDATE staff_users SET role = ?, branches = ?, active = ?, updated_at = ? WHERE id = ?`,
-		role, branches, bit, now, id); err != nil {
+	bump := 0
+	if role != u.Role || branches != u.Branches || active != u.Active {
+		bump = 1
+	}
+	demote := u.Role == RoleAdmin && u.Active && (!active || role != RoleAdmin)
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
 		return User{}, "", err
 	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return User{}, "", err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	query := `UPDATE staff_users SET role = ?, branches = ?, active = ?, session_version = session_version + ?, updated_at = ? WHERE id = ?`
+	args := []any{role, branches, bit, bump, now, id}
+	if demote {
+		query += ` AND (SELECT COUNT(*) FROM staff_users WHERE role = 'admin' AND active = 1 AND id <> ?) >= 1`
+		args = append(args, id)
+	}
+	res, err := conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return User{}, "", err
+	}
+	n, _ := res.RowsAffected()
+	if demote && n == 0 {
+		return User{}, "", ErrLastAdmin
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return User{}, "", err
+	}
+	committed = true
 	temp := ""
 	if in.ResetPassword {
 		temp, err = randomPassword(12)
@@ -474,23 +585,38 @@ UPDATE staff_users SET role = ?, branches = ?, active = ?, updated_at = ? WHERE 
 	return u, temp, err
 }
 
-func (s *Store) keepAdmin(ctx context.Context, exceptID int64) error {
-	var n int
-	err := s.db.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM staff_users WHERE role = 'admin' AND active = 1 AND id <> ?`, exceptID).Scan(&n)
-	if err != nil {
-		return err
+func normalizeBranches(role, raw string) (string, error) {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == RoleAdmin || role == RoleManager {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || raw == "*" {
+			return "*", nil
+		}
+		_, ids, err := ParseBranches(raw)
+		if err != nil {
+			return "", err
+		}
+		return joinBranchIDs(ids), nil
 	}
-	if n == 0 {
-		return ErrLastAdmin
+	all, ids, err := ParseBranches(raw)
+	if err != nil || all || len(ids) == 0 {
+		return "", ErrNoBranches
 	}
-	return nil
+	return joinBranchIDs(ids), nil
+}
+
+func joinBranchIDs(ids []int) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.Itoa(id)
+	}
+	return strings.Join(parts, ",")
 }
 
 func (s *Store) List(ctx context.Context) ([]User, error) {
 	rs, err := s.db.QueryContext(ctx, `
 SELECT id, login, full_name, role, branches, active, must_change_password,
-       created_at, updated_at, IFNULL(last_login_at,'')
+       created_at, updated_at, IFNULL(last_login_at,''), IFNULL(session_version,1)
 FROM staff_users ORDER BY login`)
 	if err != nil {
 		return nil, err

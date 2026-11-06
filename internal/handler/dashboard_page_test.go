@@ -42,7 +42,7 @@ func TestDashboardPage_ServesHTML(t *testing.T) {
 	if !strings.Contains(body, "/dashboard/waitlist") {
 		t.Fatal("expected waitlist endpoint")
 	}
-	if !strings.Contains(body, "Ответы пациентов в MAX") {
+	if !strings.Contains(body, "Отметки ответов пациентов из MAX. Запись в Медиалоге не меняется — отмену или перенос делайте в клиенте") {
 		t.Fatal("expected waitlist caption")
 	}
 	if !strings.Contains(body, "a.textContent = it.patient_phone") {
@@ -56,8 +56,8 @@ func TestDashboardPage_ServesHTML(t *testing.T) {
 	}
 	save := body[strings.Index(body, "async function saveWaitlist"):]
 	block := save[strings.Index(save, "if (res.status === 409)"):strings.Index(save, "if (!res.ok)")]
-	if load, show := strings.Index(block, "await reloadWaitlistRow(id)"), strings.Index(block, "showBanner(msg)"); load < 0 || show < load {
-		t.Fatal("409 banner must stay visible after the row refresh")
+	if strings.Index(block, "showBanner(msg)") < 0 || strings.Contains(block, "reloadWaitlistRow") {
+		t.Fatal("409 must show the banner without a late reload")
 	}
 	for _, line := range strings.Split(body, "\n") {
 		trim := strings.TrimSpace(line)

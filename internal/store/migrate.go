@@ -156,6 +156,15 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 	if err := ensureColumn(ctx, db, "appointment_confirmations", "appt_version", "TEXT"); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, "staff_users", "session_version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "waitlist", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "waitlist_mis_work", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
 	if _, err := PurgeClosedWaitlist(ctx, db, time.Now().UTC()); err != nil {
 		return err
 	}

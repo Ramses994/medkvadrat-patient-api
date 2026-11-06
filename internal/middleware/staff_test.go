@@ -61,7 +61,7 @@ func TestRequireStaff_RedirectAndJSON(t *testing.T) {
 	{
 		exp := now.Add(time.Hour)
 		r := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
-		val, err := staffsession.Sign(secret, 7, exp)
+		val, err := staffsession.Sign(secret, 7, 1, exp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +152,7 @@ func TestRequireStaff_DisabledUserIsUnauthorizedOnNextRequest(t *testing.T) {
 	h := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("disabled user must not reach the handler")
 	}))
-	val, err := staffsession.Sign(secret, 7, now.Add(time.Hour))
+	val, err := staffsession.Sign(secret, 7, 1, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,13 +172,13 @@ func TestRequireStaff_MustChangePasswordBlocksData(t *testing.T) {
 		Secret: secret,
 		Now:    func() time.Time { return now },
 		Lookup: func(ctx context.Context, userID int64) (staff.Principal, error) {
-			return staff.Principal{ID: userID, Login: "admin", All: true, MustChangePassword: true}, nil
+			return staff.Principal{ID: userID, Login: "admin", All: true, MustChangePassword: true, SessionVersion: 1}, nil
 		},
 	}
 	h := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	val, err := staffsession.Sign(secret, 1, now.Add(time.Hour))
+	val, err := staffsession.Sign(secret, 1, 1, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
