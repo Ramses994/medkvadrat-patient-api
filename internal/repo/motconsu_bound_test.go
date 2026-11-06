@@ -14,8 +14,10 @@ func TestMotconsuQueriesUseDatetimeString(t *testing.T) {
 	}
 	src := string(b)
 	for _, want := range []string{
-		"CONVERT(datetime, @since, 126)",
-		"CONVERT(datetime, @lastDate, 126)",
+		"CONVERT(datetime2(7), @since, 126)",
+		"CONVERT(datetime2(7), @lastDate, 126)",
+		"mssqlCursorBound(since)",
+		"mssqlCursorBound(last)",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("missing %s", want)
@@ -41,5 +43,23 @@ func TestMotconsuBoundKeepsWallClockDigits(t *testing.T) {
 	shifted := utc.In(moscowLocation()).Format(mssqlReminderBoundLayout)
 	if shifted == got {
 		t.Fatal("Moscow conversion must differ; the query must not apply it")
+	}
+	cursor := mssqlCursorBound(utc)
+	if cursor != "2026-11-05T12:30:15.0000000" {
+		t.Fatalf("cursor = %s", cursor)
+	}
+	if mssqlCursorBound(utc.In(moscowLocation())) == cursor {
+		t.Fatal("cursor must keep the value's own digits")
+	}
+}
+
+func TestMSSQLCursorLayoutKeepsDatetimeTick(t *testing.T) {
+	tick := time.Date(2026, 11, 6, 12, 30, 15, 123333300, time.UTC)
+	if got := mssqlCursorBound(tick); got != "2026-11-06T12:30:15.1233333" {
+		t.Fatalf("datetime tick lost: %s", got)
+	}
+	ms := time.Date(2026, 11, 6, 12, 30, 15, 123*int(time.Millisecond), time.UTC)
+	if got := mssqlCursorBound(ms); got != "2026-11-06T12:30:15.1230000" {
+		t.Fatalf("cursor = %s", got)
 	}
 }

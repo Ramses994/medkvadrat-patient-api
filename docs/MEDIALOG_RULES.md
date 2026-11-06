@@ -22,8 +22,9 @@ go-mssqldb отдаёт `time.Time` как `datetimeoffset`. SQL Server срав
   или `CONVERT(date, @date, 23)` для календарной даты.
 - `time.Time`, `*time.Time` и `sql.NullTime` в `sql.Named` для Medialog **запрещены**.
   Единственное исключение сторожа до мержа LK-1a (PR #21): `me.go:Appointments`.
-  `motconsu.go:ChangesSince` и `motconsu.go:PollAfter` передают строку тех же цифр
-  (`time.Parse` без зоны и scan `datetime`) и `CONVERT(datetime, …, 126)`, без сдвига на MSK.
+  `motconsu.go:ChangesSince` и `motconsu.go:PollAfter` передают строку `mssqlCursorLayout`
+  (`2006-01-02T15:04:05.0000000`, те же цифры, без сдвига на MSK) и
+  `CONVERT(datetime2(7), …, 126)`, чтобы курсор не терял доли секунды.
   После мержа #21 снять `me.go:Appointments`.
 
 Тест-сторож: `TestMSSQLNamedArgsForbidTimeTime` в `internal/repo`.
