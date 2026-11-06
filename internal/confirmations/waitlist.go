@@ -53,6 +53,12 @@ type DashboardItem struct {
 	FutureDateStart string
 	FutureDoctor    string
 	FutureService   string
+	Source          string
+	Comment         string
+	CreatorName     string
+	UpdatedBy       string
+	UpdatedAt       string
+	ApptStart       string
 }
 
 type DashboardPage struct {
@@ -124,10 +130,13 @@ func CountWaitlistByPlanning(ctx context.Context, db *sql.DB, planningID int64) 
 }
 
 type WaitlistListFilter struct {
-	OpenOnly bool
-	BranchID *int
-	Page     int
-	PerPage  int
+	OpenOnly  bool
+	Status    string
+	BranchID  *int
+	BranchIDs []int
+	Source    string
+	Page      int
+	PerPage   int
 }
 
 func (r *Repo) ListWaitlist(ctx context.Context, f WaitlistListFilter) (rows []WaitlistRow, total int, err error) {
@@ -186,17 +195,64 @@ SELECT COUNT(*) FROM waitlist WHERE status IN ('new','contacted')`).Scan(&n)
 func waitlistWhere(f WaitlistListFilter) (string, []any) {
 	var parts []string
 	var args []any
-	if f.OpenOnly {
-		parts = append(parts, `status IN ('new','contacted')`)
+	switch f.Status {
+	case WaitlistStatusNew, WaitlistStatusContacted, WaitlistStatusRebooked, WaitlistStatusClosed:
+		parts = append(parts, `status = ?`)
+		args = append(args, f.Status)
+	default:
+		if f.OpenOnly {
+			parts = append(parts, `status IN ('new','contacted')`)
+		}
 	}
 	if f.BranchID != nil {
 		parts = append(parts, `branch_id = ?`)
 		args = append(args, *f.BranchID)
+	} else if len(f.BranchIDs) > 0 {
+		parts = append(parts, `branch_id IN (`+placeholders(len(f.BranchIDs))+`)`)
+		for _, id := range f.BranchIDs {
+			args = append(args, id)
+		}
 	}
 	if len(parts) == 0 {
 		return "", nil
 	}
 	return " WHERE " + strings.Join(parts, " AND "), args
+}
+
+func placeholders(n int) string {
+	return strings.TrimRight(strings.Repeat("?,", n), ",")
+}
+
+// ListWaitlistMatching returns every row that matches the filter, capped at 500.
+func (r *Repo) ListWaitlistMatching(ctx context.Context, f WaitlistListFilter) ([]WaitlistRow, error) {
+	where, args := waitlistWhere(f)
+	q := `
+SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
+       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,'')
+FROM waitlist` + where + `
+ORDER BY created_at DESC, id DESC
+LIMIT 500`
+	rs, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list waitlist matching: %w", err)
+	}
+	defer rs.Close()
+	var rows []WaitlistRow
+	for rs.Next() {
+		var row WaitlistRow
+		if err := rs.Scan(
+			&row.ID, &row.PlanningID, &row.PatientID, &row.ApptVersion, &row.ApptStart,
+			&row.Reason, &row.Source, &row.Status, &row.Outcome, &row.CreatedAt, &row.UpdatedAt,
+			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy,
+		); err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	if rows == nil {
+		rows = []WaitlistRow{}
+	}
+	return rows, rs.Err()
 }
 
 func (r *Repo) OpenWaitlistPlanningIDs(ctx context.Context, planningIDs []int64) (map[int64]bool, error) {
@@ -279,9 +335,17 @@ func waitlistTransitionOK(from, to string) bool {
 		return to == WaitlistStatusContacted || to == WaitlistStatusRebooked || to == WaitlistStatusClosed
 	case WaitlistStatusContacted:
 		return to == WaitlistStatusRebooked || to == WaitlistStatusClosed
+	case WaitlistStatusRebooked:
+		return to == WaitlistStatusClosed
+	case WaitlistStatusClosed:
+		return to == WaitlistStatusContacted
 	default:
 		return false
 	}
+}
+
+func (r *Repo) GetWaitlist(ctx context.Context, id int64) (WaitlistRow, error) {
+	return r.getWaitlist(ctx, id)
 }
 
 func (r *Repo) getWaitlist(ctx context.Context, id int64) (WaitlistRow, error) {

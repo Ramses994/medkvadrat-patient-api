@@ -25,6 +25,8 @@ type Repo struct {
 	Now func() time.Time
 	// AfterWaitlistRead is a test hook so concurrent updates can both observe the same status.
 	AfterWaitlistRead func()
+	// AfterMisWorkRead is a test hook for the registry waitlist status check.
+	AfterMisWorkRead func()
 }
 
 func NewRepo(db *sql.DB) *Repo {

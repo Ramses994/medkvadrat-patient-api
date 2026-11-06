@@ -13,11 +13,13 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/confirmations"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 )
 
 type WaitlistService interface {
 	DashboardWaitlist(ctx context.Context, filter confirmations.WaitlistListFilter) (confirmations.DashboardPage, error)
 	UpdateWaitlist(ctx context.Context, id int64, status, outcome, updatedBy string) (confirmations.WaitlistRow, error)
+	UpdateRegistryWaitlist(ctx context.Context, planningID int64, status, outcome, updatedBy string) (confirmations.MisWork, error)
 }
 
 type WaitlistHandler struct {
@@ -46,6 +48,11 @@ type waitlistItemDTO struct {
 	FutureDateStart string `json:"future_date_start,omitempty"`
 	FutureDoctor    string `json:"future_doctor,omitempty"`
 	FutureService   string `json:"future_service,omitempty"`
+	Source          string `json:"source,omitempty"`
+	Comment         string `json:"comment,omitempty"`
+	CreatorName     string `json:"creator_name,omitempty"`
+	UpdatedBy       string `json:"updated_by,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 type waitlistPageDTO struct {
@@ -63,18 +70,40 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "open"
 	}
-	if status != "open" && status != "all" {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "status: open или all")
+	filter := confirmations.WaitlistListFilter{}
+	switch status {
+	case "open":
+		filter.OpenOnly = true
+	case "all":
+	case confirmations.WaitlistStatusNew, confirmations.WaitlistStatusContacted, confirmations.WaitlistStatusRebooked, confirmations.WaitlistStatusClosed:
+		filter.Status = status
+	default:
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "status: open, all, new, contacted, rebooked или closed")
 		return
 	}
-	filter := confirmations.WaitlistListFilter{OpenOnly: status == "open"}
+	source := strings.ToLower(strings.TrimSpace(q.Get("source")))
+	switch source {
+	case "", "all", "max", "registry":
+		filter.Source = source
+	default:
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "source: all, max или registry")
+		return
+	}
+	if p, ok := staff.PrincipalFrom(r.Context()); ok {
+		filter.BranchIDs = p.VisibleBranches()
+	}
 	if raw := strings.TrimSpace(q.Get("branch")); raw != "" {
 		b, err := strconv.Atoi(raw)
 		if err != nil || (b != 106 && b != 3 && b != 496) {
 			response.Error(w, http.StatusBadRequest, "VALIDATION", "branch: 106, 3 или 496")
 			return
 		}
+		if p, ok := staff.PrincipalFrom(r.Context()); ok && !p.Allows(b) {
+			response.Error(w, http.StatusForbidden, "FORBIDDEN", "Нет доступа к этому филиалу")
+			return
+		}
 		filter.BranchID = &b
+		filter.BranchIDs = nil
 	}
 	page, _ := strconv.Atoi(q.Get("page"))
 	per, _ := strconv.Atoi(q.Get("per_page"))
@@ -97,6 +126,8 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 			OrigDateStart: it.OrigDateStart, OrigDoctor: it.OrigDoctor, OrigService: it.OrigService,
 			MedialogState: it.MedialogState, FutureLabel: it.FutureLabel,
 			FutureDateStart: it.FutureDateStart, FutureDoctor: it.FutureDoctor, FutureService: it.FutureService,
+			Source: it.Source, Comment: it.Comment, CreatorName: it.CreatorName,
+			UpdatedBy: it.UpdatedBy, UpdatedAt: it.UpdatedAt,
 		})
 	}
 	response.OK(w, waitlistPageDTO{
@@ -108,6 +139,7 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 type waitlistUpdateRequest struct {
 	Status  string `json:"status"`
 	Outcome string `json:"outcome"`
+	Source  string `json:"source"`
 }
 
 func (h WaitlistHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -128,21 +160,22 @@ func (h WaitlistHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.Svc.UpdateWaitlist(r.Context(), id, req.Status, req.Outcome, middleware.StaffUpdatedBy(r))
-	if err != nil {
-		switch {
-		case errors.Is(err, confirmations.ErrWaitlistNotFound):
-			response.Error(w, http.StatusNotFound, "NOT_FOUND", "Строка листа не найдена")
-		case errors.Is(err, confirmations.ErrWaitlistChanged):
-			response.Error(w, http.StatusConflict, "WAITLIST_CHANGED", "Заявку уже обновил другой сотрудник — обновите страницу")
-		case errors.Is(err, confirmations.ErrInvalidWaitlistTransition):
-			response.Error(w, http.StatusUnprocessableEntity, "INVALID_TRANSITION", "Недопустимый переход статуса")
-		case errors.Is(err, confirmations.ErrUnknownWaitlistOutcome):
-			response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Недопустимый итог звонка")
-		default:
-			h.Logger.Error("waitlist update failed", "err", err, "waitlist_id", id, "status", req.Status, "outcome", req.Outcome)
-			response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	var rec confirmations.WaitlistRow
+	if strings.EqualFold(strings.TrimSpace(req.Source), "registry") {
+		work, err := h.Svc.UpdateRegistryWaitlist(r.Context(), id, req.Status, req.Outcome, middleware.StaffUpdatedBy(r))
+		if err != nil {
+			h.writeWaitlistErr(w, err, id, req)
+			return
 		}
+		response.OK(w, waitlistItemDTO{
+			ID: work.PlanningID, PlanningID: work.PlanningID, Source: "registry",
+			Status: work.Status, Outcome: work.Outcome, UpdatedBy: work.UpdatedBy, UpdatedAt: work.UpdatedAt,
+		})
+		return
+	}
+	rec, err = h.Svc.UpdateWaitlist(r.Context(), id, req.Status, req.Outcome, middleware.StaffUpdatedBy(r))
+	if err != nil {
+		h.writeWaitlistErr(w, err, id, req)
 		return
 	}
 	if h.Logger != nil {
@@ -152,5 +185,26 @@ func (h WaitlistHandler) Update(w http.ResponseWriter, r *http.Request) {
 		ID: rec.ID, PlanningID: rec.PlanningID, PatientID: rec.PatientID,
 		Reason: rec.Reason, Status: rec.Status, Outcome: rec.Outcome,
 		CreatedAt: rec.CreatedAt, CreatedAtMSK: rec.CreatedAtMSK, BranchID: rec.BranchID,
+		Source: "max", UpdatedBy: rec.UpdatedBy, UpdatedAt: rec.UpdatedAt,
 	})
+}
+
+func (h WaitlistHandler) writeWaitlistErr(w http.ResponseWriter, err error, id int64, req waitlistUpdateRequest) {
+	switch {
+	case errors.Is(err, confirmations.ErrWaitlistNotFound):
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "Строка листа не найдена")
+	case errors.Is(err, confirmations.ErrWaitlistChanged):
+		response.Error(w, http.StatusConflict, "WAITLIST_CHANGED", "Заявку уже обновил другой сотрудник — обновите страницу")
+	case errors.Is(err, confirmations.ErrInvalidWaitlistTransition):
+		response.Error(w, http.StatusUnprocessableEntity, "INVALID_TRANSITION", "Недопустимый переход статуса")
+	case errors.Is(err, confirmations.ErrUnknownWaitlistOutcome):
+		response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Недопустимый итог звонка")
+	case errors.Is(err, staff.ErrBranchForbidden):
+		response.Error(w, http.StatusForbidden, "FORBIDDEN", "Нет доступа к этому филиалу")
+	default:
+		if h.Logger != nil {
+			h.Logger.Error("waitlist update failed", "err", err, "waitlist_id", id, "status", req.Status, "outcome", req.Outcome)
+		}
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
 }

@@ -7,8 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"errors"
+
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/ratelimit"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 )
 
@@ -28,6 +31,7 @@ type DashboardPageHandler struct {
 	RateLimit    *ratelimit.Store
 	Logger       *slog.Logger
 	Now          func() time.Time
+	Users        *staff.Store
 }
 
 func (h DashboardPageHandler) now() time.Time {
@@ -79,14 +83,26 @@ func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if err := r.ParseForm(); err != nil {
-		h.writeLogin(w, "Неверный пароль")
+	if h.Users == nil {
+		dashboardUnavailable(w)
 		return
 	}
+	if err := r.ParseForm(); err != nil {
+		h.writeLogin(w, "Неверный логин или пароль")
+		return
+	}
+	login := r.FormValue("login")
 	password := r.FormValue("password")
-	if !staffsession.PasswordMatch(h.Password, password) {
-		h.Logger.Info("dashboard login failed", "ip", ip)
-		h.writeLogin(w, "Неверный пароль")
+	principal, err := h.Users.Authenticate(r.Context(), login, password, ip, h.now())
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Info("dashboard login failed", "ip", ip, "login", strings.TrimSpace(login))
+		}
+		if errors.Is(err, staff.ErrLocked) {
+			h.writeLogin(w, "Слишком много попыток, попробуйте через 15 минут")
+			return
+		}
+		h.writeLogin(w, "Неверный логин или пароль")
 		return
 	}
 
@@ -95,7 +111,7 @@ func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) 
 		ttl = 12 * time.Hour
 	}
 	exp := h.now().Add(ttl)
-	cookieVal, err := staffsession.Sign(h.Secret, exp)
+	cookieVal, err := staffsession.Sign(h.Secret, principal.ID, exp)
 	if err != nil {
 		w.Header().Set("Cache-Control", "no-store")
 		http.Error(w, "Dashboard not configured", http.StatusServiceUnavailable)
@@ -111,6 +127,36 @@ func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) 
 		SameSite: http.SameSiteStrictMode,
 		Secure:   h.CookieSecure,
 	})
+	if principal.MustChangePassword {
+		http.Redirect(w, r, "/dashboard/password", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
+}
+
+func (h DashboardPageHandler) PasswordForm(w http.ResponseWriter, r *http.Request) {
+	h.writePassword(w, "")
+}
+
+func (h DashboardPageHandler) PasswordPost(w http.ResponseWriter, r *http.Request) {
+	p, ok := staff.PrincipalFrom(r.Context())
+	if !ok || h.Users == nil {
+		http.Redirect(w, r, "/dashboard/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.writePassword(w, "Не удалось сменить пароль")
+		return
+	}
+	err := h.Users.ChangePassword(r.Context(), p.ID, r.FormValue("current_password"), r.FormValue("new_password"))
+	if err != nil {
+		if errors.Is(err, staff.ErrShortPassword) {
+			h.writePassword(w, "Пароль не короче 10 символов")
+			return
+		}
+		h.writePassword(w, "Неверный текущий пароль")
+		return
+	}
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
@@ -150,8 +196,36 @@ func (h DashboardPageHandler) writeLogin(w http.ResponseWriter, errMsg string) {
 		b.WriteString(html.EscapeString(errMsg))
 		b.WriteString(`</p>`)
 	}
+	b.WriteString(`<label for="login">Логин</label>`)
+	b.WriteString(`<input id="login" name="login" autocomplete="username" required autofocus>`)
 	b.WriteString(`<label for="password">Пароль</label>`)
-	b.WriteString(`<input id="password" name="password" type="password" autocomplete="current-password" required autofocus>`)
+	b.WriteString(`<input id="password" name="password" type="password" autocomplete="current-password" required>`)
 	b.WriteString(`<button type="submit">Войти</button></form></body></html>`)
+	_, _ = w.Write([]byte(b.String()))
+}
+
+func (h DashboardPageHandler) writePassword(w http.ResponseWriter, errMsg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	var b strings.Builder
+	b.WriteString(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>Смена пароля</title>`)
+	b.WriteString(`<style>body{font-family:system-ui,sans-serif;background:#EEF1EE;color:#0F1E1C;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}`)
+	b.WriteString(`form{background:#fff;padding:28px 32px;border-radius:10px;border:1px solid #D5DBD7;min-width:280px}`)
+	b.WriteString(`h1{font-size:18px;margin:0 0 16px}label{display:block;font-size:13px;margin:10px 0 6px}`)
+	b.WriteString(`input{width:100%;box-sizing:border-box;padding:8px 10px;font-size:15px;border:1px solid #D5DBD7;border-radius:6px}`)
+	b.WriteString(`button{margin-top:14px;width:100%;padding:10px;background:#0E4F45;color:#fff;border:0;border-radius:6px;font-size:14px;cursor:pointer}`)
+	b.WriteString(`.err{color:#B3261E;font-size:13px;margin:0 0 12px}</style></head><body>`)
+	b.WriteString(`<form method="post" action="/dashboard/password"><h1>Смените пароль</h1>`)
+	if errMsg != "" {
+		b.WriteString(`<p class="err">`)
+		b.WriteString(html.EscapeString(errMsg))
+		b.WriteString(`</p>`)
+	}
+	b.WriteString(`<label for="current_password">Текущий пароль</label>`)
+	b.WriteString(`<input id="current_password" name="current_password" type="password" autocomplete="current-password" required>`)
+	b.WriteString(`<label for="new_password">Новый пароль</label>`)
+	b.WriteString(`<input id="new_password" name="new_password" type="password" autocomplete="new-password" required minlength="10">`)
+	b.WriteString(`<button type="submit">Сохранить</button></form></body></html>`)
 	_, _ = w.Write([]byte(b.String()))
 }
