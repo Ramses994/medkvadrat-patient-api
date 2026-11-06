@@ -115,6 +115,23 @@ func sameIDs(a, b []int64) bool {
 	return true
 }
 
+// SnapAllows is the last check before pl_CancelVisit. The code is empty when the call may proceed.
+func SnapAllows(first, last Snap) (code string, ok bool) {
+	if !last.ReadOK {
+		return "CANCEL_NOT_SUPPORTED", false
+	}
+	if last.PlanningCancelled != 0 {
+		return "ALREADY_CANCELLED", false
+	}
+	if !last.PlanningFound || last.PlanningStatus != 0 || last.AnswBill != nil {
+		return "CANCEL_NOT_SUPPORTED", false
+	}
+	if !sameIDs(first.A, last.A) || !sameIDs(first.P, last.P) || !sameIDs(first.D, last.D) {
+		return "CANCEL_NOT_SUPPORTED", false
+	}
+	return "", true
+}
+
 func samePtr(a, b *int64) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil

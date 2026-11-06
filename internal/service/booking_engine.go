@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -57,6 +58,8 @@ type BookingEngine struct {
 	AfterInFlight func() error
 	AfterProc     func() error
 	procCalls     atomic.Int32
+	recMu         sync.Mutex
+	lastReconcile map[string]time.Time
 }
 
 func (e *BookingEngine) now() time.Time {
@@ -169,6 +172,9 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 			return WriteHTTP{}
 		}
 	}
+	if !e.confirmContext(ctx, owned, sql.NullInt64{}) {
+		return e.fail(503, "WRITE_UNAVAILABLE", medialogwrite.PatientForbiddenMessage)
+	}
 	callCtx, cancel := context.WithTimeout(ctx, e.Cfg.MedialogRWTimeout)
 	defer cancel()
 	res := e.Procs.AddVisit(callCtx, repo.AddVisitParams{
@@ -196,7 +202,9 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 			outcome = booking.Outcome{Code: "BOOKING_UNKNOWN", HTTPStatus: 503, State: booking.StateUnknown}
 		} else {
 			planningID = sql.NullInt64{Int64: *res.PlanningID, Valid: true}
-			e.finish(ctx, owned, booking.StateOK, "", planningID, owned.ContextJSON, now)
+			if !e.finish(ctx, owned, booking.StateOK, "", planningID, owned.ContextJSON, now) {
+				return e.fail(503, "BOOKING_UNKNOWN", booking.Message("BOOKING_UNKNOWN"))
+			}
 			if e.Invalidate != nil {
 				e.Invalidate(claim.PlSubjID)
 			}
@@ -206,7 +214,9 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 	if res.PlanningID != nil && outcome.State != booking.StateOK {
 		planningID = sql.NullInt64{Int64: *res.PlanningID, Valid: true}
 	}
-	e.finish(ctx, owned, outcome.State, outcome.Code, planningID, owned.ContextJSON, now)
+	if !e.finish(ctx, owned, outcome.State, outcome.Code, planningID, owned.ContextJSON, now) {
+		return e.fail(503, "BOOKING_UNKNOWN", booking.Message("BOOKING_UNKNOWN"))
+	}
 	out = e.fail(outcome.HTTPStatus, outcome.Code, "")
 	if outcome.Code == "SLOT_TAKEN" || outcome.Code == "SLOT_UNAVAILABLE" {
 		out.Slots = e.freshOffers(ctx, opt, claim.Start, now)
@@ -235,7 +245,7 @@ func createdMatches(row repo.CreatedRow, patient, subj, exam, author int64, star
 }
 
 func bookOutcome(res repo.ProcResult) booking.Outcome {
-	if !res.Sent {
+	if res.Precondition || !res.Sent {
 		return booking.Outcome{Code: "WRITE_UNAVAILABLE", HTTPStatus: 503, State: booking.StateRejected}
 	}
 	if !res.Finished || !res.HasRow {
@@ -309,9 +319,13 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	} else if open {
 		return e.fail(409, "OPERATION_IN_PROGRESS", booking.MsgInProgress)
 	}
+	firstLine := owner.PlSubjID
 	fresh, err := e.Clinic.Owner(ctx, planningID)
 	if err != nil || !fresh.Found || fresh.PatientID != patientID {
 		return e.fail(404, "NOT_FOUND", "Запись не найдена")
+	}
+	if fresh.PlSubjID != firstLine || e.Guard.CheckPlSubj(fresh.PlSubjID) != nil {
+		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
 	}
 	owner = fresh
 	unlockL := e.Locks.Line(owner.PlSubjID)
@@ -350,13 +364,43 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	}
 	cc := cancelContext{OrgID: owner.OrgID, Variant: variant, DirAnswID: answID, PatdirecID: dirID, Before: before}
 	owned.ContextJSON = mustJSON(cc)
-	_, _ = e.Ops.Transition(ctx, owned.OpID, writeops.StateInFlight, writeops.Patch{
-		State: writeops.StateInFlight, ContextJSON: owned.ContextJSON, PlanningID: op.PlanningID,
-	})
 	if e.AfterInFlight != nil {
 		if err := e.AfterInFlight(); err != nil {
 			return WriteHTTP{}
 		}
+	}
+	if !e.confirmContext(ctx, owned, op.PlanningID) {
+		return e.fail(503, "WRITE_UNAVAILABLE", medialogwrite.PatientForbiddenMessage)
+	}
+	last, err := e.Clinic.Snap(ctx, planningID, answID, dirID)
+	if err != nil || !last.ReadOK {
+		if !e.finish(ctx, owned, booking.StateUnknown, "CANCEL_UNKNOWN", op.PlanningID, owned.ContextJSON, now) {
+			return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+		}
+		return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+	}
+	if code, allow := booking.SnapAllows(before, last); !allow {
+		msg := booking.MsgCancelSupport
+		if code == "ALREADY_CANCELLED" {
+			msg = booking.MsgAlreadyCancel
+		}
+		if !e.finish(ctx, owned, booking.StateRejected, code, op.PlanningID, owned.ContextJSON, now) {
+			return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+		}
+		return e.fail(409, code, msg)
+	}
+	admLast, err := e.Clinic.Admission(ctx, planningID)
+	if err != nil {
+		if !e.finish(ctx, owned, booking.StateUnknown, "CANCEL_UNKNOWN", op.PlanningID, owned.ContextJSON, now) {
+			return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+		}
+		return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+	}
+	if _, ok := booking.Admit(planningID, admLast); !ok {
+		if !e.finish(ctx, owned, booking.StateRejected, "CANCEL_NOT_SUPPORTED", op.PlanningID, owned.ContextJSON, now) {
+			return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+		}
+		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, e.Cfg.MedialogRWTimeout)
 	defer cancel()
@@ -370,8 +414,10 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 			return WriteHTTP{}
 		}
 	}
-	if !res.Sent {
-		e.finish(ctx, owned, booking.StateRejected, "WRITE_UNAVAILABLE", op.PlanningID, owned.ContextJSON, now)
+	if res.Precondition || !res.Sent {
+		if !e.finish(ctx, owned, booking.StateRejected, "WRITE_UNAVAILABLE", op.PlanningID, owned.ContextJSON, now) {
+			return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+		}
 		return e.fail(503, "WRITE_UNAVAILABLE", medialogwrite.PatientForbiddenMessage)
 	}
 	return e.finishCancel(ctx, owned, cc, planningID, owner.PlSubjID, res.Finished, now)
@@ -386,7 +432,9 @@ func (e *BookingEngine) finishCancel(ctx context.Context, op *writeops.Op, cc ca
 	cc.After = &after
 	pred := booking.Eval(planningID, cc.Variant, cc.Before, after)
 	state, code := booking.CancelOutcome(callFinished, pred, true)
-	e.finish(ctx, op, state, code, sql.NullInt64{Int64: planningID, Valid: true}, mustJSON(cc), now)
+	if !e.finish(ctx, op, state, code, sql.NullInt64{Int64: planningID, Valid: true}, mustJSON(cc), now) {
+		return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+	}
 	if state == booking.StateOK {
 		if e.Invalidate != nil {
 			e.Invalidate(plSubj)
@@ -527,16 +575,37 @@ func (e *BookingEngine) insertOrReplay(ctx context.Context, op writeops.Op, inte
 	return saved, WriteHTTP{}, true
 }
 
-func (e *BookingEngine) finish(ctx context.Context, op *writeops.Op, state, code string, planning sql.NullInt64, context string, now time.Time) {
-	ok, err := e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
-		State: state, Code: code, PlanningID: planning, ContextJSON: context, FinishedAt: now.UTC().Format(time.RFC3339),
+func (e *BookingEngine) finish(ctx context.Context, op *writeops.Op, state, code string, planning sql.NullInt64, contextJSON string, now time.Time) bool {
+	finCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	ok, err := e.Ops.Transition(finCtx, op.OpID, writeops.StateInFlight, writeops.Patch{
+		State: state, Code: code, PlanningID: planning, ContextJSON: contextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
 	})
-	if err != nil || !ok {
-		fresh, _ := e.Ops.Get(ctx, op.OpID)
-		if fresh != nil && fresh.State != writeops.StateInFlight {
-			return
-		}
+	if err == nil && ok {
+		return true
 	}
+	fresh, _ := e.Ops.Get(finCtx, op.OpID)
+	if fresh != nil && fresh.State != writeops.StateInFlight {
+		return true
+	}
+	e.log().Error("lk write op finalize failed", "op_id", op.OpID, "action", op.Action, "code", code)
+	return false
+}
+
+// confirmContext persists the journal row before a procedure. A failed write never reaches EXEC.
+func (e *BookingEngine) confirmContext(ctx context.Context, op *writeops.Op, planning sql.NullInt64) bool {
+	finCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	ok, err := e.Ops.Transition(finCtx, op.OpID, writeops.StateInFlight, writeops.Patch{
+		State: writeops.StateInFlight, ContextJSON: op.ContextJSON, PlanningID: planning,
+	})
+	if err == nil && ok {
+		return true
+	}
+	if !e.finish(ctx, op, writeops.StateRejected, "WRITE_UNAVAILABLE", planning, op.ContextJSON, e.now()) {
+		e.log().Error("lk write op finalize failed", "op_id", op.OpID, "action", op.Action, "code", "WRITE_UNAVAILABLE")
+	}
+	return false
 }
 
 func moscowWall(t time.Time) string {

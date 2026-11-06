@@ -18,14 +18,14 @@ func (s *Services) engine() *BookingEngine {
 
 func (s *Services) newEngine() *BookingEngine {
 	return &BookingEngine{
-		Ops:    writeops.New(s.SQLite),
-		Clinic: liveClinic{s},
-		Procs:  liveProcs{db: s.MSSQLWrite},
-		Locks:  &booking.Locks{},
-		Cfg:    s.Config,
-		Guard:  s.WriteGuard,
-		Log:    s.Logger,
-		LangOK: func() bool { return s.rwLang.Load() },
+		Ops:        writeops.New(s.SQLite),
+		Clinic:     liveClinic{s},
+		Procs:      liveProcs{db: s.MSSQLWrite},
+		Locks:      &booking.Locks{},
+		Cfg:        s.Config,
+		Guard:      s.WriteGuard,
+		Log:        s.Logger,
+		LangOK:     func() bool { return s.rwLang.Load() },
 		Invalidate: func(id int64) { s.InvalidateSlotCache(id) },
 	}
 }
@@ -47,6 +47,14 @@ func (s *Services) ResolveWriteOp(ctx context.Context, in ResolveInput) WriteHTT
 }
 
 func (s *Services) SweepWriteOps(ctx context.Context) { s.engine().Sweep(ctx) }
+
+// StartWriteMaintenance is the process task main starts before it accepts booking requests.
+func (s *Services) StartWriteMaintenance(ctx context.Context) {
+	if s == nil || s.SQLite == nil {
+		return
+	}
+	s.engine().StartMaintenance(ctx)
+}
 
 func (s *Services) RefreshRWLanguage(ctx context.Context) {
 	if s.MSSQLWrite == nil {

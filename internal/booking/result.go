@@ -118,7 +118,7 @@ func Classify(planningID *int64, result string, state int) Outcome {
 		return Outcome{Code: "BOOKING_ERROR", HTTPStatus: http.StatusInternalServerError, State: StateRejected, LogProcError: true}
 	}
 	if text != "" {
-		return Outcome{Code: "BOOKING_REJECTED", HTTPStatus: http.StatusUnprocessableEntity, State: StateRejected, LogUnmapped: true, ResultLen: len(text)}
+		return Outcome{Code: "BOOKING_UNKNOWN", HTTPStatus: http.StatusServiceUnavailable, State: StateUnknown, LogUnmapped: true, ResultLen: len(text)}
 	}
 	if planningID != nil && *planningID > 0 {
 		return Outcome{HTTPStatus: http.StatusCreated, State: StateCandidate}

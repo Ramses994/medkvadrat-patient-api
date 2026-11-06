@@ -1,10 +1,13 @@
 package repo
 
 import (
+	"database/sql"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
+
+	mssql "github.com/denisenkom/go-mssqldb"
 )
 
 func TestRWBatchSQL(t *testing.T) {
@@ -39,5 +42,23 @@ func TestRWBatchSQL(t *testing.T) {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("missing %s", needle)
 		}
+	}
+}
+
+func TestClassifyRWErr_UnfinishedUnlessRow(t *testing.T) {
+	open := classifyRWErr(mssql.Error{Message: "open tran", Number: 50000})
+	if !open.Precondition || open.Finished || !open.Sent {
+		t.Fatalf("open tran %+v", open)
+	}
+	other := classifyRWErr(mssql.Error{Message: "connection reset", Number: 11})
+	if other.Finished || other.Precondition || !other.Sent {
+		t.Fatalf("server error %+v", other)
+	}
+	none := classifyRWErr(sql.ErrNoRows)
+	if none.Finished || none.HasRow {
+		t.Fatalf("no row %+v", none)
+	}
+	if other.Err == nil {
+		t.Fatal("err dropped")
 	}
 }

@@ -24,21 +24,24 @@ import (
 const engSecret = "0123456789abcdef0123456789abcdef"
 
 type fakeClinic struct {
-	mu       sync.Mutex
-	starts   []string
-	dayErr   error
-	future   map[int64]int
-	rows     map[int64]repo.CreatedRow
-	owners   map[int64]repo.OwnerRow
-	adm      booking.Admission
-	admNext  *booking.Admission
-	admCalls int
-	snaps    []booking.Snap
-	snapErr  error
-	foundID  int64
-	found    bool
-	noDoctor map[int64]bool
-	booked   []repo.AddVisitParams
+	mu        sync.Mutex
+	starts    []string
+	dayErr    error
+	future    map[int64]int
+	rows      map[int64]repo.CreatedRow
+	owners    map[int64]repo.OwnerRow
+	ownerSeq  []repo.OwnerRow
+	ownerAt   int
+	findCalls int
+	adm       booking.Admission
+	admNext   *booking.Admission
+	admCalls  int
+	snaps     []booking.Snap
+	snapErr   error
+	foundID   int64
+	found     bool
+	noDoctor  map[int64]bool
+	booked    []repo.AddVisitParams
 }
 
 func (f *fakeClinic) Pair(_ context.Context, subj, exam int64) (repo.BookingOption, bool) {
@@ -97,12 +100,18 @@ func (f *fakeClinic) ReadCreated(_ context.Context, id int64) (repo.CreatedRow, 
 func (f *fakeClinic) FindIntent(context.Context, int64, int64, int64, int64, string, string) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.findCalls++
 	return f.foundID, f.found, nil
 }
 
 func (f *fakeClinic) Owner(_ context.Context, id int64) (repo.OwnerRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.ownerAt < len(f.ownerSeq) {
+		row := f.ownerSeq[f.ownerAt]
+		f.ownerAt++
+		return row, nil
+	}
 	row, ok := f.owners[id]
 	if !ok {
 		return repo.OwnerRow{}, nil
@@ -273,7 +282,7 @@ func TestBook_ResultMatrixAndNoRawText(t *testing.T) {
 	add("022ru", replaceOnce(booking.Template("022"), "%1", `Не удается вставить значение NULL в столбец PLANNING_ID таблицы PLANNING_USER_EXT`), 0, nil, "BOOKING_ERROR")
 	add("state2", booking.Template("009"), 2, &id, "BOOKING_REJECTED")
 	add("state2empty", "", 2, &id, "BOOKING_REJECTED")
-	add("unmapped", "неизвестный текст процедуры", 0, &id, "BOOKING_REJECTED")
+	add("unmapped", "неизвестный текст процедуры", 0, &id, "BOOKING_UNKNOWN")
 	add("noid", "", 0, nil, "BOOKING_UNKNOWN")
 	for _, tc := range samples {
 		t.Run(tc.name, func(t *testing.T) {
@@ -557,9 +566,9 @@ func TestCancel_Outcomes(t *testing.T) {
 	start := "2026-11-08T10:00:00"
 	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: start}
 	c.adm = booking.Admission{Found: true, Active: true}
-	before := booking.Snap{ReadOK: true}
+	before := activeSnap()
 	after := booking.Snap{ReadOK: true, PlanningFound: true, PlanningCancelled: 1}
-	c.snaps = []booking.Snap{before, after}
+	c.snaps = []booking.Snap{before, before, after}
 	p.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true, Result: ""}
 	p.record = false
 	out := e.Cancel(context.Background(), 1, 5, "17171717-1717-1717-1717-171717171717")
@@ -570,7 +579,7 @@ func TestCancel_Outcomes(t *testing.T) {
 	e2.Now = func() time.Time { return now }
 	c2.owners[5] = c.owners[5]
 	c2.adm = c.adm
-	same := booking.Snap{ReadOK: true}
+	same := activeSnap()
 	c2.snaps = []booking.Snap{same, same}
 	p2.record = false
 	p2.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true}
@@ -582,8 +591,9 @@ func TestCancel_Outcomes(t *testing.T) {
 	e3.Now = func() time.Time { return now }
 	c3.owners[5] = c.owners[5]
 	c3.adm = c.adm
-	part := booking.Snap{ReadOK: true, PlanningCancelled: 0, AnswFound: true, A: []int64{9}}
-	c3.snaps = []booking.Snap{booking.Snap{ReadOK: true}, part}
+	part := booking.Snap{ReadOK: true, PlanningFound: true, PlanningCancelled: 0, AnswFound: true, A: []int64{9}}
+	clean := activeSnap()
+	c3.snaps = []booking.Snap{clean, clean, part}
 	p3.record = false
 	p3.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true}
 	out = e3.Cancel(context.Background(), 1, 5, "19191919-1919-1919-1919-191919191919")
@@ -711,7 +721,8 @@ func TestBook_CancelThenRebook(t *testing.T) {
 	}
 	id1, _ := first.Body.(map[string]any)["planning_id"].(int64)
 	c.owners[id1] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
-	c.snaps = []booking.Snap{{ReadOK: true}, {ReadOK: true, PlanningFound: true, PlanningCancelled: 1}}
+	clean := activeSnap()
+	c.snaps = []booking.Snap{clean, clean, {ReadOK: true, PlanningFound: true, PlanningCancelled: 1}}
 	id2 := int64(43)
 	p.next.PlanningID = &id2
 	cancelled := e.Cancel(ctx, 1, id1, "33333333-3333-4333-8333-333333333333")
@@ -737,7 +748,7 @@ func TestCancel_TimeoutThenLate(t *testing.T) {
 	e, c, p, _ := testEngine(t)
 	e.Now = func() time.Time { return now }
 	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
-	same := booking.Snap{ReadOK: true}
+	same := activeSnap()
 	c.snaps = []booking.Snap{same, same}
 	p.record = false
 	p.next = repo.ProcResult{Sent: true, Finished: false}
@@ -756,8 +767,9 @@ func TestCancel_TimeoutThenLate(t *testing.T) {
 	e2, c2, p2, _ := testEngine(t)
 	e2.Now = func() time.Time { return now }
 	c2.owners[5] = c.owners[5]
-	part := booking.Snap{ReadOK: true, AnswFound: true, A: []int64{9}}
-	c2.snaps = []booking.Snap{{ReadOK: true}, part}
+	part := booking.Snap{ReadOK: true, PlanningFound: true, AnswFound: true, A: []int64{9}}
+	clean := activeSnap()
+	c2.snaps = []booking.Snap{clean, clean, part}
 	p2.record = false
 	p2.next = repo.ProcResult{Sent: true, Finished: false}
 	out = e2.Cancel(context.Background(), 1, 5, "36363636-3636-3636-3636-363636363636")
@@ -803,4 +815,200 @@ func TestManualRejected_Unblocks(t *testing.T) {
 	if fresh.Status != http.StatusCreated || p.calls.Load() != 1 {
 		t.Fatalf("fresh %d %s calls=%d", fresh.Status, fresh.Code, p.calls.Load())
 	}
+}
+
+func activeSnap() booking.Snap {
+	return booking.Snap{ReadOK: true, PlanningFound: true}
+}
+
+func TestBook_UnmappedStaysUnknown(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	raw := "неизвестный текст процедуры"
+	id := int64(91)
+	cases := []struct {
+		name     string
+		planning *int64
+	}{{"null", nil}, {"id", &id}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, c, p, buf := testEngine(t)
+			p.record = false
+			p.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true, PlanningID: tc.planning, Result: raw, State: 0}
+			key := "40404040-4040-4040-4040-404040404040"
+			out := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), key)
+			if out.Status != http.StatusServiceUnavailable || out.Code != "BOOKING_UNKNOWN" || p.calls.Load() != 1 {
+				t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+			}
+			if bytes.Contains(buf.Bytes(), []byte(raw)) || !bytes.Contains(buf.Bytes(), []byte("lk booking unmapped result")) {
+				t.Fatalf("log %s", buf.String())
+			}
+			op, _ := e.Ops.Find(context.Background(), 1, writeops.ActionBook, key)
+			if op == nil || op.State != writeops.StateUnknown {
+				t.Fatalf("state %+v", op)
+			}
+			again := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), key)
+			if again.Status != http.StatusConflict || p.calls.Load() != 1 {
+				t.Fatalf("replay status=%d calls=%d", again.Status, p.calls.Load())
+			}
+			other := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-09T10:00:00", now), "41414141-4141-4141-4141-414141414141")
+			if other.Code != "OPERATION_IN_PROGRESS" || p.calls.Load() != 1 {
+				t.Fatalf("second %s calls=%d", other.Code, p.calls.Load())
+			}
+			c.found = true
+			c.foundID = 77
+			e.Sweep(context.Background())
+			op, _ = e.Ops.Get(context.Background(), op.OpID)
+			if op.State != writeops.StateOK || !op.PlanningID.Valid || op.PlanningID.Int64 != 77 || p.calls.Load() != 1 {
+				t.Fatalf("reconcile %+v calls=%d", op, p.calls.Load())
+			}
+		})
+	}
+}
+
+func TestBook_FinalizeFailureIsUnknown(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, _, p, buf := testEngine(t)
+	e.AfterProc = func() error {
+		_ = e.Ops.DB.Close()
+		return nil
+	}
+	out := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), "42424242-4242-4242-4242-424242424242")
+	if out.Status == http.StatusCreated || out.Status == http.StatusOK || out.Code != "BOOKING_UNKNOWN" {
+		t.Fatalf("status=%d code=%s", out.Status, out.Code)
+	}
+	if p.calls.Load() != 1 || !bytes.Contains(buf.Bytes(), []byte("lk write op finalize failed")) || !bytes.Contains(buf.Bytes(), []byte("op_id=")) {
+		t.Fatalf("calls=%d log=%s", p.calls.Load(), buf.String())
+	}
+}
+
+func TestBook_CancelledContextStillFinishes(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, _, _, _ := testEngine(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.AfterProc = func() error {
+		cancel()
+		return nil
+	}
+	key := "43434343-4343-4343-4343-434343434343"
+	out := e.Book(ctx, 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), key)
+	if out.Status != http.StatusCreated {
+		t.Fatalf("status=%d code=%s", out.Status, out.Code)
+	}
+	op, err := e.Ops.Find(context.Background(), 1, writeops.ActionBook, key)
+	if err != nil || op == nil || op.State != writeops.StateOK {
+		t.Fatalf("stored %+v err=%v", op, err)
+	}
+}
+
+func TestBook_ContextSaveFailureSkipsProc(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, _, p, buf := testEngine(t)
+	e.AfterInFlight = func() error {
+		_ = e.Ops.DB.Close()
+		return nil
+	}
+	out := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), "44444444-4444-4444-4444-444444444444")
+	if out.Status != http.StatusServiceUnavailable || out.Code != "WRITE_UNAVAILABLE" || p.calls.Load() != 0 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("op_id=")) {
+		t.Fatalf("log %s", buf.String())
+	}
+}
+
+func TestCancel_SecondOwnerLineBlocksProc(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, c, p, _ := testEngine(t)
+	e.Now = func() time.Time { return now }
+	c.ownerSeq = []repo.OwnerRow{
+		{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"},
+		{Found: true, PatientID: 1, PlSubjID: 999999, OrgID: 496, DateStart: "2026-11-08T10:00:00"},
+	}
+	p.record = false
+	out := e.Cancel(context.Background(), 1, 5, "45454545-4545-4545-4545-454545454545")
+	if out.Status != http.StatusConflict || out.Code != "CANCEL_NOT_SUPPORTED" || p.calls.Load() != 0 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+}
+
+func TestCancel_LastSnapshotBlocksProc(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	bill := int64(5)
+	cases := []struct {
+		name string
+		last booking.Snap
+		code string
+	}{
+		{"bill", booking.Snap{ReadOK: true, PlanningFound: true, AnswBill: &bill}, "CANCEL_NOT_SUPPORTED"},
+		{"link", booking.Snap{ReadOK: true, PlanningFound: true, A: []int64{8}}, "CANCEL_NOT_SUPPORTED"},
+		{"cancelled", booking.Snap{ReadOK: true, PlanningFound: true, PlanningCancelled: 1}, "ALREADY_CANCELLED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, c, p, _ := testEngine(t)
+			e.Now = func() time.Time { return now }
+			c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
+			c.adm = booking.Admission{Found: true, Active: true}
+			c.snaps = []booking.Snap{activeSnap(), tc.last}
+			p.record = false
+			out := e.Cancel(context.Background(), 1, 5, "46464646-4646-4646-4646-464646464646")
+			if out.Status != http.StatusConflict || out.Code != tc.code || p.calls.Load() != 0 {
+				t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+			}
+		})
+	}
+}
+
+func TestCancel_ContextSaveFailureSkipsProc(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, c, p, buf := testEngine(t)
+	e.Now = func() time.Time { return now }
+	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
+	c.adm = booking.Admission{Found: true, Active: true}
+	c.snaps = []booking.Snap{activeSnap()}
+	e.AfterInFlight = func() error {
+		_ = e.Ops.DB.Close()
+		return nil
+	}
+	p.record = false
+	out := e.Cancel(context.Background(), 1, 5, "47474747-4747-4747-4747-474747474747")
+	if out.Status != http.StatusServiceUnavailable || out.Code != "WRITE_UNAVAILABLE" || p.calls.Load() != 0 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("op_id=")) {
+		t.Fatalf("log %s", buf.String())
+	}
+}
+
+func TestMaintenanceStartsWithoutSweep(t *testing.T) {
+	e, c, _, _ := testEngine(t)
+	ctx := context.Background()
+	key := "48484848-4848-4848-4848-484848484848"
+	op := e.newOp(1, writeops.ActionBook, key, writeops.BookIntent(1119, 10000688, "2026-11-08T10:00:00"), `{"org_id":496}`, time.Now().Add(-3*time.Minute))
+	if err := e.Ops.InsertInFlight(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(nil, nil, e.Ops.DB, repo.Repos{}, e.Log, 0, e.Cfg)
+	eng := svc.engine()
+	eng.Clinic = c
+	eng.Now = time.Now
+	eng.Cfg.LKAuthorMedecinsID = e.Cfg.LKAuthorMedecinsID
+	runCtx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	svc.StartWriteMaintenance(runCtx)
+	saved, err := e.Ops.Find(ctx, 1, writeops.ActionBook, key)
+	if err != nil || saved == nil || saved.State != writeops.StateUnknown {
+		t.Fatalf("startup %+v err=%v", saved, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		n := c.findCalls
+		c.mu.Unlock()
+		if n > 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("reconcile was not called")
 }

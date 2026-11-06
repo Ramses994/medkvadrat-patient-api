@@ -34,7 +34,6 @@ import (
 // It does not run unless LK_INTEGRATION_WRITE=1. Owner only, on D1.
 func TestLK2(t *testing.T) {
 	env := newLive(t)
-	defer env.close()
 	if len(env.slots) < 3 {
 		t.Fatal("no slot after cancel threshold")
 	}
@@ -125,6 +124,7 @@ func newLive(t *testing.T) *liveEnv {
 		t.Fatal(err)
 	}
 	env := &liveEnv{t: t, cfg: cfg, ro: ro, rw: rw, sqlite: lite, client: &http.Client{Timeout: 90 * time.Second}}
+	t.Cleanup(env.close)
 	if n := env.activeCount(t); n != 0 {
 		env.close()
 		t.Fatalf("patient 1 already has %d active rows on line 1119", n)
@@ -153,15 +153,19 @@ func newLive(t *testing.T) *liveEnv {
 func (e *liveEnv) close() {
 	if e.srv != nil {
 		e.srv.Close()
+		e.srv = nil
 	}
 	if e.ro != nil {
-		e.ro.Close()
+		_ = e.ro.Close()
+		e.ro = nil
 	}
 	if e.rw != nil {
-		e.rw.Close()
+		_ = e.rw.Close()
+		e.rw = nil
 	}
 	if e.sqlite != nil {
-		e.sqlite.Close()
+		_ = e.sqlite.Close()
+		e.sqlite = nil
 	}
 }
 
@@ -326,9 +330,6 @@ func (e *liveEnv) book(t *testing.T, s slotOffer, key string) int64 {
 func (e *liveEnv) bookStatus(t *testing.T, token, key string) (int, int64) {
 	t.Helper()
 	st, _, id := e.postBook(t, token, key)
-	if id > 0 {
-		e.ids = append(e.ids, id)
-	}
 	return st, id
 }
 
@@ -345,23 +346,36 @@ func (e *liveEnv) postBook(t *testing.T, token, key string) (int, string, int64)
 
 func (e *liveEnv) cancel(t *testing.T, id int64) {
 	t.Helper()
-	status, raw := e.call(t, http.MethodDelete, fmt.Sprintf("%s/api/me/appointments/%d", e.srv.URL, id), newKey(), nil)
-	code := decodeData(t, raw, &struct{}{})
-	if status == http.StatusOK || code == "ALREADY_CANCELLED" {
-		return
+	if err := e.cancelQuiet(id); err != nil {
+		e.failBad(t)
+		t.Fatalf("planning_id=%d %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", id, err)
 	}
-	e.failBad(t)
-	t.Fatalf("cancel planning_id=%d status=%d code=%s", id, status, code)
+}
+
+func (e *liveEnv) cancelQuiet(id int64) error {
+	status, raw := e.call(e.t, http.MethodDelete, fmt.Sprintf("%s/api/me/appointments/%d", e.srv.URL, id), newKey(), nil)
+	code := decodeData(e.t, raw, &struct{}{})
+	if status == http.StatusOK || code == "ALREADY_CANCELLED" {
+		return nil
+	}
+	return fmt.Errorf("status=%d code=%s", status, code)
 }
 
 func (e *liveEnv) cancelAll() {
 	seen := map[int64]bool{}
+	var failed []int64
 	for _, id := range e.ids {
 		if id <= 0 || seen[id] {
 			continue
 		}
 		seen[id] = true
-		e.cancel(e.t, id)
+		if err := e.cancelQuiet(id); err != nil {
+			failed = append(failed, id)
+			e.t.Errorf("planning_id=%d %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", id, err)
+		}
+	}
+	if len(failed) > 0 {
+		e.t.Errorf("не отменены planning_id: %v", failed)
 	}
 }
 
