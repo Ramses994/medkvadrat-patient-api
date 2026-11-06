@@ -25,7 +25,8 @@ func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, phoneLast10 string
 		FROM PATIENTS
 		WHERE REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(MOBIL_TELEFON,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
 		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
-		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(RAB_TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'`
+		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(RAB_TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
+		ORDER BY PATIENTS_ID`
 
 	rows, err := r.db.QueryContext(ctx, query, sql.Named("phone", phoneLast10))
 	if err != nil {
@@ -59,7 +60,8 @@ func (r *PatientRepo) SearchByPhone(ctx context.Context, phoneLast10 string) ([]
 		FROM PATIENTS
 		WHERE REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(MOBIL_TELEFON,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
 		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
-		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(RAB_TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'`
+		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(RAB_TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
+		ORDER BY PATIENTS_ID`
 
 	rows, err := r.db.QueryContext(ctx, query, sql.Named("phone", phoneLast10))
 	if err != nil {
