@@ -87,6 +87,37 @@ CREATE TABLE IF NOT EXISTS waitlist (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_waitlist_planning_version ON waitlist(planning_id, appt_version);`,
 		`CREATE INDEX IF NOT EXISTS idx_waitlist_status_created ON waitlist(status, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_waitlist_branch_status ON waitlist(branch_id, status);`,
+		`
+CREATE TABLE IF NOT EXISTS waitlist_mis_work (
+  planning_id INTEGER PRIMARY KEY,
+  status      TEXT NOT NULL,
+  outcome     TEXT,
+  updated_by  TEXT,
+  updated_at  TEXT NOT NULL
+);`,
+		`
+CREATE TABLE IF NOT EXISTS staff_users (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  login                TEXT NOT NULL UNIQUE,
+  full_name            TEXT NOT NULL,
+  password_hash        TEXT NOT NULL,
+  role                 TEXT NOT NULL,
+  branches             TEXT NOT NULL,
+  active               INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  last_login_at        TEXT
+);`,
+		`
+CREATE TABLE IF NOT EXISTS staff_login_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  login      TEXT NOT NULL,
+  ip         TEXT NOT NULL,
+  success    INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_staff_login_log_login ON staff_login_log(login, id);`,
 	}
 
 	for i, s := range stmts {
@@ -98,6 +129,15 @@ CREATE TABLE IF NOT EXISTS waitlist (
 		return err
 	}
 	if err := ensureColumn(ctx, db, "appointment_confirmations", "appt_version", "TEXT"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "staff_users", "session_version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "waitlist", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "waitlist_mis_work", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	if _, err := PurgeClosedWaitlist(ctx, db, time.Now().UTC()); err != nil {

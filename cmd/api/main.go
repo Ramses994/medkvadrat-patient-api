@@ -17,6 +17,7 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/poll"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 )
@@ -52,6 +53,10 @@ func main() {
 
 	if err := store.Migrate(ctxBackground(), sqlite); err != nil {
 		logger.Error("sqlite migrate failed", "err", err)
+		os.Exit(1)
+	}
+	if _, err := staff.EnsureFirstAdmin(ctxBackground(), sqlite, cfg.Dashboard.AdminLogin, cfg.Dashboard.Password); err != nil {
+		logger.Error("staff admin bootstrap failed", "err", err)
 		os.Exit(1)
 	}
 	if n, err := store.PurgeClosedWaitlist(ctxBackground(), sqlite, time.Now().UTC()); err != nil {
