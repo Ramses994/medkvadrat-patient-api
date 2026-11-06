@@ -11,11 +11,8 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// me.go:Appointments — снять после мержа LK-1a (PR #21).
-// motconsu.go:ChangesSince и PollAfter передают строку CONVERT(..., 126) и в списке не состоят.
-var allowMSSQLTimeNamed = map[string]bool{
-	"me.go:Appointments": true,
-}
+// Исключений нет. me.go:Appointments снят вместе с методом после мержа LK-1a.
+var allowMSSQLTimeNamed = map[string]bool{}
 
 func TestMSSQLNamedArgsForbidTimeTime(t *testing.T) {
 	got := mssqlNamedTimeCalls(t, []string{

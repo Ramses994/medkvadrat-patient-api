@@ -1,0 +1,1 @@
+{"success":true,"data":[{"planning_id":3118001,"starts_at":"2099-06-26 19:30","duration_min":10,"state":"waitlist","is_waitlist":true,"branch":{"id":3,"name":"Куркино","address":"г. Москва, ул. Ландышевая, 14к1"},"doctor":{"id":1828,"name":"Гаевой Эдуард Валерьевич"},"exam_name":"Приём терапевта","confirmation":null}]}
