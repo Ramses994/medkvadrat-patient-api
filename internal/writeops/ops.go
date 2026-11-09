@@ -56,6 +56,8 @@ type Patch struct {
 
 type Repo struct {
 	DB *sql.DB
+	// RejectWrites is a test seam. A non-nil error skips the SQLite write.
+	RejectWrites func(query string) error
 }
 
 func New(db *sql.DB) *Repo { return &Repo{DB: db} }
@@ -129,7 +131,7 @@ func (r *Repo) InsertInFlight(ctx context.Context, op Op) error {
 	if op.OpID == "" {
 		op.OpID = newID()
 	}
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 INSERT INTO lk_write_ops (
   op_id, patient_id, action, request_id, intent_json, context_json, state, code, planning_id, started_at, started_at_msk
 ) VALUES (?, ?, ?, ?, ?, ?, 'in_flight', '', ?, ?, ?)`,
@@ -149,7 +151,7 @@ func isConflict(err error) bool {
 }
 
 func (r *Repo) Transition(ctx context.Context, opID, from string, p Patch) (bool, error) {
-	res, err := r.DB.ExecContext(ctx, `
+	res, err := r.exec(ctx, `
 UPDATE lk_write_ops
 SET state = ?, code = ?, planning_id = ?, context_json = ?, finished_at = ?, resolved_by = ?, resolve_note_code = ?
 WHERE op_id = ? AND state = ?`,
@@ -163,6 +165,35 @@ WHERE op_id = ? AND state = ?`,
 		return false, err
 	}
 	return n == 1, nil
+}
+
+// NewID is the journal key. The handler registers it before the row becomes in_flight.
+func NewID() string { return newID() }
+
+// SaveContext stores the snapshot that the procedure will use.
+// RowsAffected is 1 only while the row is still in_flight and the context is empty.
+func (r *Repo) SaveContext(ctx context.Context, opID, contextJSON string, planning sql.NullInt64) (bool, error) {
+	res, err := r.exec(ctx, `
+UPDATE lk_write_ops SET context_json = ?, planning_id = ?
+WHERE op_id = ? AND state = 'in_flight' AND context_json = '{}'`,
+		contextJSON, planning, opID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+func (r *Repo) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if r != nil && r.RejectWrites != nil {
+		if err := r.RejectWrites(query); err != nil {
+			return nil, err
+		}
+	}
+	return r.DB.ExecContext(ctx, query, args...)
 }
 
 func newID() string {
@@ -245,7 +276,7 @@ FROM lk_write_ops WHERE state = 'in_flight' AND started_at < ?`, olderThan.UTC()
 }
 
 func (r *Repo) MarkUnresolvedLogged(ctx context.Context, opID, at, olderThan string) (bool, error) {
-	res, err := r.DB.ExecContext(ctx, `
+	res, err := r.exec(ctx, `
 UPDATE lk_write_ops SET unresolved_logged_at = ?
 WHERE op_id = ? AND state IN ('unknown', 'partial')
   AND (unresolved_logged_at IS NULL OR unresolved_logged_at = '' OR unresolved_logged_at < ?)`, at, opID, olderThan)

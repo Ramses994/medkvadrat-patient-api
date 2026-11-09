@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1011,4 +1013,145 @@ func TestMaintenanceStartsWithoutSweep(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("reconcile was not called")
+}
+
+func TestBook_BackgroundBetweenContextAndExecLeavesLiveOp(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, _, p, _ := testEngine(t)
+	key := "51515151-5151-4151-8151-515151515151"
+	e.BeforeProc = func() {
+		e.retireAllInFlight(context.Background())
+		e.expireStale(context.Background())
+		e.reconcileDue(context.Background())
+		op, err := e.Ops.Find(context.Background(), 1, writeops.ActionBook, key)
+		if err != nil || op == nil || op.State != writeops.StateInFlight {
+			t.Fatalf("background touched %+v err=%v", op, err)
+		}
+	}
+	out := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), key)
+	if out.Status != http.StatusCreated || p.calls.Load() != 1 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+	op, err := e.Ops.Find(context.Background(), 1, writeops.ActionBook, key)
+	if err != nil || op == nil || op.State != writeops.StateOK {
+		t.Fatalf("stored %+v err=%v", op, err)
+	}
+}
+
+func TestCancel_LineChangesWhileWaitingForLock(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, c, p, _ := testEngine(t)
+	e.Now = func() time.Time { return now }
+	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
+	e.BeforeLineLock = func() {
+		c.mu.Lock()
+		row := c.owners[5]
+		row.PlSubjID = 999999
+		c.owners[5] = row
+		c.mu.Unlock()
+	}
+	p.record = false
+	out := e.Cancel(context.Background(), 1, 5, "52525252-5252-4252-8252-525252525252")
+	if out.Status != http.StatusConflict || out.Code != "CANCEL_NOT_SUPPORTED" || p.calls.Load() != 0 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+}
+
+func TestCancel_DirectionAppearsBeforeSave(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, c, p, _ := testEngine(t)
+	e.Now = func() time.Time { return now }
+	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
+	c.adm = booking.Admission{Found: true, Active: true}
+	plan := int64(5)
+	dir := booking.Direction{ID: 9, PlanningCR: &plan}
+	c.admNext = &booking.Admission{
+		Found: true, Active: true,
+		Answers:      []booking.Answer{{ID: 1, PatdirecID: 9, HasPatdirec: true, BillNull: true}},
+		Directions:   []booking.Direction{dir},
+		OwnDirection: &dir,
+	}
+	c.snaps = []booking.Snap{
+		{ReadOK: true, PlanningFound: true},
+		{ReadOK: true, PlanningFound: true, A: []int64{1}, P: []int64{9}, D: []int64{9}},
+	}
+	p.record = false
+	out := e.Cancel(context.Background(), 1, 5, "53535353-5353-4353-8353-535353535353")
+	if out.Status != http.StatusConflict || out.Code != "CANCEL_NOT_SUPPORTED" || p.calls.Load() != 0 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+}
+
+func TestCancel_LostFinalizeCASAnswersUnknown(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, c, p, _ := testEngine(t)
+	e.Now = func() time.Time { return now }
+	key := "54545454-5454-4454-8454-545454545454"
+	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
+	c.adm = booking.Admission{Found: true, Active: true}
+	clean := activeSnap()
+	c.snaps = []booking.Snap{clean, clean, {ReadOK: true, PlanningFound: true, PlanningCancelled: 1}}
+	p.record = false
+	p.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true}
+	e.AfterProc = func() error {
+		op, err := e.Ops.Find(context.Background(), 1, writeops.ActionCancel, key)
+		if err != nil || op == nil {
+			t.Fatalf("op %+v err=%v", op, err)
+		}
+		ok, err := e.Ops.Transition(context.Background(), op.OpID, writeops.StateInFlight, writeops.Patch{
+			State: writeops.StateUnknown, Code: "CANCEL_UNKNOWN", PlanningID: op.PlanningID,
+			ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
+		})
+		if err != nil || !ok {
+			t.Fatalf("plant unknown ok=%v err=%v", ok, err)
+		}
+		return nil
+	}
+	out := e.Cancel(context.Background(), 1, 5, key)
+	if out.Status != http.StatusServiceUnavailable || out.Code != "CANCEL_UNKNOWN" || out.Status == http.StatusOK || p.calls.Load() != 1 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+}
+
+func TestJournalUpdateRefusalBlocksNewBook(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, _, p, buf := testEngine(t)
+	e.Now = func() time.Time { return now }
+	key := "55555555-5555-4555-8555-555555555555"
+	op := e.newOp(1, writeops.ActionBook, key, writeops.BookIntent(1119, 10000688, "2026-11-08T10:00:00"), `{}`, now.Add(-3*time.Minute))
+	if err := e.Ops.InsertInFlight(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := e.Ops.Find(context.Background(), 1, writeops.ActionBook, key)
+	if err != nil || saved == nil {
+		t.Fatal(err)
+	}
+	e.Ops.RejectWrites = func(query string) error {
+		if strings.Contains(strings.ToUpper(query), "UPDATE") {
+			return errors.New("sqlite update refused")
+		}
+		return nil
+	}
+	e.retireAllInFlight(context.Background())
+	e.expireStale(context.Background())
+	logText := buf.String()
+	if strings.Count(logText, "op_id="+saved.OpID) < 2 || !strings.Contains(logText, "lk write journal error") {
+		t.Fatalf("log %s", logText)
+	}
+	if strings.Contains(logText, "phone") {
+		t.Fatal("log leaked a phone")
+	}
+	still, _ := e.Ops.Get(context.Background(), saved.OpID)
+	if still == nil || still.State != writeops.StateInFlight {
+		t.Fatalf("state %+v", still)
+	}
+	svc := New(e.Ops.DB, nil, e.Ops.DB, repo.Repos{}, e.Log, 0, e.Cfg)
+	svc.engAtomic.Store(e)
+	if snap := svc.HealthSnapshot(context.Background()); snap.WriteJournal != "degraded" {
+		t.Fatalf("health %+v", snap)
+	}
+	out := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), "56565656-5656-4566-8566-565656565656")
+	if out.Status != http.StatusServiceUnavailable || out.Code != "WRITE_UNAVAILABLE" || p.calls.Load() != 0 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
 }

@@ -30,6 +30,7 @@ type Services struct {
 	book            *bookingState
 	eng             *BookingEngine
 	engOnce         sync.Once
+	engAtomic       atomic.Pointer[BookingEngine]
 	rwLang          atomic.Bool
 }
 
@@ -142,7 +143,10 @@ func (s *Services) LabPanels(ctx context.Context, patientID string, daysBack int
 }
 
 func (s *Services) HealthSnapshot(ctx context.Context) health.Snapshot {
-	out := health.Snapshot{API: "ok", Medialog: "ok"}
+	out := health.Snapshot{API: "ok", Medialog: "ok", WriteJournal: "ok"}
+	if eng := s.engAtomic.Load(); eng != nil && eng.journalDown.Load() {
+		out.WriteJournal = "degraded"
+	}
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := s.MSSQL.PingContext(pingCtx); err != nil {

@@ -34,18 +34,12 @@ func (e *BookingEngine) StartMaintenance(ctx context.Context) {
 func (e *BookingEngine) retireAllInFlight(ctx context.Context) {
 	rows, err := e.Ops.ListStates(ctx, []string{writeops.StateInFlight})
 	if err != nil {
+		e.journalErr("startup", "", err)
 		return
 	}
 	now := e.now()
 	for _, op := range rows {
-		code := "BOOKING_UNKNOWN"
-		if op.Action == writeops.ActionCancel {
-			code = "CANCEL_UNKNOWN"
-		}
-		_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
-			State: writeops.StateUnknown, Code: code, PlanningID: op.PlanningID,
-			ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
-		})
+		e.markUnknown(ctx, op, "startup", now)
 	}
 }
 
@@ -77,27 +71,45 @@ func (e *BookingEngine) expireStale(ctx context.Context) {
 	now := e.now()
 	stale, err := e.Ops.StaleInFlight(ctx, now.Add(-2*time.Minute))
 	if err != nil {
+		e.journalErr("expire", "", err)
 		return
 	}
 	for _, op := range stale {
-		code := "BOOKING_UNKNOWN"
-		if op.Action == writeops.ActionCancel {
-			code = "CANCEL_UNKNOWN"
-		}
-		_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
-			State: writeops.StateUnknown, Code: code, PlanningID: op.PlanningID,
-			ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
-		})
+		e.markUnknown(ctx, op, "expire", now)
 	}
+}
+
+func (e *BookingEngine) markUnknown(ctx context.Context, op writeops.Op, step string, now time.Time) {
+	if e.isLive(op.OpID) {
+		return
+	}
+	code := "BOOKING_UNKNOWN"
+	if op.Action == writeops.ActionCancel {
+		code = "CANCEL_UNKNOWN"
+	}
+	_, err := e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
+		State: writeops.StateUnknown, Code: code, PlanningID: op.PlanningID,
+		ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		e.noteWrite(err)
+		e.journalErr(step, op.OpID, err)
+		return
+	}
+	e.noteWrite(nil)
 }
 
 func (e *BookingEngine) reconcileDue(ctx context.Context) {
 	now := e.now()
 	rows, err := e.Ops.ListStates(ctx, []string{writeops.StateUnknown})
 	if err != nil {
+		e.journalErr("reconcile", "", err)
 		return
 	}
 	for _, op := range rows {
+		if e.isLive(op.OpID) {
+			continue
+		}
 		if !dueReconcile(op, now) {
 			continue
 		}
@@ -131,29 +143,30 @@ func (e *BookingEngine) Sweep(ctx context.Context) {
 	now := e.now()
 	stale, err := e.Ops.StaleInFlight(ctx, now.Add(-2*time.Minute))
 	if err != nil {
+		e.journalErr("expire", "", err)
 		return
 	}
 	for _, op := range stale {
-		code := "BOOKING_UNKNOWN"
-		if op.Action == writeops.ActionCancel {
-			code = "CANCEL_UNKNOWN"
-		}
-		_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
-			State: writeops.StateUnknown, Code: code, PlanningID: op.PlanningID,
-			ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
-		})
+		e.markUnknown(ctx, op, "expire", now)
 	}
 	rows, err := e.Ops.ListStates(ctx, []string{writeops.StateUnknown})
 	if err != nil {
+		e.journalErr("reconcile", "", err)
 		return
 	}
 	for _, op := range rows {
+		if e.isLive(op.OpID) {
+			continue
+		}
 		e.reconcile(ctx, op, now)
 	}
 	e.warnUnresolved(ctx, now)
 }
 
 func (e *BookingEngine) reconcile(ctx context.Context, op writeops.Op, now time.Time) {
+	if e.isLive(op.OpID) {
+		return
+	}
 	if op.Action == writeops.ActionBook {
 		var intent struct {
 			PlSubjID   int64  `json:"pl_subj_id"`
@@ -168,10 +181,12 @@ func (e *BookingEngine) reconcile(ctx context.Context, op writeops.Op, now time.
 		if err != nil || !ok {
 			return
 		}
-		_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateUnknown, writeops.Patch{
+		if err := e.transitionNoted(ctx, op.OpID, writeops.StateUnknown, writeops.Patch{
 			State: writeops.StateOK, PlanningID: sql.NullInt64{Int64: id, Valid: true},
 			ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
-		})
+		}); err != nil {
+			return
+		}
 		return
 	}
 	var cc cancelContext
@@ -192,10 +207,12 @@ func (e *BookingEngine) reconcile(ctx context.Context, op writeops.Op, now time.
 	pred := booking.Eval(planningID, cc.Variant, cc.Before, after)
 	if pred.Full {
 		cc.After = &after
-		_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateUnknown, writeops.Patch{
+		if err := e.transitionNoted(ctx, op.OpID, writeops.StateUnknown, writeops.Patch{
 			State: writeops.StateOK, Code: "", PlanningID: op.PlanningID,
 			ContextJSON: mustJSON(cc), FinishedAt: now.UTC().Format(time.RFC3339),
-		})
+		}); err != nil {
+			return
+		}
 		return
 	}
 	started, err := time.Parse(time.RFC3339, op.StartedAt)
@@ -207,15 +224,27 @@ func (e *BookingEngine) reconcile(ctx context.Context, op writeops.Op, now time.
 		return
 	}
 	cc.After = &after
-	_, _ = e.Ops.Transition(ctx, op.OpID, writeops.StateUnknown, writeops.Patch{
+	_ = e.transitionNoted(ctx, op.OpID, writeops.StateUnknown, writeops.Patch{
 		State: writeops.StatePartial, Code: code, PlanningID: op.PlanningID,
 		ContextJSON: mustJSON(cc), FinishedAt: now.UTC().Format(time.RFC3339),
 	})
 }
 
+func (e *BookingEngine) transitionNoted(ctx context.Context, opID, from string, p writeops.Patch) error {
+	_, err := e.Ops.Transition(ctx, opID, from, p)
+	if err != nil {
+		e.noteWrite(err)
+		e.journalErr("reconcile", opID, err)
+		return err
+	}
+	e.noteWrite(nil)
+	return nil
+}
+
 func (e *BookingEngine) warnUnresolved(ctx context.Context, now time.Time) {
 	rows, err := e.Ops.ListStates(ctx, []string{writeops.StateUnknown, writeops.StatePartial})
 	if err != nil {
+		e.journalErr("warn", "", err)
 		return
 	}
 	for _, op := range rows {
@@ -284,8 +313,11 @@ func (e *BookingEngine) Resolve(ctx context.Context, in ResolveInput) WriteHTTP 
 		FinishedAt: e.now().UTC().Format(time.RFC3339), ResolvedBy: in.Actor, ResolveNote: in.Note,
 	})
 	if err != nil {
+		e.noteWrite(err)
+		e.journalErr("resolve", op.OpID, err)
 		return e.fail(503, "WRITE_LOG_UNAVAILABLE", booking.MsgRegistry)
 	}
+	e.noteWrite(nil)
 	if !ok {
 		fresh, _ := e.Ops.Get(ctx, op.OpID)
 		if fresh != nil {

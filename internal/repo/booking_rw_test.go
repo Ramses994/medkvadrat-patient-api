@@ -1,12 +1,14 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	mssql "github.com/denisenkom/go-mssqldb"
 )
 
@@ -46,9 +48,20 @@ func TestRWBatchSQL(t *testing.T) {
 }
 
 func TestClassifyRWErr_UnfinishedUnlessRow(t *testing.T) {
-	open := classifyRWErr(mssql.Error{Message: "open tran", Number: 50000})
-	if !open.Precondition || open.Finished || !open.Sent {
-		t.Fatalf("open tran %+v", open)
+	open := classifyRWErr(mssql.Error{Message: "the batch failed because of an open tran", Number: 50000})
+	if open.Precondition || open.Finished || !open.Sent {
+		t.Fatalf("foreign open tran %+v", open)
+	}
+	marked := classifyRWErr(mssql.Error{Message: precheckMarker, Number: 50000})
+	if !marked.Precondition || marked.Finished || !marked.Sent {
+		t.Fatalf("marker %+v", marked)
+	}
+	prior := classifyRWErr(mssql.Error{
+		Message: precheckMarker, Number: 50000,
+		All: []mssql.Error{{Message: "open tran", Number: 50000}, {Message: precheckMarker, Number: 50000}},
+	})
+	if prior.Precondition || prior.Finished {
+		t.Fatalf("prior message %+v", prior)
 	}
 	other := classifyRWErr(mssql.Error{Message: "connection reset", Number: 11})
 	if other.Finished || other.Precondition || !other.Sent {
@@ -61,4 +74,100 @@ func TestClassifyRWErr_UnfinishedUnlessRow(t *testing.T) {
 	if other.Err == nil {
 		t.Fatal("err dropped")
 	}
+}
+
+func TestExecAddVisit_FinalShape(t *testing.T) {
+	t.Run("foreign open tran", func(t *testing.T) {
+		res := runAdd(t, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery("pl_AddVisitContext").WillReturnError(mssql.Error{Number: 50000, Message: "open tran"})
+		})
+		if res.Precondition || res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("wrong columns", func(t *testing.T) {
+		res := runAdd(t, func(mock sqlmock.Sqlmock) {
+			rows := sqlmock.NewRows([]string{"RESULT", "PLANNING_ID", "STATE"}).AddRow("ok", int64(1), int64(0))
+			mock.ExpectQuery("pl_AddVisitContext").WillReturnRows(rows)
+		})
+		if res.Finished || res.Precondition {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("two rows", func(t *testing.T) {
+		res := runAdd(t, func(mock sqlmock.Sqlmock) {
+			rows := sqlmock.NewRows([]string{"PLANNING_ID", "RESULT", "STATE"}).
+				AddRow(int64(1), "ok", int64(0)).
+				AddRow(int64(2), "ok", int64(0))
+			mock.ExpectQuery("pl_AddVisitContext").WillReturnRows(rows)
+		})
+		if res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("extra result set", func(t *testing.T) {
+		res := runAdd(t, func(mock sqlmock.Sqlmock) {
+			first := sqlmock.NewRows([]string{"PLANNING_ID", "RESULT", "STATE"}).AddRow(int64(1), "ok", int64(0))
+			second := sqlmock.NewRows([]string{"PLANNING_ID", "RESULT", "STATE"}).AddRow(int64(2), "x", int64(0))
+			mock.ExpectQuery("pl_AddVisitContext").WillReturnRows(first, second)
+		})
+		if res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+}
+
+func TestExecCancelVisit_FinalShape(t *testing.T) {
+	p := CancelParams{PatientID: 1, PlanningID: 5, OrgID: 496, MeddepID: 1, AuthorID: 2}
+	t.Run("wrong columns", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		rows := sqlmock.NewRows([]string{"STATE"}).AddRow(int64(0))
+		mock.ExpectQuery("pl_CancelVisit").WillReturnRows(rows)
+		res := ExecCancelVisit(context.Background(), db, p)
+		if res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("two rows", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		rows := sqlmock.NewRows([]string{"RESULT"}).AddRow("ok").AddRow("again")
+		mock.ExpectQuery("pl_CancelVisit").WillReturnRows(rows)
+		res := ExecCancelVisit(context.Background(), db, p)
+		if res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("extra result set", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		first := sqlmock.NewRows([]string{"RESULT"}).AddRow("ok")
+		second := sqlmock.NewRows([]string{"RESULT"}).AddRow("more")
+		mock.ExpectQuery("pl_CancelVisit").WillReturnRows(first, second)
+		res := ExecCancelVisit(context.Background(), db, p)
+		if res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+}
+
+func runAdd(t *testing.T, setup func(sqlmock.Sqlmock)) ProcResult {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	setup(mock)
+	return ExecAddVisit(context.Background(), db, AddVisitParams{PatientID: 1, PlSubjID: 1119, PlExamID: 10000688, VisitStart: "2026-11-08T10:00:00", OrgID: 496, MeddepID: 1, AuthorID: 2})
 }

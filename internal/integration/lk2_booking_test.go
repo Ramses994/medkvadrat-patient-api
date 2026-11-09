@@ -300,7 +300,6 @@ WHERE PATIENTS_ID = @pid AND PL_SUBJ_ID = @subj AND PL_EXAM_ID = @exam
 	if err != nil || n != 1 {
 		t.Fatalf("rows %d err %v", n, err)
 	}
-	e.ids = append(e.ids, created)
 	e.cancel(t, created)
 }
 
@@ -323,7 +322,6 @@ func (e *liveEnv) book(t *testing.T, s slotOffer, key string) int64 {
 		e.failBad(t)
 		t.Fatalf("book status %d code %s planning_id=%d", st, code, id)
 	}
-	e.ids = append(e.ids, id)
 	return id
 }
 
@@ -341,6 +339,7 @@ func (e *liveEnv) postBook(t *testing.T, token, key string) (int, string, int64)
 		PlanningID int64 `json:"planning_id"`
 	}
 	code := decodeData(t, raw, &data)
+	notePlanningID(&e.ids, data.PlanningID)
 	return status, code, data.PlanningID
 }
 
@@ -353,30 +352,11 @@ func (e *liveEnv) cancel(t *testing.T, id int64) {
 }
 
 func (e *liveEnv) cancelQuiet(id int64) error {
-	status, raw := e.call(e.t, http.MethodDelete, fmt.Sprintf("%s/api/me/appointments/%d", e.srv.URL, id), newKey(), nil)
-	code := decodeData(e.t, raw, &struct{}{})
-	if status == http.StatusOK || code == "ALREADY_CANCELLED" {
-		return nil
-	}
-	return fmt.Errorf("status=%d code=%s", status, code)
+	return cancelAppointment(e.client, e.srv.URL, e.jwt, id)
 }
 
 func (e *liveEnv) cancelAll() {
-	seen := map[int64]bool{}
-	var failed []int64
-	for _, id := range e.ids {
-		if id <= 0 || seen[id] {
-			continue
-		}
-		seen[id] = true
-		if err := e.cancelQuiet(id); err != nil {
-			failed = append(failed, id)
-			e.t.Errorf("planning_id=%d %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", id, err)
-		}
-	}
-	if len(failed) > 0 {
-		e.t.Errorf("не отменены planning_id: %v", failed)
-	}
+	cancelEach(e.t, e.ids, e.cancelQuiet)
 }
 
 func (e *liveEnv) failBad(t *testing.T) {

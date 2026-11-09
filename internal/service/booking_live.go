@@ -12,6 +12,7 @@ import (
 func (s *Services) engine() *BookingEngine {
 	s.engOnce.Do(func() {
 		s.eng = s.newEngine()
+		s.engAtomic.Store(s.eng)
 	})
 	return s.eng
 }
