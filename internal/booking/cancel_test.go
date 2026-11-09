@@ -267,3 +267,26 @@ func TestEval_RelinkAfterCallIsExternal(t *testing.T) {
 		t.Fatalf("deleted rows must stay full: %+v", p)
 	}
 }
+
+// Audit 18, B4/B2: the visit moving to another patient or line is a change for
+// both the last pre-call check and the after-call predicates.
+func TestOwnerOrLineChangeIsNeverAllowedOrFull(t *testing.T) {
+	const planning = 5
+	base := oneSnap(planning, 7, 22)
+	base.PlanningPatientID, base.PlanningPlSubjID = 1, 1119
+	for name, mutate := range map[string]func(*Snap){
+		"patient": func(s *Snap) { s.PlanningPatientID = 2 },
+		"line":    func(s *Snap) { s.PlanningPlSubjID = 999999 },
+	} {
+		last := base
+		mutate(&last)
+		if _, ok := SnapAllows(planning, "one", base, last); ok {
+			t.Fatalf("%s change before the call must not pass", name)
+		}
+		after := last
+		after.PlanningCancelled, after.AnswState, after.DirCancelled, after.DirState = 1, 2, 1, 3
+		if p := Eval(planning, "one", base, after); p.Full || !p.External {
+			t.Fatalf("%s change after the call: %+v", name, p)
+		}
+	}
+}

@@ -111,8 +111,10 @@ FROM PATDIREC WHERE PATDIREC_ID = @id`, sql.Named("id", id)).Scan(&d.ID, &d.Canc
 func LoadSnap(ctx context.Context, db *sql.DB, planningID int64, answID, dirID *int64) (booking.Snap, error) {
 	var snap booking.Snap
 	err := db.QueryRowContext(ctx, `
-SELECT CAST(ISNULL(CANCELLED, 0) AS int), CAST(ISNULL(STATUS, 0) AS int)
-FROM PLANNING WHERE PLANNING_ID = @id`, sql.Named("id", planningID)).Scan(&snap.PlanningCancelled, &snap.PlanningStatus)
+SELECT CAST(ISNULL(CANCELLED, 0) AS int), CAST(ISNULL(STATUS, 0) AS int),
+  ISNULL(PATIENTS_ID, 0), ISNULL(PL_SUBJ_ID, 0)
+FROM PLANNING WHERE PLANNING_ID = @id`, sql.Named("id", planningID)).Scan(
+		&snap.PlanningCancelled, &snap.PlanningStatus, &snap.PlanningPatientID, &snap.PlanningPlSubjID)
 	if err == sql.ErrNoRows {
 		snap.PlanningFound = false
 	} else if err != nil {

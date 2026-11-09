@@ -66,6 +66,8 @@ type Snap struct {
 	PlanningFound     bool
 	PlanningCancelled int
 	PlanningStatus    int
+	PlanningPatientID int64 // PLANNING.PATIENTS_ID, read in the same snapshot
+	PlanningPlSubjID  int64 // PLANNING.PL_SUBJ_ID, read in the same snapshot
 	AnswExpected      bool
 	AnswFound         bool
 	AnswState         int
@@ -199,6 +201,9 @@ func SnapAllows(planningID int64, firstVariant string, first, last Snap) (code s
 		!samePtr(first.AnswPlanning, last.AnswPlanning) {
 		return "CANCEL_NOT_SUPPORTED", false
 	}
+	if first.PlanningPatientID != last.PlanningPatientID || first.PlanningPlSubjID != last.PlanningPlSubjID {
+		return "CANCEL_NOT_SUPPORTED", false
+	}
 	if firstVariant == "one" {
 		// The saved answer must still belong to this visit and point at the saved
 		// direction, which this visit created (all read, never inferred).
@@ -231,6 +236,11 @@ type Predicates struct {
 // (S18, R4: ANSW_STATE=2 and PATDIREC CANCELLED=1/DIR_STATE=3 only); a deleted row
 // (the client's path) is not a re-link.
 func relinked(planningID int64, before, after Snap) bool {
+	// The visit itself moved to another patient or line.
+	if before.PlanningFound && after.PlanningFound &&
+		(before.PlanningPatientID != after.PlanningPatientID || before.PlanningPlSubjID != after.PlanningPlSubjID) {
+		return true
+	}
 	if before.AnswFound && after.AnswFound {
 		if !samePtr(before.AnswPatdirec, after.AnswPatdirec) {
 			return true

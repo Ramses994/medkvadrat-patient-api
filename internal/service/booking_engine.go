@@ -227,7 +227,7 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 			outcome = booking.Outcome{Code: "BOOKING_UNKNOWN", HTTPStatus: 503, State: booking.StateUnknown}
 		} else {
 			planningID = sql.NullInt64{Int64: *res.PlanningID, Valid: true}
-			if alt := e.finish(ctx, owned, booking.StateOK, "", planningID, owned.ContextJSON, now); alt.Status != 0 {
+			if alt := e.finish(ctx, owned, booking.StateOK, "", planningID, owned.ContextJSON); alt.Status != 0 {
 				return alt
 			}
 			if e.Invalidate != nil {
@@ -239,7 +239,7 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 	if res.PlanningID != nil && outcome.State != booking.StateOK {
 		planningID = sql.NullInt64{Int64: *res.PlanningID, Valid: true}
 	}
-	if alt := e.finish(ctx, owned, outcome.State, outcome.Code, planningID, owned.ContextJSON, now); alt.Status != 0 {
+	if alt := e.finish(ctx, owned, outcome.State, outcome.Code, planningID, owned.ContextJSON); alt.Status != 0 {
 		return alt
 	}
 	out = e.fail(outcome.HTTPStatus, outcome.Code, "")
@@ -393,6 +393,15 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 		}
 		return e.fail(409, code, msg)
 	}
+	// pl_CancelVisit does not check the owner (S18): the last snapshot, read under
+	// both locks and saved as the context, must still belong to this patient and to
+	// the locked, allowed line. Nothing is read between here and EXEC.
+	if s2.PlanningPatientID != patientID {
+		return e.fail(404, "NOT_FOUND", "Запись не найдена")
+	}
+	if s2.PlanningPlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(s2.PlanningPlSubjID) != nil {
+		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
+	}
 	if out := e.refuseJournal(); out.Status != 0 {
 		return out
 	}
@@ -431,7 +440,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 		}
 	}
 	if !res.Sent {
-		if alt := e.finish(ctx, owned, booking.StateRejected, "WRITE_UNAVAILABLE", op.PlanningID, owned.ContextJSON, now); alt.Status != 0 {
+		if alt := e.finish(ctx, owned, booking.StateRejected, "WRITE_UNAVAILABLE", op.PlanningID, owned.ContextJSON); alt.Status != 0 {
 			return alt
 		}
 		return e.fail(503, "WRITE_UNAVAILABLE", medialogwrite.PatientForbiddenMessage)
@@ -445,14 +454,14 @@ func (e *BookingEngine) finishCancel(ctx context.Context, op *writeops.Op, cc ca
 		// broken connection). pl_CancelVisit is not transactional, so the handler does
 		// not try to confirm anything: the operation stays unknown and the background
 		// reconcile (>= 2 s later) decides ok/partial by reading.
-		if alt := e.finish(ctx, op, booking.StateUnknown, "CANCEL_UNKNOWN", sql.NullInt64{Int64: planningID, Valid: true}, op.ContextJSON, now); alt.Status != 0 {
+		if alt := e.finish(ctx, op, booking.StateUnknown, "CANCEL_UNKNOWN", sql.NullInt64{Int64: planningID, Valid: true}, op.ContextJSON); alt.Status != 0 {
 			return alt
 		}
 		return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
 	}
 	after, err := e.Clinic.Snap(ctx, planningID, cc.DirAnswID, cc.PatdirecID)
 	if err != nil || !after.ReadOK {
-		if alt := e.finish(ctx, op, booking.StateUnknown, "CANCEL_UNKNOWN", sql.NullInt64{Int64: planningID, Valid: true}, op.ContextJSON, now); alt.Status != 0 {
+		if alt := e.finish(ctx, op, booking.StateUnknown, "CANCEL_UNKNOWN", sql.NullInt64{Int64: planningID, Valid: true}, op.ContextJSON); alt.Status != 0 {
 			return alt
 		}
 		return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
@@ -460,7 +469,7 @@ func (e *BookingEngine) finishCancel(ctx context.Context, op *writeops.Op, cc ca
 	cc.After = &after
 	pred := booking.Eval(planningID, cc.Variant, cc.Before, after)
 	state, code := booking.CancelOutcome(callFinished, pred, true)
-	if alt := e.finish(ctx, op, state, code, sql.NullInt64{Int64: planningID, Valid: true}, mustJSON(cc), now); alt.Status != 0 {
+	if alt := e.finish(ctx, op, state, code, sql.NullInt64{Int64: planningID, Valid: true}, mustJSON(cc)); alt.Status != 0 {
 		return alt
 	}
 	if state == booking.StateOK {
@@ -608,7 +617,7 @@ func (e *BookingEngine) insertOrReplay(ctx context.Context, op writeops.Op, inte
 
 // finish writes the outcome. An empty status means this call won the CAS and the caller answers from that outcome.
 // A lost CAS is answered from the row that is actually stored.
-func (e *BookingEngine) finish(ctx context.Context, op *writeops.Op, state, code string, planning sql.NullInt64, contextJSON string, _ time.Time) WriteHTTP {
+func (e *BookingEngine) finish(ctx context.Context, op *writeops.Op, state, code string, planning sql.NullInt64, contextJSON string) WriteHTTP {
 	finCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	// finished_at is the moment the outcome is written (not the start of the
