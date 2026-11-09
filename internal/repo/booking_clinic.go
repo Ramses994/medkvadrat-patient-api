@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"errors"
 )
 
 type CreatedRow struct {
@@ -125,11 +126,14 @@ ORDER BY PLANNING_ID`,
 		sql.Named("author", authorID),
 		sql.Named("since", since),
 	).Scan(&id)
-	if err == sql.ErrNoRows || !id.Valid {
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
 	if err != nil {
 		return 0, false, err
+	}
+	if !id.Valid {
+		return 0, false, nil
 	}
 	return id.Int64, true, nil
 }

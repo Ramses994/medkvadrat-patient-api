@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/booking"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/medialogwrite"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/writeops"
 )
 
@@ -62,9 +63,29 @@ func (e *BookingEngine) safeTick(ctx context.Context) {
 			e.log().Error("lk write maintenance panic")
 		}
 	}()
+	e.probeJournal(ctx)
 	e.expireStale(ctx)
 	e.reconcileDue(ctx)
 	e.warnUnresolved(ctx, e.now())
+}
+
+func (e *BookingEngine) probeJournal(ctx context.Context) {
+	if e.Ops == nil || !e.journalDown.Load() {
+		return
+	}
+	now := e.now()
+	e.recMu.Lock()
+	if !e.lastProbe.IsZero() && now.Sub(e.lastProbe) < 30*time.Second {
+		e.recMu.Unlock()
+		return
+	}
+	e.lastProbe = now
+	e.recMu.Unlock()
+	if err := e.Ops.ProbeHealth(ctx, now); err != nil {
+		e.journalErr("probe", "", err)
+		return
+	}
+	e.journalDown.Store(false)
 }
 
 func (e *BookingEngine) expireStale(ctx context.Context) {
@@ -87,10 +108,7 @@ func (e *BookingEngine) markUnknown(ctx context.Context, op writeops.Op, step st
 	if op.Action == writeops.ActionCancel {
 		code = "CANCEL_UNKNOWN"
 	}
-	_, err := e.Ops.Transition(ctx, op.OpID, writeops.StateInFlight, writeops.Patch{
-		State: writeops.StateUnknown, Code: code, PlanningID: op.PlanningID,
-		ContextJSON: op.ContextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
-	})
+	_, err := e.Ops.MarkUnknown(ctx, op.OpID, code, now.UTC().Format(time.RFC3339))
 	if err != nil {
 		e.noteWrite(err)
 		e.journalErr(step, op.OpID, err)
@@ -291,18 +309,38 @@ func (e *BookingEngine) Resolve(ctx context.Context, in ResolveInput) WriteHTTP 
 			if in.PlanningID == nil || *in.PlanningID <= 0 {
 				return e.fail(422, "VALIDATION", "Нужен planning_id")
 			}
-			if !e.manualBookOK(ctx, op, *in.PlanningID) {
+			ok, err := e.manualBookOK(ctx, op, *in.PlanningID)
+			if err != nil {
+				return e.readDown()
+			}
+			if !ok {
 				return e.fail(422, "VALIDATION", "Запись не подтверждена")
 			}
-		} else if !e.manualCancelOK(ctx, op) {
-			return e.fail(422, "VALIDATION", booking.MsgManualActive)
+		} else {
+			ok, err := e.manualCancelOK(ctx, op)
+			if err != nil {
+				return e.readDown()
+			}
+			if !ok {
+				return e.fail(422, "VALIDATION", booking.MsgManualActive)
+			}
 		}
 	} else if op.Action == writeops.ActionBook {
-		if e.manualBookExists(ctx, op) {
+		exists, err := e.manualBookExists(ctx, op)
+		if err != nil {
+			return e.readDown()
+		}
+		if exists {
 			return e.fail(422, "VALIDATION", "Запись есть, отказ не принят")
 		}
-	} else if !e.manualCancelUnchanged(ctx, op) {
-		return e.fail(422, "VALIDATION", "Запись изменилась")
+	} else {
+		ok, err := e.manualCancelUnchanged(ctx, op)
+		if err != nil {
+			return e.readDown()
+		}
+		if !ok {
+			return e.fail(422, "VALIDATION", "Запись изменилась")
+		}
 	}
 	pid := op.PlanningID
 	if in.PlanningID != nil {
@@ -328,62 +366,78 @@ func (e *BookingEngine) Resolve(ctx context.Context, in ResolveInput) WriteHTTP 
 	return WriteHTTP{Status: 200, Body: map[string]any{"op_id": op.OpID, "state": in.State}}
 }
 
-func (e *BookingEngine) manualBookOK(ctx context.Context, op *writeops.Op, planningID int64) bool {
+func (e *BookingEngine) readDown() WriteHTTP {
+	return e.fail(503, "WRITE_UNAVAILABLE", medialogwrite.PatientForbiddenMessage)
+}
+
+func (e *BookingEngine) manualBookOK(ctx context.Context, op *writeops.Op, planningID int64) (bool, error) {
 	var intent struct {
 		PlSubjID   int64  `json:"pl_subj_id"`
 		PlExamID   int64  `json:"pl_exam_id"`
 		VisitStart string `json:"visit_start"`
 	}
 	if json.Unmarshal([]byte(op.IntentJSON), &intent) != nil {
-		return false
+		return false, nil
 	}
 	row, err := e.Clinic.ReadCreated(ctx, planningID)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return createdMatches(row, op.PatientID, intent.PlSubjID, intent.PlExamID, e.Cfg.LKAuthorMedecinsID, intent.VisitStart)
+	return createdMatches(row, op.PatientID, intent.PlSubjID, intent.PlExamID, e.Cfg.LKAuthorMedecinsID, intent.VisitStart), nil
 }
 
-func (e *BookingEngine) manualBookExists(ctx context.Context, op *writeops.Op) bool {
+func (e *BookingEngine) manualBookExists(ctx context.Context, op *writeops.Op) (bool, error) {
 	var intent struct {
 		PlSubjID   int64  `json:"pl_subj_id"`
 		PlExamID   int64  `json:"pl_exam_id"`
 		VisitStart string `json:"visit_start"`
 	}
 	if json.Unmarshal([]byte(op.IntentJSON), &intent) != nil {
-		return true
+		return true, nil
 	}
 	_, ok, err := e.Clinic.FindIntent(ctx, op.PatientID, intent.PlSubjID, intent.PlExamID, e.Cfg.LKAuthorMedecinsID, intent.VisitStart, "2000-01-01T00:00:00")
-	return err != nil || ok
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
-func (e *BookingEngine) manualCancelOK(ctx context.Context, op *writeops.Op) bool {
-	pred, ok := e.manualCancelPred(ctx, op)
-	return ok && pred.Full
+func (e *BookingEngine) manualCancelOK(ctx context.Context, op *writeops.Op) (bool, error) {
+	pred, ok, err := e.manualCancelPred(ctx, op)
+	if err != nil {
+		return false, err
+	}
+	return ok && pred.Full, nil
 }
 
-func (e *BookingEngine) manualCancelUnchanged(ctx context.Context, op *writeops.Op) bool {
-	pred, ok := e.manualCancelPred(ctx, op)
-	return ok && pred.Unchanged
+func (e *BookingEngine) manualCancelUnchanged(ctx context.Context, op *writeops.Op) (bool, error) {
+	pred, ok, err := e.manualCancelPred(ctx, op)
+	if err != nil {
+		return false, err
+	}
+	return ok && pred.Unchanged, nil
 }
 
-func (e *BookingEngine) manualCancelPred(ctx context.Context, op *writeops.Op) (booking.Predicates, bool) {
+func (e *BookingEngine) manualCancelPred(ctx context.Context, op *writeops.Op) (booking.Predicates, bool, error) {
 	var cc cancelContext
 	var intent struct {
 		PlanningID int64 `json:"planning_id"`
 	}
 	if json.Unmarshal([]byte(op.ContextJSON), &cc) != nil || json.Unmarshal([]byte(op.IntentJSON), &intent) != nil {
-		return booking.Predicates{}, false
+		return booking.Predicates{}, false, nil
 	}
 	after, err := e.Clinic.Snap(ctx, intent.PlanningID, cc.DirAnswID, cc.PatdirecID)
-	if err != nil || !after.ReadOK {
-		return booking.Predicates{}, false
+	if err != nil {
+		return booking.Predicates{}, false, err
 	}
-	return booking.Eval(intent.PlanningID, cc.Variant, cc.Before, after), true
+	if !after.ReadOK {
+		return booking.Predicates{}, false, nil
+	}
+	return booking.Eval(intent.PlanningID, cc.Variant, cc.Before, after), true, nil
 }
 
 func (e *BookingEngine) ListOpen(ctx context.Context, states []string) ([]writeops.Op, error) {
-	allowed := map[string]bool{writeops.StateUnknown: true, writeops.StatePartial: true}
+	allowed := map[string]bool{writeops.StateInFlight: true, writeops.StateUnknown: true, writeops.StatePartial: true}
 	for _, s := range states {
 		if !allowed[s] {
 			return nil, errBadState

@@ -115,15 +115,79 @@ func sameIDs(a, b []int64) bool {
 	return true
 }
 
+// admissionFromSnap rebuilds the admit input from a snapshot so the last read
+// uses the same Admit function as the first.
+func admissionFromSnap(planningID int64, s Snap) Admission {
+	adm := Admission{Found: s.PlanningFound, Active: s.PlanningFound && s.PlanningCancelled == 0 && s.PlanningStatus == 0}
+	if len(s.D) > 0 {
+		adm.VerifiedDocs = len(s.D)
+	}
+	hasAnswer := s.AnswFound || s.AnswBill != nil || s.AnswExpected || s.AnswState != 0 || len(s.A) > 0
+	hasDir := s.DirFound || s.DirExpected || len(s.P) > 0
+	if !hasAnswer && !hasDir {
+		return adm
+	}
+	billNull := s.AnswBill == nil
+	dirID := int64(0)
+	if len(s.P) > 0 {
+		dirID = s.P[0]
+	}
+	if hasAnswer {
+		n := len(s.A)
+		if n == 0 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			id := int64(0)
+			if i < len(s.A) {
+				id = s.A[i]
+			}
+			adm.Answers = append(adm.Answers, Answer{
+				ID: id, PatdirecID: dirID, HasPatdirec: hasDir && len(s.P) == 1,
+				AnswState: s.AnswState, BillNull: billNull,
+			})
+		}
+	}
+	if hasDir {
+		cr := planningID
+		if s.AnswPlanning != nil {
+			cr = *s.AnswPlanning
+		}
+		ids := s.P
+		if len(ids) == 0 {
+			ids = []int64{dirID}
+		}
+		for _, id := range ids {
+			adm.Directions = append(adm.Directions, Direction{
+				ID: id, Cancelled: s.DirCancelled, DirState: s.DirState, PlanningCR: &cr,
+			})
+		}
+		if len(adm.Directions) == 1 {
+			d := adm.Directions[0]
+			adm.OwnDirection = &d
+			if len(adm.Answers) == 1 {
+				adm.Answers[0].PatdirecID = d.ID
+				adm.Answers[0].HasPatdirec = true
+			}
+		}
+	}
+	return adm
+}
+
 // SnapAllows is the last check before pl_CancelVisit. The code is empty when the call may proceed.
-func SnapAllows(first, last Snap) (code string, ok bool) {
+// The last snapshot is admitted by the same Admit function as the first read.
+func SnapAllows(planningID int64, firstVariant string, first, last Snap) (code string, ok bool) {
 	if !last.ReadOK {
 		return "CANCEL_NOT_SUPPORTED", false
 	}
 	if last.PlanningCancelled != 0 {
 		return "ALREADY_CANCELLED", false
 	}
-	if !last.PlanningFound || last.PlanningStatus != 0 || last.AnswBill != nil {
+	if !last.PlanningFound || last.PlanningStatus != 0 {
+		return "CANCEL_NOT_SUPPORTED", false
+	}
+	variant, admitted := Admit(planningID, admissionFromSnap(planningID, last))
+	if !admitted || variant != firstVariant {
 		return "CANCEL_NOT_SUPPORTED", false
 	}
 	if !sameIDs(first.A, last.A) || !sameIDs(first.P, last.P) || !sameIDs(first.D, last.D) {

@@ -80,7 +80,7 @@ func (h BookingHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.API.ListWriteOps(r.Context(), states)
 	if err != nil {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "state: unknown или partial")
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "state: in_flight, unknown или partial")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))

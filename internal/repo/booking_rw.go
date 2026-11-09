@@ -4,22 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-
-	mssql "github.com/denisenkom/go-mssqldb"
 )
-
-const precheckMarker = "LK2_PRECHECK_OPEN_TRAN"
 
 // ProcResult is the transport outcome of one RW batch. The result text is for classification only.
 type ProcResult struct {
-	Sent         bool
-	Finished     bool
-	HasRow       bool
-	PlanningID   *int64
-	Result       string
-	State        int
-	Err          error
-	Precondition bool
+	Sent       bool
+	Finished   bool
+	HasRow     bool
+	PlanningID *int64
+	Result     string
+	State      int
+	Err        error
 }
 
 type AddVisitParams struct {
@@ -67,29 +62,22 @@ SELECT @r AS RESULT;`
 
 const rwLanguageSQL = `SELECT @@LANGUAGE`
 
-func isPrecheck(err error) bool {
-	var ms mssql.Error
-	if !errors.As(err, &ms) {
-		return false
+var errOpenTran = errors.New("open tran")
+
+func tranClear(ctx context.Context, conn *sql.Conn) error {
+	var n int
+	if err := conn.QueryRowContext(ctx, `SELECT @@TRANCOUNT`).Scan(&n); err != nil {
+		return err
 	}
-	if ms.Number != 50000 || ms.Message != precheckMarker {
-		return false
+	if n > 0 {
+		return errOpenTran
 	}
-	if len(ms.All) > 1 {
-		return false
-	}
-	if len(ms.All) == 1 && (ms.All[0].Number != 50000 || ms.All[0].Message != precheckMarker) {
-		return false
-	}
-	return true
+	return nil
 }
 
 func classifyRWErr(err error) ProcResult {
 	if err == nil {
 		return ProcResult{Sent: true, Finished: false}
-	}
-	if isPrecheck(err) {
-		return ProcResult{Sent: true, Finished: false, Precondition: true, Err: err}
 	}
 	return ProcResult{Sent: true, Finished: false, Err: err}
 }
@@ -142,6 +130,9 @@ func ExecAddVisit(ctx context.Context, db *sql.DB, p AddVisitParams) ProcResult 
 		return ProcResult{Sent: false, Err: err}
 	}
 	defer conn.Close()
+	if err := tranClear(ctx, conn); err != nil {
+		return ProcResult{Sent: false, Err: err}
+	}
 	rows, err := conn.QueryContext(ctx, addVisitSQL,
 		sql.Named("visit_s", p.VisitStart),
 		sql.Named("org", p.OrgID),
@@ -186,6 +177,9 @@ func ExecCancelVisit(ctx context.Context, db *sql.DB, p CancelParams) ProcResult
 		return ProcResult{Sent: false, Err: err}
 	}
 	defer conn.Close()
+	if err := tranClear(ctx, conn); err != nil {
+		return ProcResult{Sent: false, Err: err}
+	}
 	rows, err := conn.QueryContext(ctx, cancelVisitSQL,
 		sql.Named("org", p.OrgID),
 		sql.Named("meddep", p.MeddepID),

@@ -49,26 +49,26 @@ func TestRWBatchSQL(t *testing.T) {
 
 func TestClassifyRWErr_UnfinishedUnlessRow(t *testing.T) {
 	open := classifyRWErr(mssql.Error{Message: "the batch failed because of an open tran", Number: 50000})
-	if open.Precondition || open.Finished || !open.Sent {
+	if open.Finished || !open.Sent {
 		t.Fatalf("foreign open tran %+v", open)
 	}
-	marked := classifyRWErr(mssql.Error{Message: precheckMarker, Number: 50000})
-	if !marked.Precondition || marked.Finished || !marked.Sent {
+	marked := classifyRWErr(mssql.Error{Message: "LK2_PRECHECK_OPEN_TRAN", Number: 50000})
+	if marked.Finished || !marked.Sent {
 		t.Fatalf("marker %+v", marked)
 	}
 	prior := classifyRWErr(mssql.Error{
-		Message: precheckMarker, Number: 50000,
-		All: []mssql.Error{{Message: "open tran", Number: 50000}, {Message: precheckMarker, Number: 50000}},
+		Message: "LK2_PRECHECK_OPEN_TRAN", Number: 50000,
+		All: []mssql.Error{{Message: "open tran", Number: 50000}, {Message: "LK2_PRECHECK_OPEN_TRAN", Number: 50000}},
 	})
-	if prior.Precondition || prior.Finished {
+	if prior.Finished || !prior.Sent {
 		t.Fatalf("prior message %+v", prior)
 	}
 	other := classifyRWErr(mssql.Error{Message: "connection reset", Number: 11})
-	if other.Finished || other.Precondition || !other.Sent {
+	if other.Finished || !other.Sent {
 		t.Fatalf("server error %+v", other)
 	}
 	none := classifyRWErr(sql.ErrNoRows)
-	if none.Finished || none.HasRow {
+	if none.Finished || none.HasRow || !none.Sent {
 		t.Fatalf("no row %+v", none)
 	}
 	if other.Err == nil {
@@ -81,7 +81,24 @@ func TestExecAddVisit_FinalShape(t *testing.T) {
 		res := runAdd(t, func(mock sqlmock.Sqlmock) {
 			mock.ExpectQuery("pl_AddVisitContext").WillReturnError(mssql.Error{Number: 50000, Message: "open tran"})
 		})
-		if res.Precondition || res.Finished {
+		if !res.Sent || res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("marker text", func(t *testing.T) {
+		res := runAdd(t, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery("pl_AddVisitContext").WillReturnError(mssql.Error{Number: 50000, Message: "LK2_PRECHECK_OPEN_TRAN"})
+		})
+		if !res.Sent || res.Finished {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("info then row", func(t *testing.T) {
+		res := runAdd(t, func(mock sqlmock.Sqlmock) {
+			rows := sqlmock.NewRows([]string{"PLANNING_ID", "RESULT", "STATE"}).AddRow(int64(9), "ok", int64(0))
+			mock.ExpectQuery("pl_AddVisitContext").WillReturnRows(rows)
+		})
+		if !res.Finished || !res.HasRow || res.PlanningID == nil || *res.PlanningID != 9 {
 			t.Fatalf("%+v", res)
 		}
 	})
@@ -90,7 +107,7 @@ func TestExecAddVisit_FinalShape(t *testing.T) {
 			rows := sqlmock.NewRows([]string{"RESULT", "PLANNING_ID", "STATE"}).AddRow("ok", int64(1), int64(0))
 			mock.ExpectQuery("pl_AddVisitContext").WillReturnRows(rows)
 		})
-		if res.Finished || res.Precondition {
+		if res.Finished || !res.Sent {
 			t.Fatalf("%+v", res)
 		}
 	})
@@ -125,6 +142,7 @@ func TestExecCancelVisit_FinalShape(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Close()
+		expectTran(mock, 0)
 		rows := sqlmock.NewRows([]string{"STATE"}).AddRow(int64(0))
 		mock.ExpectQuery("pl_CancelVisit").WillReturnRows(rows)
 		res := ExecCancelVisit(context.Background(), db, p)
@@ -138,6 +156,7 @@ func TestExecCancelVisit_FinalShape(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Close()
+		expectTran(mock, 0)
 		rows := sqlmock.NewRows([]string{"RESULT"}).AddRow("ok").AddRow("again")
 		mock.ExpectQuery("pl_CancelVisit").WillReturnRows(rows)
 		res := ExecCancelVisit(context.Background(), db, p)
@@ -151,6 +170,7 @@ func TestExecCancelVisit_FinalShape(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Close()
+		expectTran(mock, 0)
 		first := sqlmock.NewRows([]string{"RESULT"}).AddRow("ok")
 		second := sqlmock.NewRows([]string{"RESULT"}).AddRow("more")
 		mock.ExpectQuery("pl_CancelVisit").WillReturnRows(first, second)
@@ -168,6 +188,43 @@ func runAdd(t *testing.T, setup func(sqlmock.Sqlmock)) ProcResult {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	expectTran(mock, 0)
 	setup(mock)
 	return ExecAddVisit(context.Background(), db, AddVisitParams{PatientID: 1, PlSubjID: 1119, PlExamID: 10000688, VisitStart: "2026-11-08T10:00:00", OrgID: 496, MeddepID: 1, AuthorID: 2})
+}
+
+func expectTran(mock sqlmock.Sqlmock, n int) {
+	mock.ExpectQuery("@@TRANCOUNT").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(n))
+}
+
+func TestExecAddVisit_OpenTranNotSent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	expectTran(mock, 1)
+	res := ExecAddVisit(context.Background(), db, AddVisitParams{PatientID: 1, VisitStart: "2026-11-08T10:00:00"})
+	if res.Sent || res.Finished {
+		t.Fatalf("%+v", res)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecAddVisit_TranQueryErrorNotSent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery("@@TRANCOUNT").WillReturnError(sql.ErrConnDone)
+	res := ExecAddVisit(context.Background(), db, AddVisitParams{PatientID: 1, VisitStart: "2026-11-08T10:00:00"})
+	if res.Sent || res.Finished {
+		t.Fatalf("%+v", res)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }

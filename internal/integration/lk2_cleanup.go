@@ -3,19 +3,46 @@ package integration
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 )
 
-func notePlanningID(ids *[]int64, id int64) {
-	if id > 0 {
-		*ids = append(*ids, id)
-	}
+var (
+	errCancelAlready     = errors.New("already cancelled")
+	errCancelUnsupported = errors.New("cancel not supported")
+)
+
+type idList struct {
+	mu  sync.Mutex
+	ids []int64
 }
 
-func cancelEach(t testing.TB, ids []int64, cancel func(int64) error) {
+func (l *idList) add(id int64) {
+	if id <= 0 {
+		return
+	}
+	l.mu.Lock()
+	l.ids = append(l.ids, id)
+	l.mu.Unlock()
+}
+
+func (l *idList) snapshot() []int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]int64, len(l.ids))
+	copy(out, l.ids)
+	return out
+}
+
+func notePlanningID(list *idList, id int64) {
+	list.add(id)
+}
+
+func cancelEach(t testing.TB, ids []int64, cancel func(int64, string) error, confirm func(int64) (bool, error)) {
 	t.Helper()
 	seen := map[int64]bool{}
 	var failed []int64
@@ -24,17 +51,32 @@ func cancelEach(t testing.TB, ids []int64, cancel func(int64) error) {
 			continue
 		}
 		seen[id] = true
-		if err := cancel(id); err != nil {
-			failed = append(failed, id)
-			t.Errorf("planning_id=%d %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", id, err)
+		key := cleanupKey()
+		err := cancel(id, key)
+		if err == nil {
+			continue
 		}
+		retry := cancel(id, key)
+		if retry == nil {
+			continue
+		}
+		if errors.Is(retry, errCancelAlready) || errors.Is(retry, errCancelUnsupported) {
+			if confirm != nil {
+				ok, verr := confirm(id)
+				if verr == nil && ok {
+					continue
+				}
+			}
+		}
+		failed = append(failed, id)
+		t.Errorf("planning_id=%d %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", id, retry)
 	}
 	if len(failed) > 0 {
 		t.Errorf("не отменены planning_id: %v", failed)
 	}
 }
 
-func cancelAppointment(client *http.Client, baseURL, bearer string, id int64) error {
+func cancelAppointment(client *http.Client, baseURL, bearer string, id int64, key string) error {
 	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/me/appointments/%d", baseURL, id), nil)
 	if err != nil {
 		return err
@@ -42,7 +84,10 @@ func cancelAppointment(client *http.Client, baseURL, bearer string, id int64) er
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	req.Header.Set("Idempotency-Key", cleanupKey())
+	if key == "" {
+		key = cleanupKey()
+	}
+	req.Header.Set("Idempotency-Key", key)
 	res, err := client.Do(req)
 	if err != nil {
 		return err
@@ -60,8 +105,14 @@ func cancelAppointment(client *http.Client, baseURL, bearer string, id int64) er
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return fmt.Errorf("status=%d", res.StatusCode)
 	}
-	if res.StatusCode == http.StatusOK || env.ErrorDetails.Code == "ALREADY_CANCELLED" {
+	if res.StatusCode == http.StatusOK {
 		return nil
+	}
+	if env.ErrorDetails.Code == "ALREADY_CANCELLED" {
+		return errCancelAlready
+	}
+	if env.ErrorDetails.Code == "CANCEL_NOT_SUPPORTED" {
+		return errCancelUnsupported
 	}
 	return fmt.Errorf("status=%d code=%s", res.StatusCode, env.ErrorDetails.Code)
 }

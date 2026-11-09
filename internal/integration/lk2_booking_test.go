@@ -38,8 +38,17 @@ func TestLK2(t *testing.T) {
 		t.Fatal("no slot after cancel threshold")
 	}
 	t.Run("main", func(t *testing.T) { env.main(t, env.slots[0]) })
+	if t.Failed() {
+		t.FailNow()
+	}
 	t.Run("replay", func(t *testing.T) { env.replay(t, env.slots[1]) })
+	if t.Failed() {
+		t.FailNow()
+	}
 	t.Run("two", func(t *testing.T) { env.two(t, env.slots[2]) })
+	if t.Failed() {
+		t.FailNow()
+	}
 	env.failBad(t)
 	if n := env.activeCount(t); n != 0 {
 		t.Fatalf("patient 1 still has %d active rows on line 1119", n)
@@ -52,16 +61,19 @@ type slotOffer struct {
 }
 
 type liveEnv struct {
-	t      *testing.T
-	cfg    config.Config
-	ro     *sql.DB
-	rw     *sql.DB
-	sqlite *sql.DB
-	srv    *httptest.Server
-	client *http.Client
-	jwt    string
-	slots  []slotOffer
-	ids    []int64
+	t       *testing.T
+	cfg     config.Config
+	ro      *sql.DB
+	rw      *sql.DB
+	sqlite  *sql.DB
+	srv     *httptest.Server
+	client  *http.Client
+	jwt     string
+	slots   []slotOffer
+	ids     idList
+	runDir  string
+	started time.Time
+	logf    *os.File
 }
 
 func newLive(t *testing.T) *liveEnv {
@@ -92,8 +104,21 @@ func newLive(t *testing.T) *liveEnv {
 	if !pair {
 		t.Fatal("LK_BOOKING_PAIRS must include 1119:10000688")
 	}
+	if err := liveJournalBusy(os.Getenv("LK_LIVE_API_URL"), os.Getenv("LK_LIVE_API_TOKEN")); err != nil {
+		t.Fatalf("журнал стенда: %v", err)
+	}
 	if cfg.JWT.Secret == "" {
 		cfg.JWT.Secret = "integration-write-test-secret-32b"
+	}
+	runDir := filepath.Join(".", "b7-run-"+time.Now().Format("20060102-150405"))
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("b7 run", runDir)
+	t.Log("b7 run", runDir)
+	logf, err := os.Create(filepath.Join(runDir, "handler.log"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	ro, err := db.OpenMSSQL(cfg.MSSQL)
 	if err != nil {
@@ -111,7 +136,7 @@ func newLive(t *testing.T) *liveEnv {
 		rw.Close()
 		t.Fatalf("rw language %q", lang)
 	}
-	lite, err := db.OpenSQLite(filepath.Join(t.TempDir(), "gateway.db"))
+	lite, err := db.OpenSQLite(filepath.Join(runDir, "gateway.db"))
 	if err != nil {
 		ro.Close()
 		rw.Close()
@@ -123,18 +148,25 @@ func newLive(t *testing.T) *liveEnv {
 		lite.Close()
 		t.Fatal(err)
 	}
-	env := &liveEnv{t: t, cfg: cfg, ro: ro, rw: rw, sqlite: lite, client: &http.Client{Timeout: 90 * time.Second}}
+	env := &liveEnv{
+		t: t, cfg: cfg, ro: ro, rw: rw, sqlite: lite, client: &http.Client{Timeout: 90 * time.Second},
+		runDir: runDir, started: time.Now(), logf: logf,
+	}
+	t.Cleanup(func() {
+		fmt.Println("b7 run", runDir)
+		t.Log("b7 run", runDir)
+	})
 	t.Cleanup(env.close)
-	if n := env.activeCount(t); n != 0 {
+	if n := env.futureActive(t); n != 0 {
 		env.close()
-		t.Fatalf("patient 1 already has %d active rows on line 1119", n)
+		t.Fatalf("patient 1 already has %d future active rows on line 1119", n)
 	}
 	var open int
 	if err := lite.QueryRow(`SELECT COUNT(*) FROM lk_write_ops WHERE state IN ('in_flight','unknown','partial')`).Scan(&open); err != nil || open != 0 {
 		env.close()
 		t.Fatalf("open ops %d", open)
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.NewTextHandler(logf, nil))
 	svc := service.New(ro, rw, lite, repo.New(ro), logger, 306, cfg)
 	svc.RefreshBookingPairs(ctx)
 	svc.RefreshRWLanguage(ctx)
@@ -146,6 +178,7 @@ func newLive(t *testing.T) *liveEnv {
 	}
 	env.jwt = tok
 	env.slots = env.loadSlots(t)
+	t.Cleanup(env.reconcileOwned)
 	t.Cleanup(env.cancelAll)
 	return env
 }
@@ -167,6 +200,10 @@ func (e *liveEnv) close() {
 		_ = e.sqlite.Close()
 		e.sqlite = nil
 	}
+	if e.logf != nil {
+		_ = e.logf.Close()
+		e.logf = nil
+	}
 }
 
 func (e *liveEnv) activeCount(t *testing.T) int {
@@ -181,6 +218,58 @@ WHERE PATIENTS_ID = @pid AND PL_SUBJ_ID = @subj
 		t.Fatal(err)
 	}
 	return n
+}
+
+func (e *liveEnv) futureActive(t *testing.T) int {
+	t.Helper()
+	now := time.Now().In(time.FixedZone("MSK", 3*3600)).Format("2006-01-02T15:04:05")
+	var n int
+	err := e.ro.QueryRowContext(context.Background(), `
+SELECT COUNT(*) FROM PLANNING
+WHERE PATIENTS_ID = @pid AND PL_SUBJ_ID = @subj
+  AND ISNULL(CANCELLED, 0) = 0 AND ISNULL(STATUS, 0) = 0
+  AND DATE_START >= CONVERT(datetime, @now, 126)`,
+		sql.Named("pid", int64(1)), sql.Named("subj", int64(1119)), sql.Named("now", now)).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func (e *liveEnv) reconcileOwned() {
+	if e.ro == nil {
+		return
+	}
+	since := e.started.In(time.FixedZone("MSK", 3*3600)).Format("2006-01-02T15:04:05")
+	rows, err := e.ro.QueryContext(context.Background(), `
+SELECT PLANNING_ID FROM PLANNING
+WHERE PATIENTS_ID = @pid AND PL_SUBJ_ID = @subj
+  AND MEDECINS_CREATOR_ID = @author
+  AND CREATE_DATE_TIME >= CONVERT(datetime, @since, 126)
+  AND ISNULL(CANCELLED, 0) = 0 AND ISNULL(STATUS, 0) = 0`,
+		sql.Named("pid", int64(1)), sql.Named("subj", int64(1119)),
+		sql.Named("author", e.cfg.LKAuthorMedecinsID), sql.Named("since", since))
+	if err != nil {
+		e.t.Errorf("сверка после очистки: %v", err)
+		return
+	}
+	defer rows.Close()
+	var left []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			e.t.Errorf("сверка после очистки: %v", err)
+			return
+		}
+		left = append(left, id)
+	}
+	if err := rows.Err(); err != nil {
+		e.t.Errorf("сверка после очистки: %v", err)
+		return
+	}
+	if len(left) > 0 {
+		e.t.Errorf("остались действующие planning_id %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", left)
+	}
 }
 
 func (e *liveEnv) loadSlots(t *testing.T) []slotOffer {
@@ -345,18 +434,31 @@ func (e *liveEnv) postBook(t *testing.T, token, key string) (int, string, int64)
 
 func (e *liveEnv) cancel(t *testing.T, id int64) {
 	t.Helper()
-	if err := e.cancelQuiet(id); err != nil {
+	if err := e.cancelQuiet(id, cleanupKey()); err != nil {
 		e.failBad(t)
 		t.Fatalf("planning_id=%d %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", id, err)
 	}
 }
 
-func (e *liveEnv) cancelQuiet(id int64) error {
-	return cancelAppointment(e.client, e.srv.URL, e.jwt, id)
+func (e *liveEnv) cancelQuiet(id int64, key string) error {
+	return cancelAppointment(e.client, e.srv.URL, e.jwt, id, key)
+}
+
+func (e *liveEnv) confirmedCancelled(id int64) (bool, error) {
+	var cancelled sql.NullInt64
+	err := e.ro.QueryRowContext(context.Background(), `
+SELECT CAST(ISNULL(CANCELLED, 0) AS int) FROM PLANNING WHERE PLANNING_ID = @id`, sql.Named("id", id)).Scan(&cancelled)
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return cancelled.Int64 == 1, nil
 }
 
 func (e *liveEnv) cancelAll() {
-	cancelEach(e.t, e.ids, e.cancelQuiet)
+	cancelEach(e.t, e.ids.snapshot(), e.cancelQuiet, e.confirmedCancelled)
 }
 
 func (e *liveEnv) failBad(t *testing.T) {

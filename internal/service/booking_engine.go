@@ -63,6 +63,7 @@ type BookingEngine struct {
 	recMu          sync.Mutex
 	lastReconcile  map[string]time.Time
 	journalLogAt   map[string]time.Time
+	lastProbe      time.Time
 	journalDown    atomic.Bool
 	liveMu         sync.Mutex
 	live           map[string]struct{}
@@ -264,7 +265,7 @@ func createdMatches(row repo.CreatedRow, patient, subj, exam, author int64, star
 }
 
 func bookOutcome(res repo.ProcResult) booking.Outcome {
-	if res.Precondition || !res.Sent {
+	if !res.Sent {
 		return booking.Outcome{Code: "WRITE_UNAVAILABLE", HTTPStatus: 503, State: booking.StateRejected}
 	}
 	if !res.Finished || !res.HasRow {
@@ -357,7 +358,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	if err != nil || !again.Found || again.PatientID != patientID || again.PlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(again.PlSubjID) != nil || again.Cancelled != 0 || again.Status != 0 {
 		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
 	}
-	if out, ok := e.cancelGate(ctx, planningID, again, now); !ok {
+	if out, ok := e.cancelGate(ctx, planningID, again, e.now()); !ok {
 		return out
 	}
 	v1, s1, out, ok := e.loadCancelSnap(ctx, planningID)
@@ -371,7 +372,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	if v1.variant != v2.variant {
 		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
 	}
-	if code, allow := booking.SnapAllows(s1, s2); !allow {
+	if code, allow := booking.SnapAllows(planningID, v1.variant, s1, s2); !allow {
 		msg := booking.MsgCancelSupport
 		if code == "ALREADY_CANCELLED" {
 			msg = booking.MsgAlreadyCancel
@@ -415,7 +416,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 			return WriteHTTP{}
 		}
 	}
-	if res.Precondition || !res.Sent {
+	if !res.Sent {
 		if alt := e.finish(ctx, owned, booking.StateRejected, "WRITE_UNAVAILABLE", op.PlanningID, owned.ContextJSON, now); alt.Status != 0 {
 			return alt
 		}
@@ -470,7 +471,7 @@ func (e *BookingEngine) cancelGate(ctx context.Context, planningID int64, owner 
 		minH = 24
 	}
 	if at.Before(now.In(at.Location()).Add(time.Duration(minH) * time.Hour)) {
-		return e.fail(422, "CANCEL_TOO_LATE", booking.Message("CANCEL_TOO_LATE")), false
+		return e.fail(409, "CANCEL_TOO_LATE", booking.Message("CANCEL_TOO_LATE")), false
 	}
 	return WriteHTTP{}, true
 }

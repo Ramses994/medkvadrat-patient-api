@@ -107,6 +107,11 @@ CREATE TABLE IF NOT EXISTS lk_write_ops (
   UNIQUE(patient_id, action, request_id)
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_lk_write_ops_patient_state ON lk_write_ops(patient_id, state);`,
+		`
+CREATE TABLE IF NOT EXISTS lk_health (
+  id INTEGER PRIMARY KEY,
+  checked_at TEXT NOT NULL
+);`,
 	}
 
 	for i, s := range stmts {

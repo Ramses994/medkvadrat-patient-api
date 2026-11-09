@@ -40,6 +40,22 @@ LK_INTEGRATION_WRITE=1 go test -tags integration_write -count=1 -p 1 ./internal/
 
 Allowlists must be exactly patient `1` and line `1119`, `LK_BOOKING_PAIRS` must include `1119:10000688`, and the RW login language must be `us_english`. The test refuses to start otherwise. It books only slots at least `CANCEL_MIN_HOURS_BEFORE` plus 2 hours ahead and cancels them through the same API.
 
+## Запуск B7 владельцем
+
+B7 — это `TestLK2`. Он пишет в клинику. Из CI его не запускают.
+
+Перед стартом нужны `LK_INTEGRATION_WRITE=1`, `LK_LIVE_API_URL` (стенд API) и `LK_LIVE_API_TOKEN` (внутренний токен стенда). Тест вызывает `GET /api/internal/write-ops?state=in_flight,unknown,partial`. Непустой список или ошибка запроса — тест не стартует.
+
+Чтение до сценариев: у пациента `1` на линии `1119` нет действующих будущих записей. Слоты берутся не раньше `сейчас + CANCEL_MIN_HOURS_BEFORE + 2 часа`. Иначе тест не стартует.
+
+Списки допуска — ровно пациент `1` и линия `1119`, пара `1119:10000688`, язык RW-логина `us_english`.
+
+Первая ошибка сценария останавливает остальные. Записанные `planning_id` всё равно уходят в очистку. Отмена повторяется с тем же ключом идемпотентности. Если ответ «уже отменена» или `CANCEL_NOT_SUPPORTED`, тест проверяет чтением, что запись отменена или строки нет.
+
+Лог обработчика и `gateway.db` остаются в каталоге `./b7-run-<время>/`. Путь печатается в начале и в конце.
+
+После очистки тест ещё раз читает записи пациента `1` на линии `1119` с автором ЛК, созданные после старта. Действующая запись — ошибка со списком `planning_id` и инструкцией: Расписание → линия 1119 → запись → «Пациент не придёт».
+
 ## Staff dashboard
 
 Internal schedule board for three branches (staff session, not `API_TOKEN`):

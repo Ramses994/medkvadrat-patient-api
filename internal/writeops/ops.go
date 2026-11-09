@@ -150,6 +150,28 @@ func isConflict(err error) bool {
 	return strings.Contains(msg, "unique") || strings.Contains(msg, "constraint")
 }
 
+// MarkUnknown moves in_flight to unknown. It does not write context_json or planning_id.
+func (r *Repo) MarkUnknown(ctx context.Context, opID, code, finishedAt string) (bool, error) {
+	res, err := r.exec(ctx, `
+UPDATE lk_write_ops SET state = ?, code = ?, finished_at = ?
+WHERE op_id = ? AND state = ?`,
+		StateUnknown, code, nullStr(finishedAt), opID, StateInFlight)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// ProbeHealth writes one health row. A successful write means the journal file accepts writes.
+func (r *Repo) ProbeHealth(ctx context.Context, at time.Time) error {
+	_, err := r.exec(ctx, `INSERT OR REPLACE INTO lk_health (id, checked_at) VALUES (1, ?)`, at.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
 func (r *Repo) Transition(ctx context.Context, opID, from string, p Patch) (bool, error) {
 	res, err := r.exec(ctx, `
 UPDATE lk_write_ops

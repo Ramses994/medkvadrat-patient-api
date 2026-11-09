@@ -42,6 +42,7 @@ type fakeClinic struct {
 	snapErr   error
 	foundID   int64
 	found     bool
+	findErr   error
 	noDoctor  map[int64]bool
 	booked    []repo.AddVisitParams
 }
@@ -103,6 +104,9 @@ func (f *fakeClinic) FindIntent(context.Context, int64, int64, int64, int64, str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.findCalls++
+	if f.findErr != nil {
+		return 0, false, f.findErr
+	}
 	return f.foundID, f.found, nil
 }
 
@@ -944,6 +948,7 @@ func TestCancel_LastSnapshotBlocksProc(t *testing.T) {
 		{"bill", booking.Snap{ReadOK: true, PlanningFound: true, AnswBill: &bill}, "CANCEL_NOT_SUPPORTED"},
 		{"link", booking.Snap{ReadOK: true, PlanningFound: true, A: []int64{8}}, "CANCEL_NOT_SUPPORTED"},
 		{"cancelled", booking.Snap{ReadOK: true, PlanningFound: true, PlanningCancelled: 1}, "ALREADY_CANCELLED"},
+		{"answ state", booking.Snap{ReadOK: true, PlanningFound: true, AnswFound: true, AnswState: 2}, "CANCEL_NOT_SUPPORTED"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1153,5 +1158,118 @@ func TestJournalUpdateRefusalBlocksNewBook(t *testing.T) {
 	out := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), "56565656-5656-4566-8566-565656565656")
 	if out.Status != http.StatusServiceUnavailable || out.Code != "WRITE_UNAVAILABLE" || p.calls.Load() != 0 {
 		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+}
+
+func TestManualReject_ReadErrorStaysUnknown(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, c, p, _ := testEngine(t)
+	ctx := context.Background()
+	key := "61616161-6161-4161-8161-616161616161"
+	op := e.newOp(1, writeops.ActionBook, key, writeops.BookIntent(1119, 10000688, "2026-11-08T10:00:00"), `{}`, now.Add(-20*time.Minute))
+	if err := e.Ops.InsertInFlight(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := e.Ops.Find(ctx, 1, writeops.ActionBook, key)
+	if err != nil || saved == nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Ops.Transition(ctx, saved.OpID, writeops.StateInFlight, writeops.Patch{State: writeops.StateUnknown, Code: "BOOKING_UNKNOWN", ContextJSON: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	c.findErr = errors.New("mssql down")
+	out := e.Resolve(ctx, ResolveInput{OpID: saved.OpID, State: writeops.StateManualRejected, Note: "other", Actor: "s2s"})
+	if out.Status != http.StatusServiceUnavailable || out.Code != "WRITE_UNAVAILABLE" {
+		t.Fatalf("resolve %d %s", out.Status, out.Code)
+	}
+	got, err := e.Ops.Get(ctx, saved.OpID)
+	if err != nil || got == nil || got.State != writeops.StateUnknown {
+		t.Fatalf("state %+v err=%v", got, err)
+	}
+	again := e.Book(ctx, 1, tok(t, 1, 1119, "2026-11-09T10:00:00", now), "62626262-6262-4262-8262-626262626262")
+	if again.Status != http.StatusConflict || again.Code != "OPERATION_IN_PROGRESS" || p.calls.Load() != 0 {
+		t.Fatalf("book %d %s calls=%d", again.Status, again.Code, p.calls.Load())
+	}
+}
+
+func TestMarkUnknown_KeepsSavedContext(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, _, _, _ := testEngine(t)
+	ctx := context.Background()
+	key := "63636363-6363-4363-8363-636363636363"
+	op := e.newOp(1, writeops.ActionBook, key, writeops.BookIntent(1119, 10000688, "2026-11-08T10:00:00"), `{}`, now.Add(-3*time.Minute))
+	if err := e.Ops.InsertInFlight(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := e.Ops.Find(ctx, 1, writeops.ActionBook, key)
+	if err != nil || saved == nil {
+		t.Fatal(err)
+	}
+	ok, err := e.Ops.SaveContext(ctx, saved.OpID, `{"org_id":496}`, sql.NullInt64{Int64: 77, Valid: true})
+	if err != nil || !ok {
+		t.Fatalf("save ok=%v err=%v", ok, err)
+	}
+	stale := *saved
+	stale.ContextJSON = `{}`
+	stale.PlanningID = sql.NullInt64{}
+	e.markUnknown(ctx, stale, "expire", now)
+	got, err := e.Ops.Get(ctx, saved.OpID)
+	if err != nil || got == nil || got.State != writeops.StateUnknown {
+		t.Fatalf("state %+v err=%v", got, err)
+	}
+	if got.ContextJSON != `{"org_id":496}` || !got.PlanningID.Valid || got.PlanningID.Int64 != 77 {
+		t.Fatalf("context %s planning %+v", got.ContextJSON, got.PlanningID)
+	}
+}
+
+func TestCancel_ThresholdPassesWhileWaiting(t *testing.T) {
+	msk := time.FixedZone("MSK", 3*3600)
+	clock := time.Date(2026, 11, 7, 9, 0, 0, 0, msk)
+	e, c, p, _ := testEngine(t)
+	e.Now = func() time.Time { return clock }
+	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
+	e.BeforeLineLock = func() {
+		clock = time.Date(2026, 11, 7, 11, 0, 0, 0, msk)
+	}
+	p.record = false
+	out := e.Cancel(context.Background(), 1, 5, "64646464-6464-4464-8464-646464646464")
+	if out.Status != http.StatusConflict || out.Code != "CANCEL_TOO_LATE" || p.calls.Load() != 0 {
+		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
+	}
+}
+
+func TestJournalInsertProbeClearsDegraded(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	e, _, p, _ := testEngine(t)
+	e.Now = func() time.Time { return now }
+	e.Ops.RejectWrites = func(query string) error {
+		if strings.Contains(query, "lk_write_ops") && strings.Contains(strings.ToUpper(query), "INSERT") {
+			return errors.New("insert refused")
+		}
+		return nil
+	}
+	out := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), "65656565-6565-4565-8565-656565656565")
+	if out.Status != http.StatusServiceUnavailable || !e.journalDown.Load() || p.calls.Load() != 0 {
+		t.Fatalf("status=%d down=%v calls=%d", out.Status, e.journalDown.Load(), p.calls.Load())
+	}
+	e.Ops.RejectWrites = nil
+	e.probeJournal(context.Background())
+	if e.journalDown.Load() {
+		t.Fatal("flag still set")
+	}
+	fresh := e.Book(context.Background(), 1, tok(t, 1, 1119, "2026-11-08T10:00:00", now), "66666666-6666-4666-8666-666666666666")
+	if fresh.Status != http.StatusCreated || p.calls.Load() != 1 {
+		t.Fatalf("fresh %d %s calls=%d", fresh.Status, fresh.Code, p.calls.Load())
+	}
+}
+
+func TestBookOutcome_BatchErrorIsUnknown(t *testing.T) {
+	out := bookOutcome(repo.ProcResult{Sent: true, Finished: false, Err: errors.New("LK2_PRECHECK_OPEN_TRAN")})
+	if out.State != booking.StateUnknown || out.Code != "BOOKING_UNKNOWN" {
+		t.Fatalf("%+v", out)
+	}
+	blocked := bookOutcome(repo.ProcResult{Sent: false, Err: errors.New("open tran")})
+	if blocked.State != booking.StateRejected || blocked.Code != "WRITE_UNAVAILABLE" {
+		t.Fatalf("%+v", blocked)
 	}
 }
