@@ -2,14 +2,15 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/db"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 	_ "modernc.org/sqlite"
@@ -17,7 +18,7 @@ import (
 
 func TestStaffUpdate_TwoAdminsOneConflict(t *testing.T) {
 	ctx := context.Background()
-	db, err := sql.Open("sqlite", "file:staff_last_admin?mode=memory&cache=shared")
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

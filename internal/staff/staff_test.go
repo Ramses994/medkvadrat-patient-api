@@ -4,16 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/db"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 	_ "modernc.org/sqlite"
 )
 
 func openStaffDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:staff_"+t.Name()+"?mode=memory&cache=shared")
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +110,9 @@ func TestChangePassword_MinLengthAndClearsMustChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !p.MustChangePassword {
+		t.Fatal("short bootstrap password must require a change on first login")
+	}
 	if err := s.ChangePassword(ctx, p.ID, "secret", "short"); !errors.Is(err, ErrShortPassword) {
 		t.Fatalf("short: %v", err)
 	}
@@ -163,5 +168,60 @@ func TestRegistrarKashirkaDoesNotSeeKurkino(t *testing.T) {
 		if !mgr.Allows(id) {
 			t.Fatalf("manager must see %d", id)
 		}
+	}
+}
+
+func TestBootstrapPasswordWarning_ShortOnly(t *testing.T) {
+	if BootstrapPasswordWarning("secret") != "смените пароль администратора при первом входе" {
+		t.Fatal(BootstrapPasswordWarning("secret"))
+	}
+	if BootstrapPasswordWarning("password123") != "" || BootstrapPasswordWarning("") != "" {
+		t.Fatal("a long or empty password is not this warning")
+	}
+}
+
+func TestAdminAndManagerStoreEveryBranch(t *testing.T) {
+	db := openStaffDB(t)
+	ctx := context.Background()
+	s := New(db)
+	mgr, _, err := s.Create(ctx, CreateUser{
+		Login: "mgr", FullName: "M", Role: RoleManager, Branches: "106", Password: "password10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mgr.Branches != "*" {
+		t.Fatalf("manager branches=%q", mgr.Branches)
+	}
+	adm, _, err := s.Create(ctx, CreateUser{
+		Login: "adm", FullName: "A", Role: RoleAdmin, Branches: "3", Password: "password10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adm.Branches != "*" {
+		t.Fatalf("admin branches=%q", adm.Branches)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE staff_users SET branches = '106' WHERE id = ?`, adm.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var branches string
+	if err := db.QueryRowContext(ctx, `SELECT branches FROM staff_users WHERE id = ?`, adm.ID).Scan(&branches); err != nil {
+		t.Fatal(err)
+	}
+	if branches != "*" {
+		t.Fatalf("migrated branches=%q", branches)
+	}
+	reg, _, err := s.Create(ctx, CreateUser{
+		Login: "reg", FullName: "R", Role: RoleRegistrar, Branches: "106", Password: "password10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Branches != "106" {
+		t.Fatalf("registrar branches=%q", reg.Branches)
 	}
 }

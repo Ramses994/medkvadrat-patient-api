@@ -29,22 +29,35 @@ func (f *fakeWaitlistSvc) DashboardWaitlist(ctx context.Context, filter confirma
 	return f.page, nil
 }
 
-func (f *fakeWaitlistSvc) PatchRegistryWaitlist(ctx context.Context, planningID int64, version int, outcome, action, updatedBy string) (confirmations.MisWork, error) {
-	if f.err != nil {
-		return confirmations.MisWork{PlanningID: planningID, Version: version}, f.err
+func (f *fakeWaitlistSvc) PatchRegistryWaitlist(ctx context.Context, planningID int64, version int, outcome, action, updatedBy string) (confirmations.DashboardItem, error) {
+	item := confirmations.DashboardItem{
+		ID: planningID, PlanningID: planningID, Source: "registry", Version: version,
+		MedialogState: "запись действует",
 	}
-	return confirmations.MisWork{PlanningID: planningID, Status: "contacted", Outcome: outcome, UpdatedBy: updatedBy, Version: version + 1}, nil
+	if f.err != nil {
+		return item, f.err
+	}
+	item.Status = "contacted"
+	item.Outcome = outcome
+	item.UpdatedBy = updatedBy
+	item.Version = version + 1
+	return item, nil
 }
 
-func (f *fakeWaitlistSvc) PatchWaitlist(ctx context.Context, id int64, version int, outcome, action, updatedBy string) (confirmations.WaitlistRow, error) {
-	if f.err != nil {
-		return confirmations.WaitlistRow{ID: id, Version: version}, f.err
-	}
-	return confirmations.WaitlistRow{
+func (f *fakeWaitlistSvc) PatchWaitlist(ctx context.Context, id int64, version int, outcome, action, updatedBy string) (confirmations.DashboardItem, error) {
+	item := confirmations.DashboardItem{
 		ID: id, PlanningID: 10, PatientID: 20, Reason: "declined",
-		Status: "contacted", Outcome: outcome, CreatedAt: "2026-10-22T00:00:00Z",
-		CreatedAtMSK: "2026-10-22 03:00:00", BranchID: 106, UpdatedBy: updatedBy, Version: version + 1,
-	}, nil
+		CreatedAt: "2026-10-22T00:00:00Z", CreatedAtMSK: "2026-10-22 03:00:00",
+		BranchID: 106, Source: "max", MedialogState: "запись действует", Version: version,
+	}
+	if f.err != nil {
+		return item, f.err
+	}
+	item.Status = "contacted"
+	item.Outcome = outcome
+	item.UpdatedBy = updatedBy
+	item.Version = version + 1
+	return item, nil
 }
 
 func TestGolden_Waitlist_List_OK(t *testing.T) {
@@ -78,7 +91,7 @@ func TestWaitlist_Update_409Changed(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "Строку уже изменил другой сотрудник") {
+	if !strings.Contains(w.Body.String(), "Строку уже изменил другой сотрудник") || !strings.Contains(w.Body.String(), `"medialog_state":"запись действует"`) {
 		t.Fatalf("body=%s", w.Body.String())
 	}
 	if w.Header().Get("Cache-Control") != "no-store" {

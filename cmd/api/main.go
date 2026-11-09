@@ -37,6 +37,9 @@ func main() {
 	if strings.TrimSpace(cfg.Dashboard.Password) == "" || staffsession.WeakSecret([]byte(cfg.Dashboard.Secret)) {
 		logger.Warn("WARNING: dashboard disabled — DASHBOARD_PASSWORD empty or DASHBOARD_SECRET shorter than 32 bytes")
 	}
+	if msg := staff.BootstrapPasswordWarning(cfg.Dashboard.Password); msg != "" {
+		logger.Warn(msg)
+	}
 
 	mssql, err := db.OpenMSSQL(cfg.MSSQL)
 	if err != nil {

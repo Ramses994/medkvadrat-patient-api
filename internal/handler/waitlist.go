@@ -18,8 +18,8 @@ import (
 
 type WaitlistService interface {
 	DashboardWaitlist(ctx context.Context, filter confirmations.WaitlistListFilter) (confirmations.DashboardPage, error)
-	PatchWaitlist(ctx context.Context, id int64, version int, outcome, action, updatedBy string) (confirmations.WaitlistRow, error)
-	PatchRegistryWaitlist(ctx context.Context, planningID int64, version int, outcome, action, updatedBy string) (confirmations.MisWork, error)
+	PatchWaitlist(ctx context.Context, id int64, version int, outcome, action, updatedBy string) (confirmations.DashboardItem, error)
+	PatchRegistryWaitlist(ctx context.Context, planningID int64, version int, outcome, action, updatedBy string) (confirmations.DashboardItem, error)
 }
 
 type WaitlistHandler struct {
@@ -119,17 +119,7 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]waitlistItemDTO, 0, len(pageData.Items))
 	for _, it := range pageData.Items {
-		items = append(items, waitlistItemDTO{
-			ID: it.ID, PlanningID: it.PlanningID, PatientID: it.PatientID,
-			Reason: it.Reason, Status: it.Status, Outcome: it.Outcome,
-			CreatedAt: it.CreatedAt, CreatedAtMSK: it.CreatedAtMSK, BranchID: it.BranchID,
-			PatientName: it.PatientName, PatientPhone: it.PatientPhone, PatientBirth: it.PatientBirth,
-			OrigDateStart: it.OrigDateStart, OrigDoctor: it.OrigDoctor, OrigService: it.OrigService,
-			MedialogState: it.MedialogState, FutureLabel: it.FutureLabel,
-			FutureDateStart: it.FutureDateStart, FutureDoctor: it.FutureDoctor, FutureService: it.FutureService,
-			Source: it.Source, Comment: it.Comment, CreatorName: it.CreatorName,
-			UpdatedBy: it.UpdatedBy, UpdatedAt: it.UpdatedAt, Version: it.Version,
-		})
+		items = append(items, itemDTO(it))
 	}
 	response.OK(w, waitlistPageDTO{
 		Items: items, Total: pageData.Total, OpenTotal: pageData.OpenTotal,
@@ -163,39 +153,36 @@ func (h WaitlistHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	}
 	by := middleware.StaffUpdatedBy(r)
 	if source == "registry" {
-		work, err := h.Svc.PatchRegistryWaitlist(r.Context(), id, req.Version, req.Outcome, req.Action, by)
+		item, err := h.Svc.PatchRegistryWaitlist(r.Context(), id, req.Version, req.Outcome, req.Action, by)
 		if err != nil {
-			h.writeWaitlistErr(w, err, id, workItem(work))
+			h.writeWaitlistErr(w, err, id, itemDTO(item))
 			return
 		}
-		response.OK(w, workItem(work))
+		response.OK(w, itemDTO(item))
 		return
 	}
 	rec, err := h.Svc.PatchWaitlist(r.Context(), id, req.Version, req.Outcome, req.Action, by)
 	if err != nil {
-		h.writeWaitlistErr(w, err, id, rowItem(rec))
+		h.writeWaitlistErr(w, err, id, itemDTO(rec))
 		return
 	}
 	if h.Logger != nil {
 		h.Logger.Info("waitlist updated", "waitlist_id", rec.ID, "status", rec.Status)
 	}
-	response.OK(w, rowItem(rec))
+	response.OK(w, itemDTO(rec))
 }
 
-func rowItem(rec confirmations.WaitlistRow) waitlistItemDTO {
+func itemDTO(it confirmations.DashboardItem) waitlistItemDTO {
 	return waitlistItemDTO{
-		ID: rec.ID, PlanningID: rec.PlanningID, PatientID: rec.PatientID,
-		Reason: rec.Reason, Status: rec.Status, Outcome: rec.Outcome,
-		CreatedAt: rec.CreatedAt, CreatedAtMSK: rec.CreatedAtMSK, BranchID: rec.BranchID,
-		Source: "max", UpdatedBy: rec.UpdatedBy, UpdatedAt: rec.UpdatedAt, Version: rec.Version,
-	}
-}
-
-func workItem(work confirmations.MisWork) waitlistItemDTO {
-	return waitlistItemDTO{
-		ID: work.PlanningID, PlanningID: work.PlanningID, Source: "registry",
-		Status: work.Status, Outcome: work.Outcome, UpdatedBy: work.UpdatedBy, UpdatedAt: work.UpdatedAt,
-		Version: work.Version,
+		ID: it.ID, PlanningID: it.PlanningID, PatientID: it.PatientID,
+		Reason: it.Reason, Status: it.Status, Outcome: it.Outcome,
+		CreatedAt: it.CreatedAt, CreatedAtMSK: it.CreatedAtMSK, BranchID: it.BranchID,
+		PatientName: it.PatientName, PatientPhone: it.PatientPhone, PatientBirth: it.PatientBirth,
+		OrigDateStart: it.OrigDateStart, OrigDoctor: it.OrigDoctor, OrigService: it.OrigService,
+		MedialogState: it.MedialogState, FutureLabel: it.FutureLabel,
+		FutureDateStart: it.FutureDateStart, FutureDoctor: it.FutureDoctor, FutureService: it.FutureService,
+		Source: it.Source, Comment: it.Comment, CreatorName: it.CreatorName,
+		UpdatedBy: it.UpdatedBy, UpdatedAt: it.UpdatedAt, Version: it.Version,
 	}
 }
 

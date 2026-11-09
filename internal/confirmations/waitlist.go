@@ -263,6 +263,49 @@ ORDER BY created_at DESC, id DESC`
 	return rows, rs.Err()
 }
 
+// ListWaitlistHead returns the newest matching rows, at most limit.
+// The dashboard merges this with an equally capped registry selection.
+func (r *Repo) ListWaitlistHead(ctx context.Context, f WaitlistListFilter, limit int) ([]WaitlistRow, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	where, args := waitlistWhere(f)
+	q := `
+SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
+       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1)
+FROM waitlist` + where + `
+ORDER BY created_at DESC, id DESC
+LIMIT ?`
+	args = append(args, limit)
+	rs, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list waitlist head: %w", err)
+	}
+	defer rs.Close()
+	var rows []WaitlistRow
+	for rs.Next() {
+		var row WaitlistRow
+		if err := rs.Scan(
+			&row.ID, &row.PlanningID, &row.PatientID, &row.ApptVersion, &row.ApptStart,
+			&row.Reason, &row.Source, &row.Status, &row.Outcome, &row.CreatedAt, &row.UpdatedAt,
+			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy, &row.Version,
+		); err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	if rows == nil {
+		rows = []WaitlistRow{}
+	}
+	return rows, rs.Err()
+}
+
+// SetWaitlistBranch stores the live Medialog branch in our database.
+func (r *Repo) SetWaitlistBranch(ctx context.Context, id int64, branchID int) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE waitlist SET branch_id = ? WHERE id = ? AND branch_id <> ?`, branchID, id, branchID)
+	return err
+}
+
 func (r *Repo) OpenWaitlistPlanningIDs(ctx context.Context, planningIDs []int64) (map[int64]bool, error) {
 	out := map[int64]bool{}
 	if len(planningIDs) == 0 {

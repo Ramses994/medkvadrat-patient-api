@@ -312,6 +312,12 @@ let activeTab = 'schedule';
 let wlPage = 1;
 let wlSeen = new Map();
 let wlFresh = new Map();
+function rowKey(it) {
+  return (it.source || 'max') + ':' + it.id;
+}
+function fullWaitlistRow(it) {
+  return !!(it && it.id && Object.prototype.hasOwnProperty.call(it, 'medialog_state'));
+}
 let viewEpoch = 0;
 let scheduleBusy = false;
 let waitlistBusy = false;
@@ -833,15 +839,15 @@ function paintWaitlist(data, key) {
     if (!tr) {
       tr = renderWaitlistRow(it);
       tbody.appendChild(tr);
-      if (wlSeen.size) wlFresh.set(it.id, Date.now() + CONFIG.FRESH_MS);
-      wlSeen.set(it.id, it.status);
+      if (wlSeen.size) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
+      wlSeen.set(rowKey(it), it.status);
     } else if (rowBusy(tr)) {
       if ((it.status || '') !== tr.dataset.status) showConflict(tr);
       pendingWl.set(tr.dataset.key, it);
     } else {
       applyWaitlistItem(tr, it);
     }
-    tr.classList.toggle('fresh', (wlFresh.get(it.id) || 0) > Date.now());
+    tr.classList.toggle('fresh', (wlFresh.get(rowKey(it)) || 0) > Date.now());
   });
   [...tbody.querySelectorAll('tr')].forEach(tr => {
     if (!ids.includes(tr.dataset.key)) {
@@ -968,8 +974,8 @@ function applyWaitlistItem(tr, it) {
   const note = work.querySelector('.wl-conflict');
   if (note) note.remove();
   pendingWl.delete(tr.dataset.key);
-  if (wlSeen.size && wlSeen.get(it.id) !== it.status) wlFresh.set(it.id, Date.now() + CONFIG.FRESH_MS);
-  wlSeen.set(it.id, it.status);
+  if (wlSeen.size && wlSeen.get(rowKey(it)) !== it.status) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
+  wlSeen.set(rowKey(it), it.status);
 }
 
 function showConflict(tr) {
@@ -1109,7 +1115,7 @@ async function saveWaitlist(tr, outcome, action) {
         else if (body.error) msg = body.error;
         fresh = body.data || null;
       } catch (e) {}
-      if (fresh) applyWaitlistItem(tr, fresh);
+      if (fullWaitlistRow(fresh)) applyWaitlistItem(tr, fresh);
       else if (oc) oc.value = prev;
       showBanner(msg);
       return;
@@ -1127,7 +1133,7 @@ async function saveWaitlist(tr, outcome, action) {
     }
     const body = await res.json();
     if (epoch !== viewEpoch || filterKey !== waitlistKey) return;
-    if (body.data && body.data.id) applyWaitlistItem(tr, body.data);
+    if (fullWaitlistRow(body.data)) applyWaitlistItem(tr, body.data);
     pendingWl.delete(tr.dataset.key);
     const clock = msk(new Date()).toTimeString().slice(0, 5);
     markRow(tr, 'Сохранено ✓ ' + (dashUser || '') + ', ' + clock);
@@ -1136,33 +1142,6 @@ async function saveWaitlist(tr, outcome, action) {
     if (oc) oc.value = prev;
     showBanner(`Не удалось сохранить: ${err.message}`);
     markRow(tr, err.message);
-  }
-}
-
-async function reloadWaitlistRow(id, source) {
-  const epoch = viewEpoch;
-  const filterKey = waitlistKey;
-  const q = waitlistURL();
-  const res = await fetch(q.url, {credentials:'same-origin'});
-  if (epoch !== viewEpoch || filterKey !== waitlistKey) return;
-  if (!res.ok) return;
-  const body = await res.json();
-  if (epoch !== viewEpoch || filterKey !== waitlistKey) return;
-  if (!body.success || !body.data) return;
-  const data = body.data;
-  $('waitlistCount').textContent = String(data.open_total || 0);
-  const item = (data.items || []).find(it => String(it.id) === String(id) && (!source || (it.source || 'max') === source));
-  const key = (source || (item && item.source) || 'max') + ':' + id;
-  const tr = document.querySelector(`#waitlistList tr[data-key="${key}"]`) || document.querySelector(`#waitlistList tr[data-id="${id}"]`);
-  if (item && tr) {
-    applyWaitlistItem(tr, item);
-    return;
-  }
-  if (tr) tr.remove();
-  const wrap = $('waitlistList');
-  if (!wrap.querySelector('tbody tr')) {
-    wrap.querySelectorAll('table,.empty').forEach(n => n.remove());
-    wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
   }
 }
 

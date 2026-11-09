@@ -187,3 +187,42 @@ func TestWaitlistFutures_DriverGetsStringNotTime(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWaitlistPageEnrich_OneQueryForThePage(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cols := []string{
+		"PLANNING_ID", "PATIENTS_ID", "PATIENT_NAME", "PHONE", "DOB", "DATE_START",
+		"CANCELLED", "STATUS", "BRANCH_ID", "DOCTOR_NAME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST",
+		"FUT_PLANNING_ID", "FUT_CREATED", "FUT_DATE", "FUT_BRANCH", "FUT_DOCTOR", "FUT_WEB", "FUT_EXAM", "FUT_WAITLIST",
+	}
+	row := []driver.Value{
+		int64(1), int64(20), "Иванов", "7900", "1980-01-01", "2026-10-22 10:00:00",
+		nil, nil, int64(106), "Петров", "", "Приём", 0,
+		int64(9), "2026-10-22 03:00:00", "2026-10-23 11:00:00", int64(3), "Врач", "", "Осмотр", 0,
+	}
+	mock.ExpectQuery(`(?s)OUTER APPLY`).WillReturnRows(sqlmock.NewRows(cols).AddRow(row...))
+	ids := make([]int64, 25)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	loc := time.FixedZone("MSK", 3*3600)
+	now := time.Date(2026, 10, 22, 13, 30, 0, 0, loc)
+	live, futures, err := WaitlistPageEnrich(context.Background(), db, ids, []int64{20}, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live[1].BranchID != 106 || len(futures) != 1 || futures[0].PlanningID != 9 || futures[0].BranchID != 3 {
+		t.Fatalf("live=%+v futures=%+v", live[1], futures)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := waitlistPageSQL(ids, nil, now)
+	if strings.Count(q, "CONVERT(datetime, @now, 126)") != 1 {
+		t.Fatal("page enrich must bind the future window once")
+	}
+}

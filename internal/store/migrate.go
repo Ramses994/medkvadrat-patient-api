@@ -165,6 +165,11 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 	if err := ensureColumn(ctx, db, "waitlist_mis_work", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
+	if _, err := db.ExecContext(ctx, `
+UPDATE staff_users SET branches = '*'
+WHERE role IN ('admin', 'manager') AND branches <> '*'`); err != nil {
+		return fmt.Errorf("normalize staff branches: %w", err)
+	}
 	if _, err := PurgeClosedWaitlist(ctx, db, time.Now().UTC()); err != nil {
 		return err
 	}

@@ -85,6 +85,7 @@ test('login form', async ({ page }) => {
 });
 
 async function openBoard(page, opts) {
+  opts = opts || {};
   const state = { posts: [], role: opts.role || 'registrar', closedHidden: !!opts.closedHidden };
   await page.clock.install({ time: new Date(opts.time || '2026-11-06T10:39:00.000Z') });
   await page.route('**/dashboard/me', async route => {
@@ -112,6 +113,25 @@ async function openBoard(page, opts) {
     if (route.request().method() !== 'GET') {
       const body = route.request().postDataJSON();
       state.posts.push(body);
+      if (state.conflictNext) {
+        state.conflictNext = false;
+        const fresh = row({
+          status: 'contacted',
+          outcome: 'call_back',
+          version: body.version || 1,
+          medialog_state: 'запись действует',
+        });
+        await route.fulfill({
+          status: 409,
+          json: {
+            success: false,
+            error: 'WAITLIST_CHANGED',
+            error_details: { message: 'Строку уже изменил другой сотрудник' },
+            data: fresh,
+          },
+        });
+        return;
+      }
       const saved = row({
         status: body.action === 'reopen' ? 'contacted' : (body.outcome === 'no_answer' || body.outcome === 'call_back' ? 'contacted' : 'closed'),
         outcome: body.action === 'reopen' ? '' : body.outcome,
@@ -187,9 +207,9 @@ test('outcome on a new row saves immediately and close asks before the request',
   await expect(page.locator('.wl-status')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Сохранить' })).toHaveCount(0);
   const saved = page.waitForRequest(r => r.url().includes('/dashboard/waitlist/max/7') && r.method() === 'PATCH');
-  await page.locator('.wl-outcome').selectOption('no_answer');
+  await page.locator('.wl-outcome').selectOption('call_back');
   const first = await saved;
-  expect(first.postDataJSON()).toMatchObject({ outcome: 'no_answer', version: 1 });
+  expect(first.postDataJSON()).toMatchObject({ outcome: 'call_back', version: 1 });
   await expect(page.locator('#waitlistList .wl-saved')).toContainText('Сохранено ✓');
   await page.screenshot({ path: join(shots, 'waitlist-saved.png') });
   await page.locator('.wl-outcome').selectOption('refused');
@@ -198,12 +218,29 @@ test('outcome on a new row saves immediately and close asks before the request',
   await page.screenshot({ path: join(shots, 'close-confirm.png') });
   await page.locator('#confirmNo').click();
   expect(state.posts).toHaveLength(1);
-  await expect(page.locator('.wl-outcome')).toHaveValue('no_answer');
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
   const closed = page.waitForRequest(r => r.url().includes('/dashboard/waitlist/max/7') && r.method() === 'PATCH');
   await page.locator('.wl-outcome').selectOption('refused');
   await page.locator('#confirmYes').click();
   const second = await closed;
   expect(second.postDataJSON()).toMatchObject({ outcome: 'refused', version: 2 });
+});
+
+test('refusing an active appointment still asks after a conflict response', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('.wl-outcome')).toBeVisible();
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await expect(page.locator('#waitlistList .wl-saved')).toContainText('Сохранено ✓');
+  state.conflictNext = true;
+  await page.locator('.wl-outcome').selectOption('refused');
+  await expect(page.locator('#confirmModal')).toBeVisible();
+  await page.locator('#confirmYes').click();
+  await expect(page.locator('#banner')).toContainText('Строку уже изменил другой сотрудник');
+  await expect(page.locator('#waitlistList')).toContainText('действует — отменить в клиенте');
+  await page.locator('.wl-outcome').selectOption('refused');
+  await expect(page.locator('#confirmModal')).toBeVisible();
+  await page.locator('#confirmNo').click();
 });
 
 function busyDay() {

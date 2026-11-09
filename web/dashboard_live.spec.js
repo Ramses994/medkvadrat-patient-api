@@ -249,14 +249,15 @@ test('a server status change during editing shows the other-staff notice', async
   await openDashboard(page, state);
   await page.locator('#tabWaitlist').click();
   await expect(page.locator('.wl-outcome')).toBeVisible();
-  await page.clock.fastForward(8_000);
   const posted = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'PATCH');
   await page.locator('.wl-outcome').selectOption('call_back');
   await posted;
   await page.locator('.wl-outcome').focus();
   state.forceStatus = 'closed';
   state.wlName = 'Чужое имя';
-  await page.clock.fastForward(2_000);
+  const polled = page.waitForResponse(r => r.url().includes('/dashboard/waitlist') && r.request().method() === 'GET');
+  await page.evaluate(() => loadWaitlist());
+  await polled;
   await expect(page.locator('.wl-conflict')).toContainText('Изменено другим сотрудником');
   await expect(page.getByRole('button', { name: 'Обновить строку' })).toBeVisible();
   await expect(page.locator('.wl-outcome')).toHaveValue('call_back');

@@ -2,12 +2,13 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/db"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 	"github.com/medkvadrat/medkvadrat-patient-api/web"
@@ -78,7 +79,7 @@ func TestDashboardPage_NotConfigured(t *testing.T) {
 }
 
 func TestDashboardPage_LoginSetsCookie(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:dash_login?mode=memory&cache=shared")
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

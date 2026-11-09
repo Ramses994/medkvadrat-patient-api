@@ -2,15 +2,16 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/db"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
@@ -20,7 +21,7 @@ import (
 
 func TestDashboard_OldCookieDiesAfterPasswordChangeAndForeignOriginIs403(t *testing.T) {
 	ctx := context.Background()
-	db, err := sql.Open("sqlite", "file:dash_sec?mode=memory&cache=shared")
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
