@@ -48,6 +48,8 @@ type fakeClinic struct {
 	// read-error injection (fixes 4): ownerErrOn is the 1-based Owner call that fails.
 	ownerCalls int
 	ownerErrOn int
+	snapCalls  int
+	onSnap     func(call int) // called (without the lock) before each Snap read
 	pairErr    error
 	admErr     error
 	futureErr  error
@@ -159,6 +161,13 @@ func (f *fakeClinic) Admission(context.Context, int64) (booking.Admission, error
 }
 
 func (f *fakeClinic) Snap(context.Context, int64, *int64, *int64) (booking.Snap, error) {
+	f.mu.Lock()
+	f.snapCalls++
+	n, hook := f.snapCalls, f.onSnap
+	f.mu.Unlock()
+	if hook != nil {
+		hook(n)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.snapErr != nil {
@@ -653,7 +662,7 @@ func TestCancel_NotSupportedWithoutCall(t *testing.T) {
 	c2.adm = booking.Admission{Found: true}
 	bill := booking.Admission{Answers: []booking.Answer{{ID: 1, PatdirecID: 2, HasPatdirec: true, BillNull: false}}, Directions: []booking.Direction{{ID: 2, PlanningCR: intPtr(5)}}, OwnDirection: &booking.Direction{ID: 2, PlanningCR: intPtr(5)}}
 	c2.admNext = &bill
-	c2.snaps = []booking.Snap{{ReadOK: true}}
+	c2.snaps = []booking.Snap{activeSnap()}
 	p2.record = false
 	p2.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true}
 	out = e2.Cancel(context.Background(), 1, 5, "23232323-2323-2323-2323-232323232323")

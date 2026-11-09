@@ -379,33 +379,15 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	if !ok {
 		return out
 	}
-	v2, s2, out, ok := e.loadCancelSnap(ctx, planningID)
-	if !ok {
-		return out
-	}
-	if v1.variant != v2.variant {
-		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
-	}
-	if code, allow := booking.SnapAllows(planningID, v1.variant, s1, s2); !allow {
-		msg := booking.MsgCancelSupport
-		if code == "ALREADY_CANCELLED" {
-			msg = booking.MsgAlreadyCancel
-		}
-		return e.fail(409, code, msg)
-	}
-	// pl_CancelVisit does not check the owner (S18): the last snapshot, read under
-	// both locks and saved as the context, must still belong to this patient and to
-	// the locked, allowed line. Nothing is read between here and EXEC.
-	if s2.PlanningPatientID != patientID {
+	// The owner is checked against the JWT before any answer that depends on the
+	// visit's state: someone else's (or a vanished) visit is always the same 404.
+	if !s1.PlanningFound || s1.PlanningPatientID != patientID {
 		return e.fail(404, "NOT_FOUND", "Запись не найдена")
-	}
-	if s2.PlanningPlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(s2.PlanningPlSubjID) != nil {
-		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
 	}
 	if out := e.refuseJournal(); out.Status != 0 {
 		return out
 	}
-	cc := cancelContext{OrgID: again.OrgID, Variant: v2.variant, DirAnswID: v2.answ, PatdirecID: v2.dir, Before: s2}
+	// B4.4: the journal row (in_flight) exists before the final snapshot.
 	opID := writeops.NewID()
 	e.beginLive(opID)
 	defer e.endLive(opID)
@@ -416,11 +398,42 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	if !ok {
 		return out
 	}
+	// Any refusal from here on closes the operation as rejected (no call was made).
+	reject := func(r WriteHTTP) WriteHTTP {
+		if alt := e.finish(ctx, owned, booking.StateRejected, r.Code, op.PlanningID, owned.ContextJSON); alt.Status != 0 {
+			return alt
+		}
+		return r
+	}
 	if e.AfterInFlight != nil {
 		if err := e.AfterInFlight(); err != nil {
 			return WriteHTTP{}
 		}
 	}
+	// Final snapshot under both locks. Its last query to Medialog is PLANNING
+	// (owner, line, state); then only the conditional context UPDATE and EXEC.
+	v2, s2, out, ok := e.loadCancelSnap(ctx, planningID)
+	if !ok {
+		return reject(out)
+	}
+	// pl_CancelVisit does not check the owner (S18).
+	if !s2.PlanningFound || s2.PlanningPatientID != patientID {
+		return reject(e.fail(404, "NOT_FOUND", "Запись не найдена"))
+	}
+	if s2.PlanningPlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(s2.PlanningPlSubjID) != nil {
+		return reject(e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport))
+	}
+	if v1.variant != v2.variant {
+		return reject(e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport))
+	}
+	if code, allow := booking.SnapAllows(planningID, v1.variant, s1, s2); !allow {
+		msg := booking.MsgCancelSupport
+		if code == "ALREADY_CANCELLED" {
+			msg = booking.MsgAlreadyCancel
+		}
+		return reject(e.fail(409, code, msg))
+	}
+	cc := cancelContext{OrgID: again.OrgID, Variant: v2.variant, DirAnswID: v2.answ, PatdirecID: v2.dir, Before: s2}
 	if alt := e.saveContext(ctx, owned, mustJSON(cc), op.PlanningID); alt.Status != 0 {
 		return alt
 	}
