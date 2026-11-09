@@ -25,6 +25,7 @@ type Services struct {
 	Config          config.Config
 	WriteGuard      medialogwrite.Guard
 	WriteLog        *medialogwrite.LogRepo
+	book            *bookingState
 }
 
 func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int, cfg config.Config) *Services {
@@ -39,6 +40,7 @@ func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logge
 		MSSQL: mssql, MSSQLWrite: mssqlWrite, SQLite: sqlite,
 		Repos: repos, Logger: logger, DefaultModelsID: defaultModelsID, Config: cfg,
 		WriteGuard: guard, WriteLog: medialogwrite.NewLogRepo(sqlite),
+		book: &bookingState{active: map[string]repo.BookingOption{}, slots: map[string]slotCache{}},
 	}
 }
 
@@ -65,10 +67,6 @@ func (s *Services) CatalogDepartments(ctx context.Context) ([]repo.Department, e
 
 func (s *Services) CatalogDoctors(ctx context.Context, specialtyID *int, meddepID *int) ([]repo.CatalogDoctor, error) {
 	return s.Repos.Catalog.Doctors(ctx, specialtyID, meddepID)
-}
-
-func (s *Services) CatalogSlots(ctx context.Context, doctorID int, dateFrom, dateTo time.Time) ([]repo.Slot, error) {
-	return s.Repos.Catalog.Slots(ctx, doctorID, dateFrom, dateTo)
 }
 
 func (s *Services) MeProfile(ctx context.Context, patientID int64) (repo.Profile, error) {
@@ -148,10 +146,6 @@ func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.Pati
 
 func (s *Services) ScheduleChanges(ctx context.Context, since time.Time) ([]repo.ScheduleChange, error) {
 	return s.Repos.Motconsu.ChangesSince(ctx, since)
-}
-
-func (s *Services) FreeSlots(ctx context.Context, doctorID, date string) ([]repo.FreeSlot, error) {
-	return s.Repos.Planning.FreeSlots(ctx, doctorID, date)
 }
 
 func (s *Services) Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error) {
