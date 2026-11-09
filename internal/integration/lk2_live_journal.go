@@ -1,13 +1,18 @@
 package integration
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// liveJournalTimeout bounds the stand journal check (a variable for tests).
+var liveJournalTimeout = 10 * time.Second
 
 func liveJournalBusy(baseURL, token string) error {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
@@ -20,7 +25,8 @@ func liveJournalBusy(baseURL, token string) error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	res, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: liveJournalTimeout}
+	res, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -32,13 +38,28 @@ func liveJournalBusy(baseURL, token string) error {
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %d", res.StatusCode)
 	}
+	// Only an explicit empty list proves the stand journal is clean:
+	// {"success":true,"data":[]}. Anything else (no data, null, success:false,
+	// an object) stops the experiment.
 	var env struct {
-		Data []json.RawMessage `json:"data"`
+		Success *bool           `json:"success"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return err
+		return fmt.Errorf("ответ журнала стенда не разобран: %w", err)
 	}
-	if len(env.Data) > 0 {
+	if env.Success == nil || !*env.Success {
+		return errors.New("журнал стенда не подтвердил success:true")
+	}
+	data := bytes.TrimSpace(env.Data)
+	if len(data) == 0 || data[0] != '[' {
+		return errors.New("журнал стенда не вернул список data")
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return fmt.Errorf("список data не разобран: %w", err)
+	}
+	if len(items) > 0 {
 		return errors.New("в журнале стенда есть открытые операции")
 	}
 	return nil

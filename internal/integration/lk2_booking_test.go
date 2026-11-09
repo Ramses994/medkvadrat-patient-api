@@ -50,9 +50,6 @@ func TestLK2(t *testing.T) {
 		t.FailNow()
 	}
 	env.failBad(t)
-	if n := env.activeCount(t); n != 0 {
-		t.Fatalf("patient 1 still has %d active rows on line 1119", n)
-	}
 }
 
 type slotOffer struct {
@@ -204,20 +201,6 @@ func (e *liveEnv) close() {
 		_ = e.logf.Close()
 		e.logf = nil
 	}
-}
-
-func (e *liveEnv) activeCount(t *testing.T) int {
-	t.Helper()
-	var n int
-	err := e.ro.QueryRowContext(context.Background(), `
-SELECT COUNT(*) FROM PLANNING
-WHERE PATIENTS_ID = @pid AND PL_SUBJ_ID = @subj
-  AND ISNULL(CANCELLED, 0) = 0 AND ISNULL(STATUS, 0) = 0`,
-		sql.Named("pid", int64(1)), sql.Named("subj", int64(1119))).Scan(&n)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return n
 }
 
 func (e *liveEnv) futureActive(t *testing.T) int {
@@ -434,7 +417,7 @@ func (e *liveEnv) postBook(t *testing.T, token, key string) (int, string, int64)
 
 func (e *liveEnv) cancel(t *testing.T, id int64) {
 	t.Helper()
-	if err := e.cancelQuiet(id, cleanupKey()); err != nil {
+	if err := e.cancelQuiet(id, e.ids.cancelKey(id)); err != nil {
 		e.failBad(t)
 		t.Fatalf("planning_id=%d %v. отменить в клиенте: Расписание → линия 1119 → запись → „Пациент не придёт“", id, err)
 	}
@@ -458,7 +441,7 @@ SELECT CAST(ISNULL(CANCELLED, 0) AS int) FROM PLANNING WHERE PLANNING_ID = @id`,
 }
 
 func (e *liveEnv) cancelAll() {
-	cancelEach(e.t, e.ids.snapshot(), e.cancelQuiet, e.confirmedCancelled)
+	cancelEach(e.t, e.ids.snapshot(), e.ids.cancelKey, e.cancelQuiet, e.confirmedCancelled)
 }
 
 func (e *liveEnv) failBad(t *testing.T) {

@@ -60,7 +60,7 @@ func TestCleanupContinuesAfterTransportError(t *testing.T) {
 	}
 
 	cap := &errCapture{TB: t}
-	cancelEach(cap, got, func(id int64, key string) error {
+	cancelEach(cap, got, nil, func(id int64, key string) error {
 		return cancelAppointment(client, srv.URL, "token", id, key)
 	}, nil)
 	if len(cancelled) != 2 || cancelled[0] != 12 || cancelled[1] != 13 {
@@ -127,7 +127,7 @@ func TestCleanup_RetrySameKeyConfirms(t *testing.T) {
 	defer srv.Close()
 	client := srv.Client()
 	cap := &errCapture{TB: t}
-	cancelEach(cap, []int64{21, 22}, func(id int64, key string) error {
+	cancelEach(cap, []int64{21, 22}, nil, func(id int64, key string) error {
 		return cancelAppointment(client, srv.URL, "token", id, key)
 	}, func(id int64) (bool, error) {
 		return id == 21 || id == 22, nil

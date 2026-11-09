@@ -123,10 +123,10 @@ FROM PLANNING WHERE PLANNING_ID = @id`, sql.Named("id", planningID)).Scan(&snap.
 	if answID != nil {
 		snap.AnswExpected = true
 		var state int
-		var planning, bill sql.NullInt64
+		var planning, bill, patdirec sql.NullInt64
 		err := db.QueryRowContext(ctx, `
-SELECT CAST(ISNULL(ANSW_STATE, 0) AS int), PLANNING_ID, FM_BILL_ID
-FROM DIR_ANSW WHERE DIR_ANSW_ID = @id`, sql.Named("id", *answID)).Scan(&state, &planning, &bill)
+SELECT CAST(ISNULL(ANSW_STATE, 0) AS int), PLANNING_ID, FM_BILL_ID, PATDIREC_ID
+FROM DIR_ANSW WHERE DIR_ANSW_ID = @id`, sql.Named("id", *answID)).Scan(&state, &planning, &bill, &patdirec)
 		if err == sql.ErrNoRows {
 			snap.AnswFound = false
 		} else if err != nil {
@@ -142,19 +142,28 @@ FROM DIR_ANSW WHERE DIR_ANSW_ID = @id`, sql.Named("id", *answID)).Scan(&state, &
 				v := bill.Int64
 				snap.AnswBill = &v
 			}
+			if patdirec.Valid {
+				v := patdirec.Int64
+				snap.AnswPatdirec = &v
+			}
 		}
 	}
 	if dirID != nil {
 		snap.DirExpected = true
+		var cr sql.NullInt64
 		err := db.QueryRowContext(ctx, `
-SELECT CAST(ISNULL(CANCELLED, 0) AS int), CAST(ISNULL(DIR_STATE, 0) AS int)
-FROM PATDIREC WHERE PATDIREC_ID = @id`, sql.Named("id", *dirID)).Scan(&snap.DirCancelled, &snap.DirState)
+SELECT CAST(ISNULL(CANCELLED, 0) AS int), CAST(ISNULL(DIR_STATE, 0) AS int), PLANNING_CR_ID
+FROM PATDIREC WHERE PATDIREC_ID = @id`, sql.Named("id", *dirID)).Scan(&snap.DirCancelled, &snap.DirState, &cr)
 		if err == sql.ErrNoRows {
 			snap.DirFound = false
 		} else if err != nil {
 			return booking.Snap{}, err
 		} else {
 			snap.DirFound = true
+			if cr.Valid {
+				v := cr.Int64
+				snap.DirPlanningCR = &v
+			}
 		}
 	}
 	snap.A, err = idList(ctx, db, `

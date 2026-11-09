@@ -45,6 +45,12 @@ type fakeClinic struct {
 	findErr   error
 	noDoctor  map[int64]bool
 	booked    []repo.AddVisitParams
+	// read-error injection (fixes 4): ownerErrOn is the 1-based Owner call that fails.
+	ownerCalls int
+	ownerErrOn int
+	admErr     error
+	futureErr  error
+	busyErr    error
 }
 
 func (f *fakeClinic) Pair(_ context.Context, subj, exam int64) (repo.BookingOption, bool) {
@@ -73,12 +79,18 @@ func (f *fakeClinic) DayStarts(context.Context, int64, int64, string) ([]string,
 func (f *fakeClinic) FutureCount(_ context.Context, patient, _ int64, _ string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.futureErr != nil {
+		return 0, f.futureErr
+	}
 	return f.future[patient], nil
 }
 
 func (f *fakeClinic) DoctorBusy(_ context.Context, patient, medecins, plSubj int64, day string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.busyErr != nil {
+		return false, f.busyErr
+	}
 	for _, b := range f.booked {
 		if b.PatientID != patient || len(b.VisitStart) < 10 || b.VisitStart[:10] != day {
 			continue
@@ -113,6 +125,10 @@ func (f *fakeClinic) FindIntent(context.Context, int64, int64, int64, int64, str
 func (f *fakeClinic) Owner(_ context.Context, id int64) (repo.OwnerRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ownerCalls++
+	if f.ownerErrOn > 0 && f.ownerCalls == f.ownerErrOn {
+		return repo.OwnerRow{}, errors.New("mssql read failed")
+	}
 	if f.ownerAt < len(f.ownerSeq) {
 		row := f.ownerSeq[f.ownerAt]
 		f.ownerAt++
@@ -129,6 +145,9 @@ func (f *fakeClinic) Admission(context.Context, int64) (booking.Admission, error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.admCalls++
+	if f.admErr != nil {
+		return booking.Admission{}, f.admErr
+	}
 	if f.admNext != nil && f.admCalls > 1 {
 		return *f.admNext, nil
 	}

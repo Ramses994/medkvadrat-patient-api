@@ -182,3 +182,44 @@ func TestCancelPredicates(t *testing.T) {
 		t.Fatalf("snap fail: %s %s", st, code)
 	}
 }
+
+// oneSnap is a clean "one direction" snapshot with the links actually read from
+// DIR_ANSW.PATDIREC_ID and PATDIREC.PLANNING_CR_ID.
+func oneSnap(planning, answ, dir int64) Snap {
+	return Snap{
+		ReadOK: true, PlanningFound: true,
+		AnswExpected: true, AnswFound: true, AnswPlanning: cr(planning), AnswPatdirec: cr(dir),
+		DirExpected: true, DirFound: true, DirPlanningCR: cr(planning),
+		A: []int64{answ}, P: []int64{dir},
+	}
+}
+
+func TestSnapAllows_OneUsesActualLinks(t *testing.T) {
+	const planning = 5
+	first := oneSnap(planning, 7, 22)
+	if code, ok := SnapAllows(planning, "one", first, oneSnap(planning, 7, 22)); !ok {
+		t.Fatalf("clean one must pass, code=%s", code)
+	}
+	// The answer is re-linked to another direction; A and P keep the same ids.
+	relinked := oneSnap(planning, 7, 22)
+	relinked.AnswPatdirec = cr(33)
+	if _, ok := SnapAllows(planning, "one", first, relinked); ok {
+		t.Fatal("answer re-linked 22 -> 33 must not pass")
+	}
+	// The direction now belongs to another visit.
+	reowned := oneSnap(planning, 7, 22)
+	reowned.DirPlanningCR = cr(99)
+	if _, ok := SnapAllows(planning, "one", first, reowned); ok {
+		t.Fatal("direction owned by another visit must not pass")
+	}
+	// The link was not read (NULL): never inferred from ids.
+	unread := oneSnap(planning, 7, 22)
+	unread.AnswPatdirec = nil
+	if _, ok := SnapAllows(planning, "one", unread, unread); ok {
+		t.Fatal("answer without an actual PATDIREC_ID must not pass")
+	}
+	// A re-link is a change for the background predicates too.
+	if Eval(planning, "one", first, relinked).Unchanged {
+		t.Fatal("re-link must not count as unchanged")
+	}
+}

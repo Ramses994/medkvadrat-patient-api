@@ -71,10 +71,12 @@ type Snap struct {
 	AnswState         int
 	AnswPlanning      *int64
 	AnswBill          *int64
+	AnswPatdirec      *int64 // actual DIR_ANSW.PATDIREC_ID of the saved answer
 	DirExpected       bool
 	DirFound          bool
 	DirCancelled      int
 	DirState          int
+	DirPlanningCR     *int64 // actual PATDIREC.PLANNING_CR_ID of the saved direction
 	A                 []int64
 	P                 []int64
 	D                 []int64
@@ -127,6 +129,9 @@ func admissionFromSnap(planningID int64, s Snap) Admission {
 	if !hasAnswer && !hasDir {
 		return adm
 	}
+	// Only fields actually read from DIR_ANSW / PATDIREC are used: the answer's
+	// PATDIREC_ID and the direction's PLANNING_CR_ID are never inferred from ids,
+	// so a re-linked answer or a re-owned direction fails Admit.
 	billNull := s.AnswBill == nil
 	dirID := int64(0)
 	if len(s.P) > 0 {
@@ -142,33 +147,30 @@ func admissionFromSnap(planningID int64, s Snap) Admission {
 			if i < len(s.A) {
 				id = s.A[i]
 			}
-			adm.Answers = append(adm.Answers, Answer{
-				ID: id, PatdirecID: dirID, HasPatdirec: hasDir && len(s.P) == 1,
-				AnswState: s.AnswState, BillNull: billNull,
-			})
+			a := Answer{ID: id, AnswState: s.AnswState, BillNull: billNull}
+			if s.AnswPatdirec != nil {
+				a.PatdirecID = *s.AnswPatdirec
+				a.HasPatdirec = true
+			}
+			adm.Answers = append(adm.Answers, a)
 		}
 	}
 	if hasDir {
-		cr := planningID
-		if s.AnswPlanning != nil {
-			cr = *s.AnswPlanning
-		}
 		ids := s.P
 		if len(ids) == 0 {
 			ids = []int64{dirID}
 		}
 		for _, id := range ids {
-			adm.Directions = append(adm.Directions, Direction{
-				ID: id, Cancelled: s.DirCancelled, DirState: s.DirState, PlanningCR: &cr,
-			})
+			d := Direction{ID: id, Cancelled: s.DirCancelled, DirState: s.DirState}
+			if s.DirPlanningCR != nil {
+				v := *s.DirPlanningCR
+				d.PlanningCR = &v
+			}
+			adm.Directions = append(adm.Directions, d)
 		}
 		if len(adm.Directions) == 1 {
 			d := adm.Directions[0]
 			adm.OwnDirection = &d
-			if len(adm.Answers) == 1 {
-				adm.Answers[0].PatdirecID = d.ID
-				adm.Answers[0].HasPatdirec = true
-			}
 		}
 	}
 	return adm
@@ -191,6 +193,9 @@ func SnapAllows(planningID int64, firstVariant string, first, last Snap) (code s
 		return "CANCEL_NOT_SUPPORTED", false
 	}
 	if !sameIDs(first.A, last.A) || !sameIDs(first.P, last.P) || !sameIDs(first.D, last.D) {
+		return "CANCEL_NOT_SUPPORTED", false
+	}
+	if !samePtr(first.AnswPatdirec, last.AnswPatdirec) || !samePtr(first.DirPlanningCR, last.DirPlanningCR) {
 		return "CANCEL_NOT_SUPPORTED", false
 	}
 	return "", true
@@ -223,6 +228,8 @@ func Eval(planningID int64, variant string, before, after Snap) Predicates {
 		after.AnswState == before.AnswState &&
 		samePtr(after.AnswPlanning, before.AnswPlanning) &&
 		samePtr(after.AnswBill, before.AnswBill) &&
+		samePtr(after.AnswPatdirec, before.AnswPatdirec) &&
+		samePtr(after.DirPlanningCR, before.DirPlanningCR) &&
 		after.DirFound == before.DirFound &&
 		after.DirCancelled == before.DirCancelled &&
 		after.DirState == before.DirState

@@ -297,11 +297,22 @@ func (e *BookingEngine) Resolve(ctx context.Context, in ResolveInput) WriteHTTP 
 		return e.fail(400, "VALIDATION", "Неизвестное состояние")
 	}
 	op, err := e.Ops.Get(ctx, in.OpID)
-	if err != nil || op == nil {
+	if err != nil {
+		// A journal read failure is not "no such operation".
+		e.journalErr("resolve", in.OpID, err)
+		return e.fail(503, "WRITE_LOG_UNAVAILABLE", booking.MsgRegistry)
+	}
+	if op == nil {
 		return e.fail(404, "NOT_FOUND", "Операция не найдена")
 	}
 	if op.State != writeops.StateUnknown && op.State != writeops.StatePartial {
 		return e.fail(409, "OPERATION_IN_PROGRESS", booking.MsgInProgress)
+	}
+	// planning_id from the operator is accepted only to confirm a booking, and only
+	// after the visit is read back and matches the intent (manualBookOK). A cancel
+	// always keeps the operation's own planning_id.
+	if in.PlanningID != nil && (op.Action != writeops.ActionBook || in.State != writeops.StateManualOK) {
+		return e.fail(400, "VALIDATION", "planning_id принимается только для подтверждения записи")
 	}
 	from := op.State
 	if in.State == writeops.StateManualOK {
@@ -343,7 +354,7 @@ func (e *BookingEngine) Resolve(ctx context.Context, in ResolveInput) WriteHTTP 
 		}
 	}
 	pid := op.PlanningID
-	if in.PlanningID != nil {
+	if op.Action == writeops.ActionBook && in.State == writeops.StateManualOK {
 		pid = sql.NullInt64{Int64: *in.PlanningID, Valid: true}
 	}
 	ok, err := e.Ops.Transition(ctx, op.OpID, from, writeops.Patch{

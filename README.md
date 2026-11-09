@@ -44,7 +44,7 @@ Allowlists must be exactly patient `1` and line `1119`, `LK_BOOKING_PAIRS` must 
 
 B7 — это `TestLK2`. Он пишет в клинику. Из CI его не запускают.
 
-Перед стартом нужны `LK_INTEGRATION_WRITE=1`, `LK_LIVE_API_URL` (стенд API) и `LK_LIVE_API_TOKEN` (внутренний токен стенда). Тест вызывает `GET /api/internal/write-ops?state=in_flight,unknown,partial`. Непустой список или ошибка запроса — тест не стартует.
+Перед стартом нужны `LK_INTEGRATION_WRITE=1`, `LK_LIVE_API_URL` (стенд API) и `LK_LIVE_API_TOKEN` (внутренний токен стенда). Тест вызывает `GET /api/internal/write-ops?state=in_flight,unknown,partial` (тайм-аут 10 с). Стартует **только** при ответе `200` с `{"success":true,"data":[]}`; непустой список, `data` нет или `null`, `success:false`, неразборчивый ответ, ошибка или тайм-аут — тест не стартует. Ключ отмены создаётся один на `planning_id` до первого `DELETE` и используется и в сценарии, и в очистке.
 
 Чтение до сценариев: у пациента `1` на линии `1119` нет действующих будущих записей. Слоты берутся не раньше `сейчас + CANCEL_MIN_HOURS_BEFORE + 2 часа`. Иначе тест не стартует.
 

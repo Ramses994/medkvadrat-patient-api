@@ -145,7 +145,7 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 	msk := moscowWall(now)
 	n, err := e.Clinic.FutureCount(ctx, patientID, e.Cfg.LKAuthorMedecinsID, msk)
 	if err != nil {
-		return e.fail(500, "INTERNAL", booking.MsgRegistry)
+		return e.readDown()
 	}
 	if n >= e.Cfg.BookingMaxFuture {
 		return e.fail(422, "LIMIT_FUTURE", booking.MsgLimitFuture)
@@ -156,7 +156,7 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 	}
 	busy, err := e.Clinic.DoctorBusy(ctx, patientID, opt.MedecinsID, claim.PlSubjID, day)
 	if err != nil {
-		return e.fail(500, "INTERNAL", booking.MsgRegistry)
+		return e.readDown()
 	}
 	if busy {
 		return e.fail(422, "LIMIT_DOCTOR_DAY", booking.MsgDoctorDay)
@@ -316,7 +316,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	}
 	owner, err := e.Clinic.Owner(ctx, planningID)
 	if err != nil {
-		return e.fail(500, "INTERNAL", booking.MsgCancelSupport)
+		return e.readDown()
 	}
 	if !owner.Found || owner.PatientID != patientID {
 		return e.fail(404, "NOT_FOUND", "Запись не найдена")
@@ -343,7 +343,10 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 		return e.fail(409, "OPERATION_IN_PROGRESS", booking.MsgInProgress)
 	}
 	fresh, err := e.Clinic.Owner(ctx, planningID)
-	if err != nil || !fresh.Found || fresh.PatientID != patientID {
+	if err != nil {
+		return e.readDown()
+	}
+	if !fresh.Found || fresh.PatientID != patientID {
 		return e.fail(404, "NOT_FOUND", "Запись не найдена")
 	}
 	if fresh.PlSubjID != owner.PlSubjID || e.Guard.CheckPlSubj(fresh.PlSubjID) != nil {
@@ -355,7 +358,10 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	unlockL := e.Locks.Line(fresh.PlSubjID)
 	defer unlockL()
 	again, err := e.Clinic.Owner(ctx, planningID)
-	if err != nil || !again.Found || again.PatientID != patientID || again.PlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(again.PlSubjID) != nil || again.Cancelled != 0 || again.Status != 0 {
+	if err != nil {
+		return e.readDown()
+	}
+	if !again.Found || again.PatientID != patientID || again.PlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(again.PlSubjID) != nil || again.Cancelled != 0 || again.Status != 0 {
 		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
 	}
 	if out, ok := e.cancelGate(ctx, planningID, again, e.now()); !ok {
@@ -426,6 +432,16 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 }
 
 func (e *BookingEngine) finishCancel(ctx context.Context, op *writeops.Op, cc cancelContext, planningID, plSubj int64, callFinished bool, now time.Time) WriteHTTP {
+	if !callFinished {
+		// The batch was sent but did not finish (any driver/server error, timeout,
+		// broken connection). pl_CancelVisit is not transactional, so the handler does
+		// not try to confirm anything: the operation stays unknown and the background
+		// reconcile (>= 2 s later) decides ok/partial by reading.
+		if alt := e.finish(ctx, op, booking.StateUnknown, "CANCEL_UNKNOWN", sql.NullInt64{Int64: planningID, Valid: true}, op.ContextJSON, now); alt.Status != 0 {
+			return alt
+		}
+		return e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown)
+	}
 	after, err := e.Clinic.Snap(ctx, planningID, cc.DirAnswID, cc.PatdirecID)
 	if err != nil || !after.ReadOK {
 		if alt := e.finish(ctx, op, booking.StateUnknown, "CANCEL_UNKNOWN", sql.NullInt64{Int64: planningID, Valid: true}, op.ContextJSON, now); alt.Status != 0 {
@@ -643,7 +659,7 @@ type cancelSnap struct {
 func (e *BookingEngine) loadCancelSnap(ctx context.Context, planningID int64) (cancelSnap, booking.Snap, WriteHTTP, bool) {
 	adm, err := e.Clinic.Admission(ctx, planningID)
 	if err != nil {
-		return cancelSnap{}, booking.Snap{}, e.fail(500, "INTERNAL", booking.MsgCancelSupport), false
+		return cancelSnap{}, booking.Snap{}, e.readDown(), false
 	}
 	variant, ok := booking.Admit(planningID, adm)
 	if !ok {
@@ -652,7 +668,8 @@ func (e *BookingEngine) loadCancelSnap(ctx context.Context, planningID int64) (c
 	answ, dir := savedIDs(variant, adm)
 	snap, err := e.Clinic.Snap(ctx, planningID, answ, dir)
 	if err != nil || !snap.ReadOK {
-		return cancelSnap{}, booking.Snap{}, e.fail(503, "CANCEL_UNKNOWN", booking.MsgCancelUnknown), false
+		// Nothing has been sent yet: this is a read failure, not an unknown outcome.
+		return cancelSnap{}, booking.Snap{}, e.readDown(), false
 	}
 	return cancelSnap{variant: variant, answ: answ, dir: dir}, snap, WriteHTTP{}, true
 }

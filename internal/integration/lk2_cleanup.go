@@ -17,8 +17,26 @@ var (
 )
 
 type idList struct {
-	mu  sync.Mutex
-	ids []int64
+	mu   sync.Mutex
+	ids  []int64
+	keys map[int64]string // one cancel Idempotency-Key per planning_id
+}
+
+// cancelKey returns the single cancel key for this planning_id, creating and
+// storing it before the first DELETE. The scenario and the cleanup both use it,
+// so a lost response is always retried as the same intent, never a new one.
+func (l *idList) cancelKey(id int64) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.keys == nil {
+		l.keys = map[int64]string{}
+	}
+	if k, ok := l.keys[id]; ok {
+		return k
+	}
+	k := cleanupKey()
+	l.keys[id] = k
+	return k
 }
 
 func (l *idList) add(id int64) {
@@ -42,7 +60,9 @@ func notePlanningID(list *idList, id int64) {
 	list.add(id)
 }
 
-func cancelEach(t testing.TB, ids []int64, cancel func(int64, string) error, confirm func(int64) (bool, error)) {
+// cancelEach cancels every id with its stored key (keyFor; nil = one fresh key per
+// id), retries once with the same key, and confirms "already cancelled" by reading.
+func cancelEach(t testing.TB, ids []int64, keyFor func(int64) string, cancel func(int64, string) error, confirm func(int64) (bool, error)) {
 	t.Helper()
 	seen := map[int64]bool{}
 	var failed []int64
@@ -51,7 +71,12 @@ func cancelEach(t testing.TB, ids []int64, cancel func(int64, string) error, con
 			continue
 		}
 		seen[id] = true
-		key := cleanupKey()
+		key := ""
+		if keyFor != nil {
+			key = keyFor(id)
+		} else {
+			key = cleanupKey()
+		}
 		err := cancel(id, key)
 		if err == nil {
 			continue
