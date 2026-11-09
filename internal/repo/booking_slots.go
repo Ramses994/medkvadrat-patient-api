@@ -11,6 +11,7 @@ import (
 
 var (
 	ErrInactivePair     = errors.New("inactive pair")
+	ErrPairUnavailable  = errors.New("pair configuration could not be read")
 	ErrSlotsUnavailable = errors.New("slots unavailable")
 	ErrBadSlotWindow    = errors.New("bad slot window")
 )

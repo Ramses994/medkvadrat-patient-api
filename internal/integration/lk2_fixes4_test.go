@@ -118,3 +118,17 @@ func TestCleanup_LostFirstDeleteReusesScenarioKey(t *testing.T) {
 		t.Fatalf("intents %v", procByKey)
 	}
 }
+
+// Audit 17, item 5: a valid empty-list prefix followed by more than 1 MiB of
+// trailing bytes must not start B7.
+func TestLiveJournalBusy_OversizedBodyRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"data":[]}`))
+		_, _ = w.Write([]byte(strings.Repeat(" ", 1<<20)))
+		_, _ = w.Write([]byte(`garbage`))
+	}))
+	defer srv.Close()
+	if err := liveJournalBusy(srv.URL, "stand"); err == nil {
+		t.Fatal("oversized body must not start")
+	}
+}

@@ -31,9 +31,13 @@ func liveJournalBusy(baseURL, token string) error {
 		return err
 	}
 	defer res.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	const maxBody = 1 << 20
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxBody+1))
 	if err != nil {
 		return err
+	}
+	if len(raw) > maxBody {
+		return errors.New("ответ журнала стенда больше 1 МиБ")
 	}
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %d", res.StatusCode)

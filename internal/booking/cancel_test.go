@@ -223,3 +223,47 @@ func TestSnapAllows_OneUsesActualLinks(t *testing.T) {
 		t.Fatal("re-link must not count as unchanged")
 	}
 }
+
+// Audit 17, 2a: the saved answer moved to another visit (PLANNING_ID 5 -> 6) with
+// the same direction and the same A/P/D sets.
+func TestSnapAllows_AnswerMovedToAnotherVisit(t *testing.T) {
+	const planning = 5
+	first := oneSnap(planning, 7, 22)
+	moved := oneSnap(planning, 7, 22)
+	moved.AnswPlanning = cr(6)
+	if _, ok := SnapAllows(planning, "one", first, moved); ok {
+		t.Fatal("answer moved to visit 6 must not pass")
+	}
+	// Even if the first read already saw it (both snapshots agree), it is refused.
+	if _, ok := SnapAllows(planning, "one", moved, moved); ok {
+		t.Fatal("answer of another visit must not pass")
+	}
+}
+
+// Audit 17, 2b: after the call, a surviving row pointing elsewhere is an external
+// change (never Full); deleted rows (the client's path) still count as done.
+func TestEval_RelinkAfterCallIsExternal(t *testing.T) {
+	const planning = 5
+	before := oneSnap(planning, 7, 22)
+	done := oneSnap(planning, 7, 22)
+	done.PlanningCancelled, done.AnswState, done.DirCancelled, done.DirState = 1, 2, 1, 3
+	if p := Eval(planning, "one", before, done); !p.Full || p.External {
+		t.Fatalf("procedure result must be full: %+v", p)
+	}
+	for name, mutate := range map[string]func(*Snap){
+		"answer to other direction": func(s *Snap) { s.AnswPatdirec = cr(33) },
+		"answer to other visit":     func(s *Snap) { s.AnswPlanning = cr(6) },
+		"direction re-owned":        func(s *Snap) { s.DirPlanningCR = cr(99) },
+	} {
+		after := done
+		mutate(&after)
+		p := Eval(planning, "one", before, after)
+		if p.Full || !p.External {
+			t.Fatalf("%s: %+v", name, p)
+		}
+	}
+	deleted := Snap{ReadOK: true, PlanningFound: true, PlanningCancelled: 1, AnswExpected: true, DirExpected: true}
+	if p := Eval(planning, "one", before, deleted); !p.Full || p.External {
+		t.Fatalf("deleted rows must stay full: %+v", p)
+	}
+}

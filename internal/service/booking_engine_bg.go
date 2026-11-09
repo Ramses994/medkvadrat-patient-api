@@ -173,7 +173,7 @@ func (e *BookingEngine) Sweep(ctx context.Context) {
 		return
 	}
 	for _, op := range rows {
-		if e.isLive(op.OpID) {
+		if e.isLive(op.OpID) || !dueReconcile(op, now) {
 			continue
 		}
 		e.reconcile(ctx, op, now)

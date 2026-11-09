@@ -103,8 +103,8 @@ func TestFixes4_ManualBookForeignVisitRefused(t *testing.T) {
 	// Visit 900 belongs to patient 2.
 	c.rows[900] = repo.CreatedRow{Found: true, PatientID: 2, PlSubjID: 1119, PlExamID: 10000688, DateStart: "2026-11-08T10:00:00", CreatorID: 2058}
 	out := e.Resolve(ctx, ResolveInput{OpID: saved.OpID, State: writeops.StateManualOK, Note: "other", Actor: "s2s", PlanningID: i64(900)})
-	if out.Status == http.StatusOK {
-		t.Fatalf("foreign visit accepted: %+v", out)
+	if out.Status != http.StatusUnprocessableEntity || out.Code != "VALIDATION" {
+		t.Fatalf("foreign visit: status=%d code=%s", out.Status, out.Code)
 	}
 	got, _ := e.Ops.Get(ctx, saved.OpID)
 	if got.State != writeops.StateUnknown || got.PlanningID.Valid {

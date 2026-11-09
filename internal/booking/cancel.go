@@ -195,8 +195,19 @@ func SnapAllows(planningID int64, firstVariant string, first, last Snap) (code s
 	if !sameIDs(first.A, last.A) || !sameIDs(first.P, last.P) || !sameIDs(first.D, last.D) {
 		return "CANCEL_NOT_SUPPORTED", false
 	}
-	if !samePtr(first.AnswPatdirec, last.AnswPatdirec) || !samePtr(first.DirPlanningCR, last.DirPlanningCR) {
+	if !samePtr(first.AnswPatdirec, last.AnswPatdirec) || !samePtr(first.DirPlanningCR, last.DirPlanningCR) ||
+		!samePtr(first.AnswPlanning, last.AnswPlanning) {
 		return "CANCEL_NOT_SUPPORTED", false
+	}
+	if firstVariant == "one" {
+		// The saved answer must still belong to this visit and point at the saved
+		// direction, which this visit created (all read, never inferred).
+		if !last.AnswFound || last.AnswPlanning == nil || *last.AnswPlanning != planningID {
+			return "CANCEL_NOT_SUPPORTED", false
+		}
+		if !last.DirFound || last.DirPlanningCR == nil || *last.DirPlanningCR != planningID {
+			return "CANCEL_NOT_SUPPORTED", false
+		}
 	}
 	return "", true
 }
@@ -215,8 +226,28 @@ type Predicates struct {
 	Unchanged bool
 }
 
+// relinked reports a link of a row that still exists pointing somewhere else than
+// before. pl_CancelVisit never changes these links for a visit-owned direction
+// (S18, R4: ANSW_STATE=2 and PATDIREC CANCELLED=1/DIR_STATE=3 only); a deleted row
+// (the client's path) is not a re-link.
+func relinked(planningID int64, before, after Snap) bool {
+	if before.AnswFound && after.AnswFound {
+		if !samePtr(before.AnswPatdirec, after.AnswPatdirec) {
+			return true
+		}
+		if after.AnswPlanning != nil && *after.AnswPlanning != planningID {
+			return true
+		}
+	}
+	if before.DirFound && after.DirFound && !samePtr(before.DirPlanningCR, after.DirPlanningCR) {
+		return true
+	}
+	return false
+}
+
 func Eval(planningID int64, variant string, before, after Snap) Predicates {
-	external := hasNew(after.A, before.A) || hasNew(after.P, before.P) || len(after.D) > 0 || (after.AnswFound && after.AnswBill != nil)
+	external := hasNew(after.A, before.A) || hasNew(after.P, before.P) || len(after.D) > 0 || (after.AnswFound && after.AnswBill != nil) ||
+		relinked(planningID, before, after)
 	ansDone := !after.AnswFound || (after.AnswState == 2 && after.AnswPlanning != nil && *after.AnswPlanning == planningID)
 	dirDone := !after.DirFound || (after.DirCancelled == 1 && after.DirState == 3)
 	noDir := variant == "none" && len(after.A) == 0 && len(after.P) == 0

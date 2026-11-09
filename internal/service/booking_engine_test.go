@@ -48,23 +48,27 @@ type fakeClinic struct {
 	// read-error injection (fixes 4): ownerErrOn is the 1-based Owner call that fails.
 	ownerCalls int
 	ownerErrOn int
+	pairErr    error
 	admErr     error
 	futureErr  error
 	busyErr    error
 }
 
-func (f *fakeClinic) Pair(_ context.Context, subj, exam int64) (repo.BookingOption, bool) {
+func (f *fakeClinic) Pair(_ context.Context, subj, exam int64) (repo.BookingOption, error) {
+	if f.pairErr != nil {
+		return repo.BookingOption{}, f.pairErr
+	}
 	if exam != 10000688 {
-		return repo.BookingOption{}, false
+		return repo.BookingOption{}, repo.ErrInactivePair
 	}
 	opt := repo.BookingOption{PlSubjID: subj, PlExamID: exam, BranchID: 496, MedecinsID: 160, DurationMin: 30, DoctorName: "Врач", Service: "Тест", BranchCode: "K"}
 	if f.noDoctor[subj] {
 		opt.MedecinsID = 0
 	}
 	if subj == 1119 || subj == 1120 || subj == 2000 {
-		return opt, true
+		return opt, nil
 	}
-	return repo.BookingOption{}, false
+	return repo.BookingOption{}, repo.ErrInactivePair
 }
 
 func (f *fakeClinic) DayStarts(context.Context, int64, int64, string) ([]string, error) {
@@ -547,6 +551,7 @@ func TestBook_CrashAndLateReconcile(t *testing.T) {
 	}
 	c.found = true
 	c.foundID = 77
+	e.Now = func() time.Time { return now.Add(3 * time.Second) } // reconcile waits >= 2 s after finished_at
 	e.Sweep(context.Background())
 	op, _ = e.Ops.Get(context.Background(), op.OpID)
 	if op.State != writeops.StateOK || !op.PlanningID.Valid || op.PlanningID.Int64 != 77 || p.calls.Load() != 0 {
@@ -881,6 +886,7 @@ func TestBook_UnmappedStaysUnknown(t *testing.T) {
 			}
 			c.found = true
 			c.foundID = 77
+			e.Now = func() time.Time { return now.Add(3 * time.Second) } // reconcile waits >= 2 s after finished_at
 			e.Sweep(context.Background())
 			op, _ = e.Ops.Get(context.Background(), op.OpID)
 			if op.State != writeops.StateOK || !op.PlanningID.Valid || op.PlanningID.Int64 != 77 || p.calls.Load() != 1 {

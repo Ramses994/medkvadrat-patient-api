@@ -27,7 +27,9 @@ type (
 )
 
 type clinicFace interface {
-	Pair(ctx context.Context, subj, exam int64) (repo.BookingOption, bool)
+	// Pair returns repo.ErrInactivePair when the pair is not offered and
+	// repo.ErrPairUnavailable when its configuration could not be read.
+	Pair(ctx context.Context, subj, exam int64) (repo.BookingOption, error)
 	DayStarts(ctx context.Context, subj, exam int64, day string) ([]string, error)
 	FutureCount(ctx context.Context, patient, author int64, nowMSK string) (int, error)
 	DoctorBusy(ctx context.Context, patient, medecins, plSubj int64, day string) (bool, error)
@@ -128,9 +130,12 @@ func (e *BookingEngine) Book(ctx context.Context, patientID int64, token, reques
 	if out := e.preflight(patientID, claim.PlSubjID); out.Status != 0 {
 		return out
 	}
-	opt, ok := e.Clinic.Pair(ctx, claim.PlSubjID, claim.PlExamID)
-	if !ok {
+	opt, err := e.Clinic.Pair(ctx, claim.PlSubjID, claim.PlExamID)
+	if errors.Is(err, repo.ErrInactivePair) {
 		return e.fail(404, "NOT_FOUND", "Эта запись недоступна")
+	}
+	if err != nil {
+		return e.readDown()
 	}
 	unlockP := e.Locks.Patient(patientID)
 	defer unlockP()
@@ -361,7 +366,10 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	if err != nil {
 		return e.readDown()
 	}
-	if !again.Found || again.PatientID != patientID || again.PlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(again.PlSubjID) != nil || again.Cancelled != 0 || again.Status != 0 {
+	if !again.Found || again.PatientID != patientID {
+		return e.fail(404, "NOT_FOUND", "Запись не найдена")
+	}
+	if again.PlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(again.PlSubjID) != nil {
 		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
 	}
 	if out, ok := e.cancelGate(ctx, planningID, again, e.now()); !ok {
@@ -600,11 +608,14 @@ func (e *BookingEngine) insertOrReplay(ctx context.Context, op writeops.Op, inte
 
 // finish writes the outcome. An empty status means this call won the CAS and the caller answers from that outcome.
 // A lost CAS is answered from the row that is actually stored.
-func (e *BookingEngine) finish(ctx context.Context, op *writeops.Op, state, code string, planning sql.NullInt64, contextJSON string, now time.Time) WriteHTTP {
+func (e *BookingEngine) finish(ctx context.Context, op *writeops.Op, state, code string, planning sql.NullInt64, contextJSON string, _ time.Time) WriteHTTP {
 	finCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
+	// finished_at is the moment the outcome is written (not the start of the
+	// operation): the reconcile delay (>= 2 s after an unfinished call) counts from it.
+	finished := e.now().UTC().Format(time.RFC3339Nano)
 	ok, err := e.Ops.Transition(finCtx, op.OpID, writeops.StateInFlight, writeops.Patch{
-		State: state, Code: code, PlanningID: planning, ContextJSON: contextJSON, FinishedAt: now.UTC().Format(time.RFC3339),
+		State: state, Code: code, PlanningID: planning, ContextJSON: contextJSON, FinishedAt: finished,
 	})
 	if err != nil {
 		e.noteWrite(err)

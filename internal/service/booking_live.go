@@ -77,7 +77,7 @@ func (s *Services) RefreshRWLanguage(ctx context.Context) {
 
 type liveClinic struct{ s *Services }
 
-func (c liveClinic) Pair(ctx context.Context, subj, exam int64) (repo.BookingOption, bool) {
+func (c liveClinic) Pair(ctx context.Context, subj, exam int64) (repo.BookingOption, error) {
 	return c.s.activePair(ctx, subj, exam)
 }
 
