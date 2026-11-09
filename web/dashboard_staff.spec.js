@@ -132,6 +132,27 @@ async function openBoard(page, opts) {
         });
         return;
       }
+      if (state.thinNext) {
+        state.thinNext = false;
+        state.mirrorWork = true;
+        await route.fulfill({
+          json: {
+            success: true,
+            data: {
+              row: {
+                status: 'contacted',
+                outcome: body.outcome || '',
+                version: (body.version || 1) + 1,
+                updated_by: 'kash',
+                updated_at: '06.11 12:20',
+              },
+              enriched: false,
+              full: { id: 7, patient_name: 'Чужой', patient_phone: '70000000000', medialog_state: 'запись отменена' },
+            },
+          },
+        });
+        return;
+      }
       const saved = row({
         status: body.action === 'reopen' ? 'contacted' : (body.outcome === 'no_answer' || body.outcome === 'call_back' ? 'contacted' : 'closed'),
         outcome: body.action === 'reopen' ? '' : body.outcome,
@@ -141,7 +162,13 @@ async function openBoard(page, opts) {
       return;
     }
     const url = new URL(route.request().url());
-    const items = opts.items || [row()];
+    let items = (opts.items || [row()]).map(it => ({ ...it }));
+    if (state.mirrorWork) {
+      const last = state.posts.at(-1);
+      if (last && last.outcome) {
+        items = items.map(it => it.id === 7 ? { ...it, outcome: last.outcome, status: 'contacted', version: (last.version || 1) + 1 } : it);
+      }
+    }
     const visible = state.closedHidden && url.searchParams.get('status') === 'open'
       ? items.filter(it => (state.posts.at(-1) || {}).status !== 'closed' || it.id !== 7)
       : items;
@@ -224,6 +251,20 @@ test('outcome on a new row saves immediately and close asks before the request',
   await page.locator('#confirmYes').click();
   const second = await closed;
   expect(second.postDataJSON()).toMatchObject({ outcome: 'refused', version: 2 });
+});
+
+test('failed enrichment keeps the patient and the close dialog', async ({ page }) => {
+  const state = await openBoard(page, {});
+  state.thinNext = true;
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await expect(page.locator('#waitlistList')).not.toContainText('Чужой');
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
+  await page.locator('.wl-outcome').selectOption('refused');
+  await expect(page.locator('#confirmModal')).toBeVisible();
+  await expect(page.locator('#confirmText')).toHaveText(CONFIRM);
 });
 
 test('refusing an active appointment still asks after a conflict response', async ({ page }) => {

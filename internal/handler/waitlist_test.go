@@ -99,6 +99,48 @@ func TestWaitlist_Update_409Changed(t *testing.T) {
 	}
 }
 
+func TestWaitlist_HugePageIs400(t *testing.T) {
+	h := WaitlistHandler{Svc: refuseWaitlist{}}
+	r := httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?page=9223372036854775807&per_page=100", nil)
+	w := httptest.NewRecorder()
+	h.List(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "VALIDATION") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+func TestWaitlist_MovedIs403(t *testing.T) {
+	h := WaitlistHandler{Svc: &fakeWaitlistSvc{err: confirmations.ErrWaitlistMoved}}
+	r := httptest.NewRequest(http.MethodPatch, "/dashboard/waitlist/max/1", bytes.NewBufferString(`{"outcome":"call_back","version":1}`))
+	r.SetPathValue("source", "max")
+	r.SetPathValue("id", "1")
+	w := httptest.NewRecorder()
+	h.Patch(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "WAITLIST_MOVED") || !strings.Contains(w.Body.String(), "Строка перенесена в другой филиал") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+type refuseWaitlist struct{}
+
+func (refuseWaitlist) DashboardWaitlist(context.Context, confirmations.WaitlistListFilter) (confirmations.DashboardPage, error) {
+	panic("page must be rejected before the service")
+}
+
+func (refuseWaitlist) PatchWaitlist(context.Context, int64, int, string, string, string) (confirmations.DashboardItem, error) {
+	return confirmations.DashboardItem{}, nil
+}
+
+func (refuseWaitlist) PatchRegistryWaitlist(context.Context, int64, int, string, string, string) (confirmations.DashboardItem, error) {
+	return confirmations.DashboardItem{}, nil
+}
+
 func TestWaitlist_Update_422(t *testing.T) {
 	h := WaitlistHandler{Svc: &fakeWaitlistSvc{err: confirmations.ErrUnknownWaitlistOutcome}}
 	body := `{"outcome":"nope","version":1}`

@@ -30,14 +30,14 @@ VALUES(77,66,'v','2026-11-06 10:00:00','declined','max','new','2026-11-06T06:00:
 	}
 	prev := loadPageEnrich
 	t.Cleanup(func() { loadPageEnrich = prev })
-	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time) (pageEnrichment, error) {
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
 			77: {PlanningID: 77, BranchID: 3, DateStart: "2026-11-06 10:00:00", PatientName: "Иванов"},
 		}}, nil
 	}
 	svc := &Services{SQLite: db, MSSQL: db}
 	kash := staff.WithPrincipal(ctx, staff.Principal{ID: 2, Login: "kash", Role: staff.RoleRegistrar, BranchIDs: []int{106}})
-	if _, err := svc.PatchWaitlist(kash, id, 1, "call_back", "", "kash"); !errors.Is(err, staff.ErrBranchForbidden) {
+	if _, err := svc.PatchWaitlist(kash, id, 1, "call_back", "", "kash"); !errors.Is(err, confirmations.ErrWaitlistMoved) {
 		t.Fatalf("registrar 106 patch: %v", err)
 	}
 	var branch int
@@ -51,16 +51,16 @@ VALUES(77,66,'v','2026-11-06 10:00:00','declined','max','new','2026-11-06T06:00:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hidden.Items) != 0 {
-		t.Fatalf("registrar 106 still sees %+v", hidden.Items)
+	if len(hidden.Items) != 0 || hidden.Total != 0 || hidden.OpenTotal != 0 {
+		t.Fatalf("registrar 106 still sees total=%d open=%d %+v", hidden.Total, hidden.OpenTotal, hidden.Items)
 	}
 	kurk := staff.WithPrincipal(ctx, staff.Principal{ID: 3, Login: "kurk", Role: staff.RoleRegistrar, BranchIDs: []int{3}})
 	visible, err := svc.DashboardWaitlist(kurk, confirmations.WaitlistListFilter{BranchIDs: []int{3}, OpenOnly: true, Page: 1, PerPage: 50, Source: "max"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(visible.Items) != 1 || visible.Items[0].BranchID != 3 {
-		t.Fatalf("%+v", visible.Items)
+	if len(visible.Items) != 1 || visible.Items[0].BranchID != 3 || visible.Total != 1 || visible.OpenTotal != 1 {
+		t.Fatalf("total=%d open=%d %+v", visible.Total, visible.OpenTotal, visible.Items)
 	}
 	saved, err := svc.PatchWaitlist(kurk, id, 1, "call_back", "", "kurk")
 	if err != nil {
@@ -109,16 +109,26 @@ func TestMisCache_NewKeyAfterMoscowMidnight(t *testing.T) {
 }
 
 func TestMaxPage_OneMedialogQueryPerTick(t *testing.T) {
+	resetEnrichCache()
 	prev := loadPageEnrich
-	t.Cleanup(func() { loadPageEnrich = prev })
+	prevNow := misNow
+	t.Cleanup(func() {
+		loadPageEnrich = prev
+		misNow = prevNow
+		resetEnrichCache()
+	})
 	var calls atomic.Int32
-	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time) (pageEnrichment, error) {
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		calls.Add(1)
 		if len(planningIDs) != 25 {
 			return pageEnrichment{}, fmt.Errorf("planning ids=%d", len(planningIDs))
 		}
-		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{}}, nil
+		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
+			planningIDs[0]: {PlanningID: planningIDs[0], PatientName: "Секрет"},
+		}}, nil
 	}
+	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	misNow = func() time.Time { return clock }
 	db := openWaitlistDB(t, "wl_page_enrich")
 	ctx := context.Background()
 	for i := 0; i < 25; i++ {
@@ -140,8 +150,22 @@ VALUES(?,?, 'v', '2026-11-06 10:00:00', 'declined', 'max', 'new', ?, ?, '2026-11
 	if _, err := svc.DashboardWaitlist(ctx, confirmations.WaitlistListFilter{Source: "max", OpenOnly: true, Page: 1, PerPage: 50}); err != nil {
 		t.Fatal(err)
 	}
+	if calls.Load() != 1 {
+		t.Fatalf("within ttl queries=%d", calls.Load())
+	}
+	if !enrichHoldsName("Секрет") {
+		t.Fatal("enrichment cache missed the page")
+	}
+	clock = clock.Add(31 * time.Second)
+	sweepDashboardCaches(clock)
+	if enrichHoldsName("Секрет") {
+		t.Fatal("expired enrichment still holds a name")
+	}
+	if _, err := svc.DashboardWaitlist(ctx, confirmations.WaitlistListFilter{Source: "max", OpenOnly: true, Page: 1, PerPage: 50}); err != nil {
+		t.Fatal(err)
+	}
 	if calls.Load() != 2 {
-		t.Fatalf("second tick queries=%d", calls.Load())
+		t.Fatalf("after ttl queries=%d", calls.Load())
 	}
 }
 
@@ -178,7 +202,7 @@ VALUES(?,?, 'v', '2026-11-06 10:00:00', 'declined', 'max', 'new', ?, ?, '2026-11
 			{PlanningID: 503, PatientID: 3, CreatedAt: "2026-11-02T00:00:06Z", BranchID: 106, PatientName: "В"},
 		}, nil
 	}
-	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time) (pageEnrichment, error) {
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{}, nil
 	}
 	resetMisCache()

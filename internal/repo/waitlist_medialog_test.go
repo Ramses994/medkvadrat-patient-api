@@ -211,7 +211,7 @@ func TestWaitlistPageEnrich_OneQueryForThePage(t *testing.T) {
 	}
 	loc := time.FixedZone("MSK", 3*3600)
 	now := time.Date(2026, 10, 22, 13, 30, 0, 0, loc)
-	live, futures, err := WaitlistPageEnrich(context.Background(), db, ids, []int64{20}, nil, now)
+	live, futures, err := WaitlistPageEnrich(context.Background(), db, ids, []int64{20}, nil, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,8 +221,90 @@ func TestWaitlistPageEnrich_OneQueryForThePage(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
-	q, _ := waitlistPageSQL(ids, nil, now)
+	q, _ := waitlistPageSQL(ids, nil, now, nil)
 	if strings.Count(q, "CONVERT(datetime, @now, 126)") != 1 {
 		t.Fatal("page enrich must bind the future window once")
+	}
+}
+
+type futureCandidate struct {
+	ID        int64
+	Created   time.Time
+	Start     time.Time
+	Branch    int
+	Exam      int64
+	Cancelled int
+	Status    int
+}
+
+func chooseNextVisit(originalID int64, answer, now time.Time, exams []int64, cands []futureCandidate) (int64, bool) {
+	var best *futureCandidate
+	for i := range cands {
+		c := &cands[i]
+		if c.ID == originalID || c.Cancelled != 0 || c.Status != 0 || !c.Start.After(now) || !c.Created.After(answer) {
+			continue
+		}
+		if c.Branch != 106 && c.Branch != 3 && c.Branch != 496 {
+			continue
+		}
+		skip := false
+		for _, exam := range NormalizeWaitlistExamIDs(exams) {
+			if c.Exam == exam {
+				skip = true
+			}
+		}
+		if skip {
+			continue
+		}
+		if best == nil || c.Start.Before(best.Start) || (c.Start.Equal(best.Start) && c.ID < best.ID) {
+			best = c
+		}
+	}
+	if best == nil {
+		return 0, false
+	}
+	return best.ID, true
+}
+
+func TestFutureApply_SecondVisitNotOriginalOrOlder(t *testing.T) {
+	answer := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	now := answer
+	cands := []futureCandidate{
+		{ID: 10, Created: answer.Add(-2 * time.Hour), Start: answer.Add(time.Hour), Branch: 106, Exam: 100},
+		{ID: 11, Created: answer.Add(-time.Minute), Start: answer.Add(2 * time.Hour), Branch: 106, Exam: 100},
+		{ID: 13, Created: answer.Add(time.Minute), Start: answer.Add(30 * time.Minute), Branch: 1, Exam: 100},
+		{ID: 14, Created: answer.Add(time.Minute), Start: answer.Add(40 * time.Minute), Branch: 106, Exam: 3118},
+		{ID: 12, Created: answer.Add(time.Minute), Start: answer.Add(3 * time.Hour), Branch: 106, Exam: 100},
+	}
+	id, ok := chooseNextVisit(10, answer, now, []int64{3118}, cands)
+	if !ok || id != 12 {
+		t.Fatalf("chosen=%d ok=%v", id, ok)
+	}
+
+	q, _ := waitlistPageSQL([]int64{10}, []int64{3118}, now, map[int64]string{10: "2026-11-06 15:00:00"})
+	apply := q[strings.Index(q, "OUTER APPLY"):]
+	where := strings.Index(apply, "WHERE p2.PATIENTS_ID")
+	order := strings.Index(apply, "ORDER BY p2.DATE_START")
+	if where < 0 || order < where {
+		t.Fatal("future filters must sit in the APPLY before ORDER BY")
+	}
+	body := apply[where:order]
+	for _, frag := range []string{
+		"p2.PLANNING_ID <> p.PLANNING_ID",
+		"ISNULL(ps2.FM_INTORG_ID, 0) IN (106, 3, 496)",
+		"ISNULL(p2.PL_EXAM_ID, 0) NOT IN",
+		"p2.CREATE_DATE_TIME > CASE p.PLANNING_ID",
+		"CONVERT(datetime, @at0, 120)",
+		"SELECT TOP 1",
+	} {
+		if frag == "SELECT TOP 1" {
+			if !strings.Contains(apply[:where], frag) {
+				t.Fatal(frag)
+			}
+			continue
+		}
+		if !strings.Contains(body, frag) {
+			t.Fatalf("missing %s\n%s", frag, body)
+		}
 	}
 }

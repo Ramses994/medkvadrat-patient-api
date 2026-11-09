@@ -92,6 +92,9 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	if p, ok := staff.PrincipalFrom(r.Context()); ok {
 		filter.BranchIDs = p.VisibleBranches()
+		if p.All || p.Role == staff.RoleAdmin || p.Role == staff.RoleManager {
+			filter.IncludeOtherBranches = true
+		}
 	}
 	if raw := strings.TrimSpace(q.Get("branch")); raw != "" {
 		b, err := strconv.Atoi(raw)
@@ -105,9 +108,18 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.BranchID = &b
 		filter.BranchIDs = nil
+		filter.IncludeOtherBranches = false
 	}
-	page, _ := strconv.Atoi(q.Get("page"))
-	per, _ := strconv.Atoi(q.Get("per_page"))
+	page, ok := parseDashboardPage(q.Get("page"), 1, 10000)
+	if !ok {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "page: целое от 1 до 10000")
+		return
+	}
+	per, ok := parseDashboardPage(q.Get("per_page"), 50, 100)
+	if !ok {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "per_page: целое от 1 до 100")
+		return
+	}
 	filter.Page = page
 	filter.PerPage = per
 
@@ -158,7 +170,7 @@ func (h WaitlistHandler) Patch(w http.ResponseWriter, r *http.Request) {
 			h.writeWaitlistErr(w, err, id, itemDTO(item))
 			return
 		}
-		response.OK(w, itemDTO(item))
+		response.OK(w, patchEnvelope(item))
 		return
 	}
 	rec, err := h.Svc.PatchWaitlist(r.Context(), id, req.Version, req.Outcome, req.Action, by)
@@ -169,7 +181,34 @@ func (h WaitlistHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	if h.Logger != nil {
 		h.Logger.Info("waitlist updated", "waitlist_id", rec.ID, "status", rec.Status)
 	}
-	response.OK(w, itemDTO(rec))
+	response.OK(w, patchEnvelope(rec))
+}
+
+func parseDashboardPage(raw string, def, max int) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def, true
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 1 || n > int64(max) {
+		return 0, false
+	}
+	return int(n), true
+}
+
+func patchEnvelope(it confirmations.DashboardItem) map[string]any {
+	row := map[string]any{
+		"status":     it.Status,
+		"outcome":    it.Outcome,
+		"version":    it.Version,
+		"updated_by": it.UpdatedBy,
+		"updated_at": it.UpdatedAt,
+	}
+	body := map[string]any{"row": row, "enriched": it.Enriched}
+	if it.Enriched {
+		body["full"] = itemDTO(it)
+	}
+	return body
 }
 
 func itemDTO(it confirmations.DashboardItem) waitlistItemDTO {
@@ -194,6 +233,8 @@ func (h WaitlistHandler) writeWaitlistErr(w http.ResponseWriter, err error, id i
 		response.ErrorWithData(w, http.StatusConflict, "WAITLIST_CHANGED", "Строку уже изменил другой сотрудник", fresh)
 	case errors.Is(err, confirmations.ErrUnknownWaitlistOutcome):
 		response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Недопустимый итог звонка")
+	case errors.Is(err, confirmations.ErrWaitlistMoved):
+		response.Error(w, http.StatusForbidden, "WAITLIST_MOVED", "Строка перенесена в другой филиал")
 	case errors.Is(err, staff.ErrBranchForbidden):
 		response.Error(w, http.StatusForbidden, "FORBIDDEN", "Нет доступа к этому филиалу")
 	default:

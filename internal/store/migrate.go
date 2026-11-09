@@ -166,6 +166,17 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 		return err
 	}
 	if _, err := db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS staff_admin_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id INTEGER NOT NULL,
+  actor_login TEXT NOT NULL,
+  target_id INTEGER NOT NULL,
+  change TEXT NOT NULL,
+  created_at TEXT NOT NULL
+)`); err != nil {
+		return fmt.Errorf("staff admin log: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
 UPDATE staff_users SET branches = '*'
 WHERE role IN ('admin', 'manager') AND branches <> '*'`); err != nil {
 		return fmt.Errorf("normalize staff branches: %w", err)

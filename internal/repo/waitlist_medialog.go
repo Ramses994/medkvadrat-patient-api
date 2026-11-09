@@ -212,7 +212,7 @@ func FutureVisitLabel(f *WaitlistFutureVisit) string {
 // WaitlistPageEnrich loads the original appointment and its next future visit
 // for the current page in one Medialog query. Patients whose original row is
 // gone (registry-only lines) are read by a second query.
-func WaitlistPageEnrich(ctx context.Context, db *sql.DB, planningIDs, patientIDs, waitlistIDs []int64, now time.Time) (map[int64]WaitlistPlanningLive, []WaitlistFutureVisit, error) {
+func WaitlistPageEnrich(ctx context.Context, db *sql.DB, planningIDs, patientIDs, waitlistIDs []int64, now time.Time, answered map[int64]string) (map[int64]WaitlistPlanningLive, []WaitlistFutureVisit, error) {
 	live := map[int64]WaitlistPlanningLive{}
 	var futures []WaitlistFutureVisit
 	if len(planningIDs) == 0 {
@@ -222,7 +222,7 @@ func WaitlistPageEnrich(ctx context.Context, db *sql.DB, planningIDs, patientIDs
 		rows, err := WaitlistFutures(ctx, db, patientIDs, now, waitlistIDs)
 		return live, rows, err
 	}
-	q, args := waitlistPageSQL(planningIDs, waitlistIDs, now)
+	q, args := waitlistPageSQL(planningIDs, waitlistIDs, now, answered)
 	rs, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("waitlist page: %w", err)
@@ -293,10 +293,58 @@ func WaitlistPageEnrich(ctx context.Context, db *sql.DB, planningIDs, patientIDs
 	return live, append(futures, extra...), nil
 }
 
-func waitlistPageSQL(planningIDs, waitlistIDs []int64, now time.Time) (string, []any) {
+func WaitlistBranches(ctx context.Context, db *sql.DB, ids []int64) (map[int64]int, error) {
+	found := map[int64]int{}
+	if db == nil || len(ids) == 0 {
+		return found, nil
+	}
+	const batch = 100
+	for start := 0; start < len(ids); start += batch {
+		end := start + batch
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		holders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			name := fmt.Sprintf("b%d", i)
+			holders[i] = "@" + name
+			args[i] = sql.Named(name, id)
+		}
+		q := `
+SELECT p.PLANNING_ID, ISNULL(ps.FM_INTORG_ID, 0)
+FROM PLANNING p
+LEFT JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
+WHERE p.PLANNING_ID IN (` + strings.Join(holders, ",") + `)`
+		rs, err := db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rs.Next() {
+			var id int64
+			var branch int
+			if err := rs.Scan(&id, &branch); err != nil {
+				rs.Close()
+				return nil, err
+			}
+			found[id] = branch
+		}
+		err = rs.Err()
+		rs.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return found, nil
+}
+
+func waitlistPageSQL(planningIDs, waitlistIDs []int64, now time.Time, answered map[int64]string) (string, []any) {
 	inSQL, inArgs := waitlistIN("pid", planningIDs)
 	examSQL, examArgs := examSelectSQL(waitlistIDs)
 	futExam, futArgs := examSelectAliased("ex2", "fwl", waitlistIDs)
+	notIn, notArgs := examNotInSQL(waitlistIDs)
+	answerSQL, answerArgs := futureAnswerSQL(planningIDs, answered)
 	doctor2 := strings.ReplaceAll(doctorNameSelectSQL, "ps.", "ps2.")
 	q := `
 SELECT
@@ -338,12 +386,56 @@ OUTER APPLY (
     AND ISNULL(p2.CANCELLED,0) = 0
     AND ISNULL(p2.STATUS,0) = 0
     AND p2.DATE_START > CONVERT(datetime, @now, 126)
+    AND p2.PLANNING_ID <> p.PLANNING_ID
+    AND ISNULL(ps2.FM_INTORG_ID, 0) IN (106, 3, 496)
+    AND ISNULL(p2.PL_EXAM_ID, 0) NOT IN (` + notIn + `)
+    AND ` + answerSQL + `
   ORDER BY p2.DATE_START, p2.PLANNING_ID
 ) fut
 WHERE p.PLANNING_ID IN (` + inSQL + `)`
 	args := append(append(inArgs, examArgs...), futArgs...)
+	args = append(args, notArgs...)
+	args = append(args, answerArgs...)
 	args = append(args, sql.Named("now", waitlistNowBound(now)))
 	return q, args
+}
+
+func examNotInSQL(waitlistIDs []int64) (string, []any) {
+	ids := NormalizeWaitlistExamIDs(waitlistIDs)
+	holders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		name := fmt.Sprintf("nex%d", i)
+		holders[i] = "@" + name
+		args[i] = sql.Named(name, id)
+	}
+	return strings.Join(holders, ","), args
+}
+
+func futureAnswerSQL(planningIDs []int64, answered map[int64]string) (string, []any) {
+	if len(answered) == 0 {
+		return "p2.CREATE_DATE_TIME > p.CREATE_DATE_TIME", nil
+	}
+	var b strings.Builder
+	b.WriteString("p2.CREATE_DATE_TIME > CASE p.PLANNING_ID")
+	args := make([]any, 0, len(answered)*2)
+	n := 0
+	for _, id := range planningIDs {
+		at, ok := answered[id]
+		if !ok || strings.TrimSpace(at) == "" {
+			continue
+		}
+		pid := fmt.Sprintf("ap%d", n)
+		tm := fmt.Sprintf("at%d", n)
+		n++
+		fmt.Fprintf(&b, " WHEN @%s THEN CONVERT(datetime, @%s, 120)", pid, tm)
+		args = append(args, sql.Named(pid, id), sql.Named(tm, at))
+	}
+	if n == 0 {
+		return "p2.CREATE_DATE_TIME > p.CREATE_DATE_TIME", nil
+	}
+	b.WriteString(" ELSE p.CREATE_DATE_TIME END")
+	return b.String(), args
 }
 
 func examSelectAliased(alias, argPrefix string, waitlistIDs []int64) (string, []any) {

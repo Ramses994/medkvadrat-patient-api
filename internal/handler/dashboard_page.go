@@ -141,6 +141,10 @@ func (h DashboardPageHandler) PasswordPost(w http.ResponseWriter, r *http.Reques
 			h.writePassword(w, "Пароль не короче 10 символов")
 			return
 		}
+		if errors.Is(err, staff.ErrStale) {
+			h.writePassword(w, "Пароль уже изменён, войдите снова")
+			return
+		}
 		h.writePassword(w, "Неверный текущий пароль")
 		return
 	}

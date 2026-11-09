@@ -34,6 +34,7 @@ var (
 	ErrLocked          = errors.New("login locked")
 	ErrShortPassword   = errors.New("password too short")
 	ErrLastAdmin       = errors.New("last admin")
+	ErrStale           = errors.New("staff stale")
 	ErrBranchForbidden = errors.New("BRANCH_FORBIDDEN")
 	ErrNoBranches      = errors.New("no branches")
 	ErrJournal         = errors.New("login journal")
@@ -80,6 +81,13 @@ func (p Principal) Allows(branch int) bool {
 		}
 	}
 	return false
+}
+
+func SeesBranch(p Principal, branch int) bool {
+	if knownBranch(branch) {
+		return p.Allows(branch)
+	}
+	return p.All || p.Role == RoleAdmin || p.Role == RoleManager
 }
 
 func (p Principal) VisibleBranches() []int {
@@ -443,30 +451,52 @@ func (s *Store) ChangePassword(ctx context.Context, id int64, current, next stri
 	if !passwordLongEnough(next) {
 		return ErrShortPassword
 	}
+	var hash, login string
+	var version int
+	err := s.db.QueryRowContext(ctx, `
+SELECT password_hash, login, IFNULL(session_version,1)
+FROM staff_users WHERE id = ?`, id).Scan(&hash, &login, &version)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	compare := s.Compare
+	if compare == nil {
+		compare = bcrypt.CompareHashAndPassword
+	}
+	if compare([]byte(hash), []byte(current)) != nil {
+		return ErrBadCredentials
+	}
 	nextHash, err := bcrypt.GenerateFromPassword([]byte(next), BcryptCost)
 	if err != nil {
 		return err
 	}
-	err = s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
-		var hash string
-		err := conn.QueryRowContext(ctx, `SELECT password_hash FROM staff_users WHERE id = ?`, id).Scan(&hash)
+	return s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		var hash2 string
+		var ver2 int
+		err := conn.QueryRowContext(ctx, `
+SELECT password_hash, IFNULL(session_version,1)
+FROM staff_users WHERE id = ?`, id).Scan(&hash2, &ver2)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
-			return ErrBadCredentials
+		if hash2 != hash || ver2 != version {
+			return ErrStale
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
-		_, err = conn.ExecContext(ctx, `
+		if _, err = conn.ExecContext(ctx, `
 UPDATE staff_users
 SET password_hash = ?, must_change_password = 0, session_version = session_version + 1, updated_at = ?
-WHERE id = ?`, string(nextHash), now, id)
-		return err
+WHERE id = ?`, string(nextHash), now, id); err != nil {
+			return err
+		}
+		return insertAdminLog(ctx, conn, id, login, id, "password", now)
 	})
-	return err
 }
 
 type CreateUser struct {
@@ -555,6 +585,12 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 			return User{}, "", err
 		}
 	}
+	actorLogin := ""
+	if actorID != 0 {
+		if actor, err := s.userByID(ctx, actorID); err == nil {
+			actorLogin = actor.Login
+		}
+	}
 	err := s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
 		u, err := userByIDConn(ctx, conn, id)
 		if err != nil {
@@ -609,13 +645,25 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 		if demote && n == 0 {
 			return ErrLastAdmin
 		}
-		return nil
+		resetBit := 0
+		if nextHash != nil {
+			resetBit = 1
+		}
+		what := fmt.Sprintf("role=%s;branches=%s;active=%d;reset_password=%d", role, branches, bit, resetBit)
+		return insertAdminLog(ctx, conn, actorID, actorLogin, id, what, now)
 	})
 	if err != nil {
 		return User{}, "", err
 	}
 	u, err := s.userByID(ctx, id)
 	return u, temp, err
+}
+
+func insertAdminLog(ctx context.Context, conn *sql.Conn, actorID int64, actorLogin string, targetID int64, change, now string) error {
+	_, err := conn.ExecContext(ctx, `
+INSERT INTO staff_admin_log (actor_id, actor_login, target_id, change, created_at)
+VALUES (?, ?, ?, ?, ?)`, actorID, actorLogin, targetID, change, now)
+	return err
 }
 
 func normalizeBranches(role, raw string) (string, error) {

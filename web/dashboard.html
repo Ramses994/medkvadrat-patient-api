@@ -908,6 +908,19 @@ function renderWaitlistRow(it) {
   return tr;
 }
 
+function applyWorkingFields(tr, row) {
+  if (!row) return;
+  const oc = tr.querySelector('.wl-outcome');
+  if (row.status) tr.dataset.status = row.status;
+  if (row.outcome != null) tr.dataset.outcome = row.outcome;
+  if (row.version) tr.dataset.version = String(row.version);
+  if (oc && row.outcome && [...oc.options].some(o => o.value === row.outcome)) oc.value = row.outcome;
+  const meta = tr.querySelector('.wl-meta');
+  if (meta && (row.updated_by || row.updated_at)) {
+    meta.textContent = [row.updated_by, row.updated_at].filter(Boolean).join(' · ');
+  }
+}
+
 function applyWaitlistItem(tr, it) {
   const cells = tr.children;
   tr.dataset.source = it.source || tr.dataset.source || 'max';
@@ -1122,10 +1135,18 @@ async function saveWaitlist(tr, outcome, action) {
     }
     if (!res.ok) {
       let msg = `сервер ответил ${res.status}`;
+      let code = '';
       try {
         const body = await res.json();
-        if (body.error) msg = body.error;
+        if (body.error_details && body.error_details.code) code = body.error_details.code;
+        if (body.error_details && body.error_details.message) msg = body.error_details.message;
+        else if (body.error) msg = body.error;
       } catch (e) {}
+      if (res.status === 403 && code === 'WAITLIST_MOVED') {
+        tr.remove();
+        showBanner('Строка перенесена в другой филиал');
+        return;
+      }
       if (oc) oc.value = prev;
       showBanner(msg);
       markRow(tr, msg);
@@ -1133,7 +1154,14 @@ async function saveWaitlist(tr, outcome, action) {
     }
     const body = await res.json();
     if (epoch !== viewEpoch || filterKey !== waitlistKey) return;
-    if (fullWaitlistRow(body.data)) applyWaitlistItem(tr, body.data);
+    const data = body.data || {};
+    if (data.row) {
+      applyWorkingFields(tr, data.row);
+      if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(tr, data.full);
+      else loadWaitlist();
+    } else if (fullWaitlistRow(data)) {
+      applyWaitlistItem(tr, data);
+    }
     pendingWl.delete(tr.dataset.key);
     const clock = msk(new Date()).toTimeString().slice(0, 5);
     markRow(tr, 'Сохранено ✓ ' + (dashUser || '') + ', ' + clock);

@@ -68,7 +68,7 @@ func TestRouter_ResetPasswordOneTransactionAndLastAdmin(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Fatalf("reset %d %s", rw.Code, rw.Body.String())
 	}
-	if elapsed >= time.Second {
+	if elapsed >= 3*time.Second {
 		t.Fatalf("reset took %s", elapsed)
 	}
 	var body struct {

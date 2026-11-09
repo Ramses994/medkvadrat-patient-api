@@ -30,6 +30,7 @@ var ErrInvalidWaitlistTransition = errors.New("INVALID_WAITLIST_TRANSITION")
 var ErrUnknownWaitlistOutcome = errors.New("UNKNOWN_WAITLIST_OUTCOME")
 var ErrWaitlistNotFound = errors.New("WAITLIST_NOT_FOUND")
 var ErrWaitlistChanged = errors.New("WAITLIST_CHANGED")
+var ErrWaitlistMoved = errors.New("WAITLIST_MOVED")
 
 // DashboardItem is a waitlist row plus Medialog fields for the staff page.
 type DashboardItem struct {
@@ -60,6 +61,7 @@ type DashboardItem struct {
 	UpdatedAt       string
 	ApptStart       string
 	Version         int
+	Enriched        bool
 }
 
 type DashboardPage struct {
@@ -132,13 +134,14 @@ func CountWaitlistByPlanning(ctx context.Context, db *sql.DB, planningID int64) 
 }
 
 type WaitlistListFilter struct {
-	OpenOnly  bool
-	Status    string
-	BranchID  *int
-	BranchIDs []int
-	Source    string
-	Page      int
-	PerPage   int
+	OpenOnly             bool
+	Status               string
+	BranchID             *int
+	BranchIDs            []int
+	Source               string
+	Page                 int
+	PerPage              int
+	IncludeOtherBranches bool
 }
 
 func (r *Repo) ListWaitlist(ctx context.Context, f WaitlistListFilter) (rows []WaitlistRow, total int, err error) {
@@ -157,6 +160,10 @@ func (r *Repo) ListWaitlist(ctx context.Context, f WaitlistListFilter) (rows []W
 	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count waitlist: %w", err)
 	}
+	off := int64(f.Page-1) * int64(f.PerPage)
+	if off < 0 || off >= int64(total) {
+		return []WaitlistRow{}, total, nil
+	}
 
 	q := `
 SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
@@ -164,7 +171,7 @@ SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, st
 FROM waitlist` + where + `
 ORDER BY created_at DESC, id DESC
 LIMIT ? OFFSET ?`
-	args = append(append([]any{}, args...), f.PerPage, (f.Page-1)*f.PerPage)
+	args = append(append([]any{}, args...), f.PerPage, off)
 	rs, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list waitlist: %w", err)
@@ -217,10 +224,14 @@ func waitlistWhere(f WaitlistListFilter) (string, []any) {
 		parts = append(parts, `branch_id = ?`)
 		args = append(args, *f.BranchID)
 	} else if len(f.BranchIDs) > 0 {
-		parts = append(parts, `branch_id IN (`+placeholders(len(f.BranchIDs))+`)`)
+		in := `branch_id IN (` + placeholders(len(f.BranchIDs)) + `)`
 		for _, id := range f.BranchIDs {
 			args = append(args, id)
 		}
+		if f.IncludeOtherBranches {
+			in = "(" + in + " OR branch_id NOT IN (106,3,496))"
+		}
+		parts = append(parts, in)
 	}
 	if len(parts) == 0 {
 		return "", nil
@@ -301,6 +312,30 @@ LIMIT ?`
 }
 
 // SetWaitlistBranch stores the live Medialog branch in our database.
+func (r *Repo) ListOpenBranchRows(ctx context.Context) ([]WaitlistRow, error) {
+	rs, err := r.db.QueryContext(ctx, `
+SELECT id, planning_id, branch_id
+FROM waitlist
+WHERE status IN ('new','contacted')
+ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rs.Close()
+	var rows []WaitlistRow
+	for rs.Next() {
+		var row WaitlistRow
+		if err := rs.Scan(&row.ID, &row.PlanningID, &row.BranchID); err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	if rows == nil {
+		rows = []WaitlistRow{}
+	}
+	return rows, rs.Err()
+}
+
 func (r *Repo) SetWaitlistBranch(ctx context.Context, id int64, branchID int) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE waitlist SET branch_id = ? WHERE id = ? AND branch_id <> ?`, branchID, id, branchID)
 	return err
