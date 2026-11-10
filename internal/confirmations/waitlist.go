@@ -373,13 +373,18 @@ func dashboardWhere(f WaitlistListFilter, now time.Time) (string, []any) {
 	return " WHERE (status IN ('new','contacted') OR (status IN ('rebooked','closed') AND updated_at >= ?))", []any{cutoff}
 }
 
-// SetWaitlistBranch stores the live Medialog branch in our database.
-func (r *Repo) ListOpenBranchRows(ctx context.Context) ([]WaitlistRow, error) {
+// ListOpenBranchRows reads open MAX rows for one dashboard generation.
+// More than cap rows is ErrWaitlistOverloaded and must stop the Medialog read.
+func (r *Repo) ListOpenBranchRows(ctx context.Context, cap int) ([]WaitlistRow, error) {
+	if cap < 1 {
+		cap = 1
+	}
 	rs, err := r.db.QueryContext(ctx, `
-SELECT id, planning_id, branch_id, IFNULL(created_at_msk, '')
+SELECT id, planning_id, patient_id, branch_id, IFNULL(created_at_msk, '')
 FROM waitlist
 WHERE status IN ('new','contacted')
-ORDER BY id`)
+ORDER BY id
+LIMIT ?`, cap+1)
 	if err != nil {
 		return nil, err
 	}
@@ -387,15 +392,21 @@ ORDER BY id`)
 	var rows []WaitlistRow
 	for rs.Next() {
 		var row WaitlistRow
-		if err := rs.Scan(&row.ID, &row.PlanningID, &row.BranchID, &row.CreatedAtMSK); err != nil {
+		if err := rs.Scan(&row.ID, &row.PlanningID, &row.PatientID, &row.BranchID, &row.CreatedAtMSK); err != nil {
 			return nil, err
 		}
 		rows = append(rows, row)
 	}
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	if len(rows) > cap {
+		return nil, ErrWaitlistOverloaded
+	}
 	if rows == nil {
 		rows = []WaitlistRow{}
 	}
-	return rows, rs.Err()
+	return rows, nil
 }
 
 func (r *Repo) SetWaitlistBranch(ctx context.Context, id int64, branchID int) error {

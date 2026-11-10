@@ -779,11 +779,12 @@ async function loadWaitlist() {
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
-    if (epoch !== viewEpoch || selectingText()) return;
+    if (epoch !== viewEpoch) return;
     lastOkAt = Date.now();
     if (body.data && body.data.banner) showBanner(body.data.banner);
     else hideBanner();
-    paintWaitlist(body.data, q.key);
+    if (selectingText()) paintWaitlistSelection(body.data);
+    else paintWaitlist(body.data, q.key);
   } catch (err) {
     if (epoch === viewEpoch) showBanner(`Не удалось обновить лист ожидания: ${err.message}.`);
   } finally {
@@ -843,13 +844,7 @@ function paintWaitlist(data, key) {
       if (wlSeen.size) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
       wlSeen.set(rowKey(it), it.status);
     } else {
-      applyMedialogFields(tr, it);
-      if (unsavedWork(tr)) {
-        if ((it.status || '') !== tr.dataset.status) showConflict(tr);
-        pendingWl.set(tr.dataset.key, it);
-      } else {
-        applyWaitlistItem(tr, it);
-      }
+      applyHeldRow(tr, it);
     }
     tr.classList.toggle('fresh', (wlFresh.get(rowKey(it)) || 0) > Date.now());
   });
@@ -866,6 +861,39 @@ function paintWaitlist(data, key) {
     if (tr.previousElementSibling !== after) tbody.insertBefore(tr, after ? after.nextSibling : tbody.firstChild);
     after = tr;
   });
+}
+
+function paintWaitlistSelection(data) {
+  const items = data.items || [];
+  $('waitlistCount').textContent = String(data.open_total || 0);
+  const tbody = $('waitlistList').querySelector('tbody');
+  if (!tbody) return;
+  const ids = items.map(it => (it.source || 'max') + ':' + it.id);
+  const byKey = new Map(items.map(it => [(it.source || 'max') + ':' + it.id, it]));
+  [...tbody.querySelectorAll('tr')].forEach(tr => {
+    if (!ids.includes(tr.dataset.key)) {
+      pendingWl.delete(tr.dataset.key);
+      tr.remove();
+      return;
+    }
+    applyHeldRow(tr, byKey.get(tr.dataset.key));
+  });
+}
+
+function applyHeldRow(tr, it) {
+  applyMedialogFields(tr, it);
+  if (rowBusy(tr) || unsavedWork(tr)) {
+    if (incomingWorkDiffers(tr, it)) showConflict(tr);
+    pendingWl.set(tr.dataset.key, it);
+    return;
+  }
+  applyWaitlistItem(tr, it);
+}
+
+function incomingWorkDiffers(tr, it) {
+  if ((it.status || '') !== (tr.dataset.status || '')) return true;
+  const oc = tr.querySelector('.wl-outcome');
+  return !!oc && (it.outcome || '') !== oc.value;
 }
 
 function renderWaitlistRow(it) {

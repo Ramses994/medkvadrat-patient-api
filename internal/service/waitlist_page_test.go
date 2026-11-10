@@ -39,7 +39,7 @@ VALUES(77,66,'v','2026-11-06 10:00:00','declined','max','new','2026-11-06T06:00:
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77: {PlanningID: 77, BranchID: 3, DateStart: "2026-11-06 10:00:00", PatientName: "Иванов"},
+			77: {PlanningID: 77, PatientID: 66, BranchID: 3, DateStart: "2026-11-06 10:00:00", PatientName: "Иванов"},
 		}}, nil
 	}
 	svc := &Services{SQLite: db, MSSQL: db}
@@ -215,7 +215,16 @@ VALUES(?,?, 'v', '2026-11-06 10:00:00', 'declined', 'max', 'new', ?, ?, '2026-11
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		live := map[int64]repo.WaitlistPlanningLive{}
 		for _, id := range planningIDs {
-			live[id] = repo.WaitlistPlanningLive{PlanningID: id, BranchID: 106, PatientName: "Реестр"}
+			patient := id
+			switch id {
+			case 501:
+				patient = 1
+			case 502:
+				patient = 2
+			case 503:
+				patient = 3
+			}
+			live[id] = repo.WaitlistPlanningLive{PlanningID: id, PatientID: patient, BranchID: 106, PatientName: "Реестр", IsWaitlist: true}
 		}
 		return pageEnrichment{live: live}, nil
 	}

@@ -192,7 +192,22 @@ async function openBoard(page, opts) {
         outcome: body.action === 'reopen' ? '' : body.outcome,
         version: (body.version || 1) + 1,
       });
-      await route.fulfill({ json: { success: true, data: saved } });
+      await route.fulfill({
+        json: {
+          success: true,
+          data: {
+            row: {
+              status: saved.status,
+              outcome: saved.outcome,
+              version: saved.version,
+              updated_by: saved.updated_by || '',
+              updated_at: saved.updated_at || '',
+            },
+            enriched: !!(saved.patient_name || saved.patient_phone),
+            full: saved,
+          },
+        },
+      });
       return;
     }
     const url = new URL(route.request().url());
@@ -364,6 +379,51 @@ test('focused row clears medialog fields and keeps the outcome', async ({ page }
   await expect(page.locator('#waitlistList')).not.toContainText('+79990001122');
   await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
   release();
+});
+
+async function selectRowText(page, locator) {
+  await locator.evaluate(el => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+}
+
+test('a text selection still clears medialog fields', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await selectRowText(page, page.locator('#waitlistList a'));
+  state.banner = 'Медиалог недоступен';
+  state.list = [row({
+    patient_name: '',
+    patient_phone: '',
+    patient_birth: '',
+    orig_date_start: '',
+    orig_doctor: '',
+    orig_service: '',
+    medialog_state: '',
+    future_label: '',
+  })];
+  const refresh = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist'));
+  await page.clock.fastForward(11000);
+  await refresh;
+  await expect(page.locator('#banner')).toContainText('Медиалог недоступен');
+  await expect(page.locator('#waitlistList')).not.toContainText('+79990001122');
+});
+
+test('a text selection still drops a moved row', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList tbody tr')).toHaveCount(1);
+  await selectRowText(page, page.locator('#waitlistList'));
+  state.list = [];
+  const refresh = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist'));
+  await page.clock.fastForward(11000);
+  await refresh;
+  await expect(page.locator('#waitlistList tbody tr')).toHaveCount(0);
 });
 
 test('conflict without enrichment reloads the row', async ({ page }) => {

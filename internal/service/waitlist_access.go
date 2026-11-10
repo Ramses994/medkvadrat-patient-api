@@ -25,6 +25,12 @@ const (
 // More than this is a logged 503, not a truncated page.
 var dashboardRowCap = 5000
 
+// snapshotDownTTL is how long a failed Medialog read is reused.
+const snapshotDownTTL = 10 * time.Second
+
+// medialogReadTimeout is the detached read budget when config has none.
+const medialogReadTimeout = 15 * time.Second
+
 // RowState is one appointment in the current snapshot generation.
 type RowState struct {
 	Kind       int
@@ -71,12 +77,18 @@ var storeWaitlistBranch = func(ctx context.Context, wl *confirmations.Repo, id i
 
 var beforePersistBranches = func() {}
 
+var beforeDashboardServe = func() {}
+
+var beforePatchApply = func() {}
+
 func resetSnapStore() {
 	snapStore.mu.Lock()
 	snapStore.cur = nil
 	snapStore.gen = 0
 	snapStore.mu.Unlock()
 	beforePersistBranches = func() {}
+	beforeDashboardServe = func() {}
+	beforePatchApply = func() {}
 	storeWaitlistBranch = func(ctx context.Context, wl *confirmations.Repo, id int64, branch int) error {
 		return wl.SetWaitlistBranch(ctx, id, branch)
 	}
@@ -93,25 +105,41 @@ func (s *Services) warn() *slog.Logger {
 	return slog.Default()
 }
 
-func (s *Services) prepareSnapshot(ctx context.Context, wl *confirmations.Repo) *Snapshot {
+func (s *Services) readBudget() time.Duration {
+	if s != nil && s.Config.MedialogRWTimeout > 0 {
+		return s.Config.MedialogRWTimeout
+	}
+	return medialogReadTimeout
+}
+
+func (s *Services) prepareSnapshot(ctx context.Context, wl *confirmations.Repo) (*Snapshot, error) {
 	startSnapshotSweep()
 	if s == nil || s.MSSQL == nil || wl == nil {
-		return &Snapshot{rows: map[rowKey]RowState{}}
+		return &Snapshot{takenAt: misNow(), rows: map[rowKey]RowState{}}, nil
 	}
 	if cur := currentSnap(misNow()); cur != nil {
-		return cur
+		return cur, nil
 	}
-	v, _, _ := snapStore.flight.Do("dashboard", func() (any, error) {
+	v, err, _ := snapStore.flight.Do("dashboard", func() (any, error) {
 		now := misNow()
 		if cur := currentSnap(now); cur != nil {
 			return cur, nil
 		}
-		built, err := s.readSnapshot(ctx, wl)
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.readBudget())
+		defer cancel()
+		built, err := s.readSnapshot(readCtx, wl)
+		if errors.Is(err, confirmations.ErrWaitlistOverloaded) {
+			s.warn().Error("waitlist dashboard over cap", "cap", dashboardRowCap)
+			return nil, err
+		}
 		if err != nil {
+			down := &Snapshot{down: true, takenAt: misNow(), rows: map[rowKey]RowState{}}
 			snapStore.mu.Lock()
-			snapStore.cur = nil
+			down.gen = snapStore.gen + 1
+			snapStore.gen = down.gen
+			snapStore.cur = down
 			snapStore.mu.Unlock()
-			return &Snapshot{down: true, rows: map[rowKey]RowState{}}, nil
+			return down, nil
 		}
 		snapStore.mu.Lock()
 		built.gen = snapStore.gen + 1
@@ -122,24 +150,49 @@ func (s *Services) prepareSnapshot(ctx context.Context, wl *confirmations.Repo) 
 		s.persistBranches(ctx, wl, built)
 		return built, nil
 	})
+	if err != nil {
+		return nil, err
+	}
 	snap, _ := v.(*Snapshot)
 	if snap == nil {
-		return &Snapshot{down: true, rows: map[rowKey]RowState{}}
+		return &Snapshot{down: true, takenAt: misNow(), rows: map[rowKey]RowState{}}, nil
 	}
-	return snap
+	return snap, nil
 }
 
 func currentSnap(now time.Time) *Snapshot {
 	snapStore.mu.Lock()
 	defer snapStore.mu.Unlock()
-	if snapStore.cur == nil || now.Sub(snapStore.cur.takenAt) >= dashboardCacheTTL {
+	cur := snapStore.cur
+	if cur == nil {
 		return nil
 	}
-	return snapStore.cur
+	age := now.Sub(cur.takenAt)
+	if cur.down {
+		if age >= snapshotDownTTL {
+			return nil
+		}
+		return cur
+	}
+	if age >= dashboardCacheTTL {
+		return nil
+	}
+	return cur
+}
+
+func (snap *Snapshot) live(now time.Time) bool {
+	return snap != nil && !snap.down && now.Sub(snap.takenAt) < dashboardCacheTTL
+}
+
+func usableSnapshot(snap *Snapshot, now time.Time) *Snapshot {
+	if snap.live(now) {
+		return snap
+	}
+	return &Snapshot{down: true, takenAt: now, rows: map[rowKey]RowState{}}
 }
 
 func (s *Services) readSnapshot(ctx context.Context, wl *confirmations.Repo) (*Snapshot, error) {
-	openRows, err := wl.ListOpenBranchRows(ctx)
+	openRows, err := wl.ListOpenBranchRows(ctx, dashboardRowCap)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +229,7 @@ func (s *Services) readSnapshot(ctx context.Context, wl *confirmations.Repo) (*S
 	snap := &Snapshot{rows: map[rowKey]RowState{}, mis: mis, page: page}
 	for _, row := range openRows {
 		st := RowState{Kind: rowMissing, Saved: row.BranchID, WaitlistID: row.ID, PlanningID: row.PlanningID}
-		if live, ok := page.live[row.PlanningID]; ok {
+		if live, ok := page.live[row.PlanningID]; ok && live.PatientID == row.PatientID {
 			st.Kind = rowFound
 			st.Branch = live.BranchID
 			st.Live = live
@@ -192,11 +245,14 @@ func (s *Services) readSnapshot(ctx context.Context, wl *confirmations.Repo) (*S
 	}
 	for i := range mis {
 		live, ok := page.live[mis[i].PlanningID]
-		if !ok {
+		if !ok || !registryAgrees(mis[i], live) {
 			continue
 		}
 		reg := mis[i]
-		st := RowState{Kind: rowFound, Branch: live.BranchID, PlanningID: mis[i].PlanningID, Live: live, Registry: &reg}
+		st := RowState{
+			Kind: rowFound, Branch: live.BranchID, Saved: mis[i].BranchID,
+			PlanningID: mis[i].PlanningID, Live: live, Registry: &reg,
+		}
 		if fut, ok := page.byOrigin[mis[i].PlanningID]; ok {
 			cp := fut
 			st.Future = &cp
@@ -206,20 +262,24 @@ func (s *Services) readSnapshot(ctx context.Context, wl *confirmations.Repo) (*S
 	return snap, nil
 }
 
+func registryAgrees(mis repo.WaitlistMisRow, live repo.WaitlistPlanningLive) bool {
+	return live.PatientID == mis.PatientID && live.Cancelled == 0 && live.Status == 0 && live.IsWaitlist
+}
+
 func (s *Services) persistBranches(ctx context.Context, wl *confirmations.Repo, snap *Snapshot) {
 	if snap == nil || wl == nil || len(snap.writes) == 0 {
 		return
 	}
 	beforePersistBranches()
-	snapStore.mu.Lock()
-	current := snapStore.gen
-	snapStore.mu.Unlock()
-	if current != snap.gen {
-		return
-	}
 	for _, w := range snap.writes {
 		if w.Branch == 0 {
 			continue
+		}
+		snapStore.mu.Lock()
+		ok := snapStore.cur == snap && snap.gen == snapStore.gen && snap.live(misNow())
+		snapStore.mu.Unlock()
+		if !ok {
+			return
 		}
 		if err := storeWaitlistBranch(ctx, wl, w.ID, w.Branch); err != nil {
 			s.warn().Warn("waitlist branch reserve failed", "waitlist_id", w.ID, "branch_id", w.Branch, "err", err)
@@ -248,7 +308,16 @@ func (snap *Snapshot) banner() string {
 func sweepDashboardCaches(now time.Time) {
 	snapStore.mu.Lock()
 	defer snapStore.mu.Unlock()
-	if snapStore.cur != nil && now.Sub(snapStore.cur.takenAt) >= dashboardCacheTTL {
+	cur := snapStore.cur
+	if cur == nil {
+		return
+	}
+	age := now.Sub(cur.takenAt)
+	if cur.down && age >= snapshotDownTTL {
+		snapStore.cur = nil
+		return
+	}
+	if !cur.down && age >= dashboardCacheTTL {
 		snapStore.cur = nil
 	}
 }
@@ -353,7 +422,10 @@ func access(p staff.Principal, source string, savedBranch int, st *RowState, sna
 func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.WaitlistListFilter) (confirmations.DashboardPage, error) {
 	wl := confirmations.NewRepo(s.SQLite)
 	pageN, per := waitlistPage(filter)
-	snap := s.prepareSnapshot(ctx, wl)
+	snap, err := s.prepareSnapshot(ctx, wl)
+	if err != nil {
+		return confirmations.DashboardPage{}, err
+	}
 	openRows, err := s.dashboardRows(ctx, wl, openFilter(filter))
 	if err != nil {
 		return confirmations.DashboardPage{}, err
@@ -365,6 +437,8 @@ func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.W
 			return confirmations.DashboardPage{}, err
 		}
 	}
+	beforeDashboardServe()
+	snap = usableSnapshot(snap, misNow())
 	restricted, scope := staffScope(ctx)
 	var tagged []waitTagged
 	if filter.Source != "registry" {
@@ -463,7 +537,7 @@ func (s *Services) maxItem(ctx context.Context, row confirmations.WaitlistRow, s
 		return confirmations.DashboardItem{}, false
 	}
 	it := itemFromWaitlist(row)
-	if pii && st != nil && st.Branch != 0 {
+	if pii && st != nil && st.Kind == rowFound {
 		it.BranchID = st.Branch
 	}
 	if !branchAllowed(ctx, filter, it.BranchID) {
@@ -491,7 +565,11 @@ func (s *Services) registryItems(ctx context.Context, wl *confirmations.Repo, fi
 	for i := range snap.mis {
 		row := snap.mis[i]
 		st := snap.lookup("registry", row.PlanningID)
-		visible, pii, _ := access(p, "registry", 0, st, snap.down)
+		saved := 0
+		if st != nil {
+			saved = st.Saved
+		}
+		visible, pii, _ := access(p, "registry", saved, st, snap.down)
 		if !visible || st == nil {
 			continue
 		}
@@ -514,7 +592,8 @@ func (s *Services) registryItems(ctx context.Context, wl *confirmations.Repo, fi
 			CreatedAt: row.CreatedAt, CreatedAtMSK: row.CreatedAt,
 			UpdatedBy: w.UpdatedBy, UpdatedAt: w.UpdatedAt, Version: version,
 		}
-		if pii && st.Branch != 0 {
+		if pii && st.Kind == rowFound {
+			it.PatientID = st.Live.PatientID
 			it.BranchID = st.Branch
 		}
 		if !branchAllowed(ctx, filter, it.BranchID) {
@@ -609,8 +688,13 @@ func (s *Services) UpdateWaitlist(ctx context.Context, id int64, status, outcome
 		return confirmations.WaitlistRow{}, err
 	}
 	if p, ok := staff.PrincipalFrom(ctx); ok {
-		snap := s.prepareSnapshot(ctx, wl)
-		_, _, aerr := access(p, "max", row.BranchID, snap.lookup("max", row.ID), snap.down)
+		snap, err := s.prepareSnapshot(ctx, wl)
+		if err != nil {
+			return confirmations.WaitlistRow{}, err
+		}
+		beforePatchApply()
+		view := usableSnapshot(snap, misNow())
+		_, _, aerr := access(p, "max", row.BranchID, view.lookup("max", row.ID), view.down)
 		if aerr != nil {
 			if aerr == confirmations.ErrWaitlistMoved {
 				return confirmations.WaitlistRow{}, staff.ErrBranchForbidden
@@ -626,16 +710,29 @@ func (s *Services) UpdateRegistryWaitlist(ctx context.Context, planningID int64,
 		return confirmations.MisWork{}, confirmations.ErrWaitlistNotFound
 	}
 	wl := confirmations.NewRepo(s.SQLite)
-	snap := s.prepareSnapshot(ctx, wl)
+	snap, err := s.prepareSnapshot(ctx, wl)
+	if err != nil {
+		return confirmations.MisWork{}, err
+	}
+	beforePatchApply()
+	view := usableSnapshot(snap, misNow())
+	if !view.live(misNow()) {
+		return confirmations.MisWork{}, confirmations.ErrWaitlistNotFound
+	}
 	if p, ok := staff.PrincipalFrom(ctx); ok {
-		_, _, aerr := access(p, "registry", 0, snap.lookup("registry", planningID), snap.down)
+		st := view.lookup("registry", planningID)
+		saved := 0
+		if st != nil {
+			saved = st.Saved
+		}
+		_, _, aerr := access(p, "registry", saved, st, view.down)
 		if aerr != nil {
 			if aerr == confirmations.ErrWaitlistMoved {
 				return confirmations.MisWork{}, staff.ErrBranchForbidden
 			}
 			return confirmations.MisWork{}, aerr
 		}
-	} else if snap.down || snap.lookup("registry", planningID) == nil {
+	} else if view.lookup("registry", planningID) == nil {
 		return confirmations.MisWork{}, confirmations.ErrWaitlistNotFound
 	}
 	return wl.UpdateMisWork(ctx, planningID, status, outcome, updatedBy, time.Now().UTC())
@@ -647,15 +744,21 @@ func (s *Services) PatchWaitlist(ctx context.Context, id int64, version int, out
 	if err != nil {
 		return confirmations.DashboardItem{}, err
 	}
-	snap := s.prepareSnapshot(ctx, wl)
+	snap, err := s.prepareSnapshot(ctx, wl)
+	if err != nil {
+		return confirmations.DashboardItem{}, err
+	}
+	beforePatchApply()
+	view := usableSnapshot(snap, misNow())
 	if p, ok := staff.PrincipalFrom(ctx); ok {
-		_, _, aerr := access(p, "max", row.BranchID, snap.lookup("max", row.ID), snap.down)
+		_, _, aerr := access(p, "max", row.BranchID, view.lookup("max", row.ID), view.down)
 		if aerr != nil {
 			return confirmations.DashboardItem{}, aerr
 		}
 	}
 	applied, err := wl.ApplyWaitlist(ctx, id, version, outcome, action, updatedBy, time.Now().UTC())
-	return s.fullWaitlistItem(ctx, applied, snap), err
+	view = usableSnapshot(snap, misNow())
+	return s.fullWaitlistItem(ctx, applied, view), err
 }
 
 func (s *Services) fullWaitlistItem(ctx context.Context, row confirmations.WaitlistRow, snap *Snapshot) confirmations.DashboardItem {
@@ -676,16 +779,32 @@ func (s *Services) PatchRegistryWaitlist(ctx context.Context, planningID int64, 
 		return confirmations.DashboardItem{}, confirmations.ErrWaitlistNotFound
 	}
 	wl := confirmations.NewRepo(s.SQLite)
-	snap := s.prepareSnapshot(ctx, wl)
+	snap, err := s.prepareSnapshot(ctx, wl)
+	if err != nil {
+		return confirmations.DashboardItem{}, err
+	}
+	beforePatchApply()
+	if !snap.live(misNow()) {
+		return confirmations.DashboardItem{}, confirmations.ErrWaitlistNotFound
+	}
+	st := snap.lookup("registry", planningID)
+	saved := 0
+	if st != nil {
+		saved = st.Saved
+	}
 	if p, ok := staff.PrincipalFrom(ctx); ok {
-		_, _, aerr := access(p, "registry", 0, snap.lookup("registry", planningID), snap.down)
+		_, _, aerr := access(p, "registry", saved, st, snap.down)
 		if aerr != nil {
 			return confirmations.DashboardItem{}, aerr
 		}
-	} else if snap.down || snap.lookup("registry", planningID) == nil {
+	} else if st == nil {
+		return confirmations.DashboardItem{}, confirmations.ErrWaitlistNotFound
+	}
+	if !snap.live(misNow()) {
 		return confirmations.DashboardItem{}, confirmations.ErrWaitlistNotFound
 	}
 	work, err := wl.ApplyMisWork(ctx, planningID, version, outcome, action, updatedBy, time.Now().UTC())
+	snap = usableSnapshot(snap, misNow())
 	restricted, scope := staffScope(ctx)
 	items, rerr := s.registryItems(ctx, wl, confirmations.WaitlistListFilter{}, snap, restricted, scope)
 	if rerr != nil {

@@ -29,8 +29,8 @@ func TestSnapshot_MoveBothSources(t *testing.T) {
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		live := map[int64]repo.WaitlistPlanningLive{
-			77:  {PlanningID: 77, BranchID: 3, PatientName: "Макс", Phone: "79990000001", DateStart: "2026-11-06 10:00:00"},
-			880: {PlanningID: 880, BranchID: 3, PatientName: "Реестр", Phone: "79990000002"},
+			77:  {PlanningID: 77, PatientID: 77, BranchID: 3, PatientName: "Макс", Phone: "79990000001", DateStart: "2026-11-06 10:00:00"},
+			880: {PlanningID: 880, PatientID: 5, BranchID: 3, PatientName: "Реестр", Phone: "79990000002", IsWaitlist: true},
 		}
 		return pageEnrichment{live: live, byOrigin: map[int64]repo.WaitlistFutureVisit{}}, nil
 	}
@@ -99,8 +99,8 @@ func TestSnapshot_ReadFailureAfterTTL(t *testing.T) {
 			return pageEnrichment{}, errors.New("medialog down")
 		}
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			4:   {PlanningID: 4, BranchID: 106, PatientName: "СекретМакс", Phone: "79990001122", DateStart: "2026-11-06 10:00:00"},
-			880: {PlanningID: 880, BranchID: 106, PatientName: "СекретРеестра", Phone: "79991112233"},
+			4:   {PlanningID: 4, PatientID: 4, BranchID: 106, PatientName: "СекретМакс", Phone: "79990001122", DateStart: "2026-11-06 10:00:00"},
+			880: {PlanningID: 880, PatientID: 5, BranchID: 106, PatientName: "СекретРеестра", Phone: "79991112233", IsWaitlist: true},
 		}}, nil
 	}
 	ctx := context.Background()
@@ -142,7 +142,7 @@ func TestSnapshot_UnknownBranch(t *testing.T) {
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			82: {PlanningID: 82, BranchID: 999, PatientName: "ЧужойФилиал", Phone: "79990000999"},
+			82: {PlanningID: 82, PatientID: 82, BranchID: 999, PatientName: "ЧужойФилиал", Phone: "79990000999"},
 		}}, nil
 	}
 	ctx := context.Background()
@@ -224,8 +224,8 @@ func TestSnapshot_FuturesByOrigin(t *testing.T) {
 		}
 		return pageEnrichment{
 			live: map[int64]repo.WaitlistPlanningLive{
-				10: {PlanningID: 10, BranchID: 106, PatientName: "Один", DateStart: "2026-11-06 10:00:00"},
-				11: {PlanningID: 11, BranchID: 106, PatientName: "Один", DateStart: "2026-11-06 10:00:00"},
+				10: {PlanningID: 10, PatientID: 1, BranchID: 106, PatientName: "Один", DateStart: "2026-11-06 10:00:00"},
+				11: {PlanningID: 11, PatientID: 1, BranchID: 106, PatientName: "Один", DateStart: "2026-11-06 10:00:00"},
 			},
 			byOrigin: futuresByOrigin(futures),
 		}, nil
@@ -271,7 +271,7 @@ func TestSnapshot_RegistrySameDayFuture(t *testing.T) {
 			DateStart: "2026-11-10 18:30:00", BranchID: 106,
 		}
 		return pageEnrichment{
-			live:     map[int64]repo.WaitlistPlanningLive{50: {PlanningID: 50, BranchID: 106, PatientName: "Реестр"}},
+			live:     map[int64]repo.WaitlistPlanningLive{50: {PlanningID: 50, PatientID: 1, BranchID: 106, PatientName: "Реестр", IsWaitlist: true}},
 			byOrigin: futuresByOrigin([]repo.WaitlistFutureVisit{fut}),
 		}, nil
 	}
@@ -304,7 +304,7 @@ func TestSnapshot_IdleHourDropsNames(t *testing.T) {
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			4: {PlanningID: 4, BranchID: 106, PatientName: "СекретМаксЧас"},
+			4: {PlanningID: 4, PatientID: 4, BranchID: 106, PatientName: "СекретМаксЧас"},
 		}}, nil
 	}
 	db := openWaitlistDB(t, "wl_snap_idle")
@@ -344,7 +344,7 @@ func TestSnapshot_OpenSetReloadsTogether(t *testing.T) {
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		enrichCalls++
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77: {PlanningID: 77, BranchID: 106, PatientName: "Макс"},
+			77: {PlanningID: 77, PatientID: 77, BranchID: 106, PatientName: "Макс"},
 		}}, nil
 	}
 	db := openWaitlistDB(t, "wl_snap_generation")

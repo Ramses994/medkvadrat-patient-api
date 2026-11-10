@@ -245,6 +245,11 @@ func (h WaitlistHandler) writeWaitlistErr(w http.ResponseWriter, err error, id i
 		response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Недопустимый итог звонка")
 	case errors.Is(err, confirmations.ErrWaitlistMoved):
 		response.Error(w, http.StatusForbidden, "WAITLIST_MOVED", "Строка перенесена в другой филиал")
+	case errors.Is(err, confirmations.ErrWaitlistOverloaded):
+		if h.Logger != nil {
+			h.Logger.Error("waitlist update over cap", "err", err)
+		}
+		response.Error(w, http.StatusServiceUnavailable, "WAITLIST_UNAVAILABLE", "Лист ожидания временно недоступен")
 	case errors.Is(err, staff.ErrBranchForbidden):
 		response.Error(w, http.StatusForbidden, "FORBIDDEN", "Нет доступа к этому филиалу")
 	default:

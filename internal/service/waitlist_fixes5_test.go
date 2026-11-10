@@ -31,8 +31,8 @@ func TestSnapshot_OneReadForParallelTabs(t *testing.T) {
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		enrichCalls.Add(1)
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77:  {PlanningID: 77, BranchID: 106, PatientName: "Макс", Phone: "79990000001"},
-			880: {PlanningID: 880, BranchID: 106, PatientName: "Реестр", Phone: "79990000002"},
+			77:  {PlanningID: 77, PatientID: 77, BranchID: 106, PatientName: "Макс", Phone: "79990000001"},
+			880: {PlanningID: 880, PatientID: 5, BranchID: 106, PatientName: "Реестр", Phone: "79990000002", IsWaitlist: true},
 		}}, nil
 	}
 	db := openWaitlistDB(t, "wl_one_read")
@@ -92,7 +92,7 @@ func TestSnapshot_WriteFailureDoesNotRestoreOldBranch(t *testing.T) {
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77: {PlanningID: 77, BranchID: 3, PatientName: "Макс", Phone: phone},
+			77: {PlanningID: 77, PatientID: 77, BranchID: 3, PatientName: "Макс", Phone: phone},
 		}}, nil
 	}
 	storeWaitlistBranch = func(ctx context.Context, wl *confirmations.Repo, id int64, branch int) error {
@@ -151,7 +151,7 @@ func TestSnapshot_StaleGenerationDoesNotWriteBranch(t *testing.T) {
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77: {PlanningID: 77, BranchID: 3, PatientName: "Макс", Phone: "79990000001"},
+			77: {PlanningID: 77, PatientID: 77, BranchID: 3, PatientName: "Макс", Phone: "79990000001"},
 		}}, nil
 	}
 	beforePersistBranches = func() {
@@ -187,7 +187,7 @@ func TestSnapshot_BlankNameIsNotEnriched(t *testing.T) {
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77: {PlanningID: 77, BranchID: 106, PatientName: " ", Phone: ""},
+			77: {PlanningID: 77, PatientID: 77, BranchID: 106, PatientName: " ", Phone: ""},
 		}}, nil
 	}
 	db := openWaitlistDB(t, "wl_blank_name")

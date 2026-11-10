@@ -141,8 +141,28 @@ async function openDashboard(page, state) {
   });
   await page.route('**/dashboard/waitlist**', async route => {
     if (route.request().method() !== 'GET') {
-      try { state.saved = route.request().postDataJSON(); } catch (e) { state.saved = {}; }
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"success":true,"data":{}}' });
+      let body = {};
+      try { body = route.request().postDataJSON() || {}; } catch (e) { body = {}; }
+      state.saved = body;
+      const outcome = body.outcome || '';
+      const item = baseItem({
+        patient_name: state.wlName,
+        status: state.wlStatus,
+        outcome,
+        version: (body.version || 1) + 1,
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            row: { status: item.status, outcome: item.outcome, version: item.version, updated_by: 'kash', updated_at: '06.11 13:39' },
+            enriched: true,
+            full: item,
+          },
+        }),
+      });
       return;
     }
     const saved = state.saved || {};
@@ -221,7 +241,7 @@ test('a row inserted above the viewport leaves the visible row in place', async 
   expect(Math.abs(topAfter - top)).toBeLessThan(2);
 });
 
-test('a focused unsaved choice keeps the outcome while the medialog name updates', async ({ page }) => {
+test('a focused saved choice keeps the outcome until idle', async ({ page }) => {
   const state = freshState();
   await openDashboard(page, state);
   await page.locator('#tabWaitlist').click();
@@ -237,11 +257,12 @@ test('a focused unsaved choice keeps the outcome while the medialog name updates
   await page.clock.fastForward(2_000);
   await expect(page.locator('.wl-outcome')).toHaveValue('refused');
   await expect(page.locator('.wl-outcome')).toBeFocused();
+  await expect(page.locator('.wl-conflict')).toContainText('Изменено другим сотрудником');
   await expect(page.locator('#waitlistList')).toContainText('Петров Пётр');
   await page.locator('.wl-outcome').evaluate(el => el.blur());
   await page.clock.fastForward(5_000);
   await expect(page.locator('#waitlistList')).toContainText('Петров Пётр');
-  await expect(page.locator('.wl-outcome')).toHaveValue('refused');
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
 });
 
 test('a server status change during editing shows the other-staff notice', async ({ page }) => {

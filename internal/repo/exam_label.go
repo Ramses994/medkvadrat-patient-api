@@ -1,8 +1,6 @@
 package repo
 
 import (
-	"database/sql"
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -26,22 +24,13 @@ func NormalizeWaitlistExamIDs(ids []int64) []int64 {
 }
 
 // examSelectSQL returns WEB_NAME, NAME, IS_WAITLIST (SQL Server 2008) and named args.
+// The waitlist predicate is the same builder as the future-visit filter.
 func examSelectSQL(waitlistIDs []int64) (string, []any) {
-	ids := NormalizeWaitlistExamIDs(waitlistIDs)
-	var in strings.Builder
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		if i > 0 {
-			in.WriteString(",")
-		}
-		name := fmt.Sprintf("wl%d", i)
-		in.WriteString("@" + name)
-		args = append(args, sql.Named(name, id))
-	}
+	match, args := waitlistExamMatchSQL("ex.NAME", "ex.PL_EXAM_ID", "wl", waitlistIDs)
 	frag := `
 ISNULL(ex.WEB_NAME,'') AS EXAM_WEB_NAME,
 ISNULL(ex.NAME,'') AS EXAM_NAME,
-CAST(CASE WHEN ISNULL(ex.NAME,'') LIKE N'%ожидан%' OR ex.PL_EXAM_ID IN (` + in.String() + `) THEN 1 ELSE 0 END AS int) AS IS_WAITLIST`
+CAST(CASE WHEN ` + match + ` THEN 1 ELSE 0 END AS int) AS IS_WAITLIST`
 	return frag, args
 }
 

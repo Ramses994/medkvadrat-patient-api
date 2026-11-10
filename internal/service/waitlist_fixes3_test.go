@@ -33,7 +33,7 @@ func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 	insertOpen(t, moveDB, 78, 106, "closed")
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77: {PlanningID: 77, BranchID: 3, PatientName: "Перенесён"},
+			77: {PlanningID: 77, PatientID: 77, BranchID: 3, PatientName: "Перенесён"},
 		}}, nil
 	}
 	svc := &Services{SQLite: moveDB, MSSQL: moveDB}
@@ -79,7 +79,7 @@ func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 	insertOpen(t, unknown, 82, 106, "new")
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			82: {PlanningID: 82, BranchID: 999, PatientName: "ЧужойФилиал"},
+			82: {PlanningID: 82, PatientID: 82, BranchID: 999, PatientName: "ЧужойФилиал"},
 		}}, nil
 	}
 	svc = &Services{SQLite: unknown, MSSQL: unknown}
@@ -132,7 +132,14 @@ func TestWaitlistSort_MoscowEqualAndEmptyPage(t *testing.T) {
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		live := map[int64]repo.WaitlistPlanningLive{}
 		for _, id := range planningIDs {
-			live[id] = repo.WaitlistPlanningLive{PlanningID: id, BranchID: 106, PatientName: "Имя"}
+			patient := id
+			if id == 900 || id == 901 {
+				patient = 1
+				if id == 901 {
+					patient = 2
+				}
+			}
+			live[id] = repo.WaitlistPlanningLive{PlanningID: id, PatientID: patient, BranchID: 106, PatientName: "Имя", IsWaitlist: true}
 		}
 		return pageEnrichment{live: live}, nil
 	}
@@ -191,7 +198,11 @@ func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		live := map[int64]repo.WaitlistPlanningLive{}
 		for _, id := range planningIDs {
-			live[id] = repo.WaitlistPlanningLive{PlanningID: id, BranchID: 106, PatientName: "СекретРеестра", Phone: "79990000000"}
+			patient := id
+			if id == 700 {
+				patient = 9
+			}
+			live[id] = repo.WaitlistPlanningLive{PlanningID: id, PatientID: patient, BranchID: 106, PatientName: "СекретРеестра", Phone: "79990000000", IsWaitlist: true}
 		}
 		return pageEnrichment{live: live}, nil
 	}
