@@ -9,6 +9,11 @@ import (
 
 const waitlistRetainClosed = 180 * 24 * time.Hour
 
+// WaitlistClosedCutoff is the oldest updated_at still kept for a closed row.
+func WaitlistClosedCutoff(now time.Time) string {
+	return now.UTC().Add(-waitlistRetainClosed).Format("2006-01-02T15:04:05Z")
+}
+
 // PurgeClosedWaitlist deletes rebooked/closed rows older than 180 days.
 // Returns the number of deleted rows (IDs only — nothing to log from the rows).
 func PurgeClosedWaitlist(ctx context.Context, db *sql.DB, now time.Time) (int64, error) {

@@ -126,7 +126,16 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	pageData, err := h.Svc.DashboardWaitlist(r.Context(), filter)
 	if err != nil {
-		h.Logger.Error("waitlist list failed", "err", err)
+		if errors.Is(err, confirmations.ErrWaitlistOverloaded) {
+			if h.Logger != nil {
+				h.Logger.Error("waitlist list over cap", "err", err)
+			}
+			response.Error(w, http.StatusServiceUnavailable, "WAITLIST_UNAVAILABLE", "Лист ожидания временно недоступен")
+			return
+		}
+		if h.Logger != nil {
+			h.Logger.Error("waitlist list failed", "err", err)
+		}
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}

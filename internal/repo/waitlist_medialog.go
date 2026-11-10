@@ -60,7 +60,7 @@ func waitlistOriginalSQL(planningIDs, waitlistIDs []int64) (string, []any) {
 SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
-  ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS PATIENT_NAME,
+  LTRIM(RTRIM(ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,''))) AS PATIENT_NAME,
   COALESCE(NULLIF(LTRIM(RTRIM(pt.MOBIL_TELEFON)),''), NULLIF(LTRIM(RTRIM(pt.TEL)),''), NULLIF(LTRIM(RTRIM(pt.RAB_TEL)),''), '') AS PHONE,
   ISNULL(CONVERT(varchar(10), pt.NE_LE, 23), '') AS DOB,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START,
@@ -389,14 +389,14 @@ func waitlistPageSQL(planningIDs, waitlistIDs []int64, now time.Time, answered m
 	inSQL, inArgs := waitlistIN("pid", planningIDs)
 	examSQL, examArgs := examSelectSQL(waitlistIDs)
 	futExam, futArgs := examSelectAliased("ex2", "fwl", waitlistIDs)
-	notIn, notArgs := examNotInSQL(waitlistIDs)
+	waitlistMatch, matchArgs := waitlistExamMatchSQL("ex2.NAME", "p2.PL_EXAM_ID", "nex", waitlistIDs)
 	answerSQL, answerArgs := futureAnswerSQL(planningIDs, answered)
 	doctor2 := strings.ReplaceAll(doctorNameSelectSQL, "ps.", "ps2.")
 	q := `
 SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
-  ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS PATIENT_NAME,
+  LTRIM(RTRIM(ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,''))) AS PATIENT_NAME,
   COALESCE(NULLIF(LTRIM(RTRIM(pt.MOBIL_TELEFON)),''), NULLIF(LTRIM(RTRIM(pt.TEL)),''), NULLIF(LTRIM(RTRIM(pt.RAB_TEL)),''), '') AS PHONE,
   ISNULL(CONVERT(varchar(10), pt.NE_LE, 23), '') AS DOB,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START,
@@ -434,28 +434,35 @@ OUTER APPLY (
     AND p2.DATE_START > CONVERT(datetime, @now, 126)
     AND p2.PLANNING_ID <> p.PLANNING_ID
     AND ISNULL(ps2.FM_INTORG_ID, 0) IN (106, 3, 496)
-    AND ISNULL(p2.PL_EXAM_ID, 0) NOT IN (` + notIn + `)
+    AND NOT (` + waitlistMatch + `)
     AND ` + answerSQL + `
   ORDER BY p2.DATE_START, p2.PLANNING_ID
 ) fut
 WHERE p.PLANNING_ID IN (` + inSQL + `)`
 	args := append(append(inArgs, examArgs...), futArgs...)
-	args = append(args, notArgs...)
+	args = append(args, matchArgs...)
 	args = append(args, answerArgs...)
 	args = append(args, sql.Named("now", waitlistNowBound(now)))
 	return q, args
 }
 
-func examNotInSQL(waitlistIDs []int64) (string, []any) {
-	ids := NormalizeWaitlistExamIDs(waitlistIDs)
-	holders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		name := fmt.Sprintf("nex%d", i)
-		holders[i] = "@" + name
-		args[i] = sql.Named(name, id)
+// ExamIsWaitlist is the same criterion as the future-visit SQL: exam id or a waitlist name.
+func ExamIsWaitlist(name string, examID int64, ids []int64) bool {
+	if strings.Contains(strings.ToLower(name), "ожидан") {
+		return true
 	}
-	return strings.Join(holders, ","), args
+	for _, id := range NormalizeWaitlistExamIDs(ids) {
+		if examID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func waitlistExamMatchSQL(nameExpr, examExpr, prefix string, ids []int64) (string, []any) {
+	inSQL, args := waitlistIN(prefix, NormalizeWaitlistExamIDs(ids))
+	expr := "ISNULL(" + nameExpr + ",'') LIKE N'%ожидан%' OR ISNULL(" + examExpr + ",0) IN (" + inSQL + ")"
+	return expr, args
 }
 
 func futureAnswerSQL(planningIDs []int64, answered map[int64]string) (string, []any) {
@@ -485,20 +492,10 @@ func futureAnswerSQL(planningIDs []int64, answered map[int64]string) (string, []
 }
 
 func examSelectAliased(alias, argPrefix string, waitlistIDs []int64) (string, []any) {
-	ids := NormalizeWaitlistExamIDs(waitlistIDs)
-	var in strings.Builder
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		if i > 0 {
-			in.WriteString(",")
-		}
-		name := fmt.Sprintf("%s%d", argPrefix, i)
-		in.WriteString("@" + name)
-		args = append(args, sql.Named(name, id))
-	}
+	match, args := waitlistExamMatchSQL(alias+".NAME", alias+".PL_EXAM_ID", argPrefix, waitlistIDs)
 	frag := `
 ISNULL(` + alias + `.WEB_NAME,'') AS FUT_WEB,
 ISNULL(` + alias + `.NAME,'') AS FUT_EXAM,
-CAST(CASE WHEN ISNULL(` + alias + `.NAME,'') LIKE N'%ожидан%' OR ` + alias + `.PL_EXAM_ID IN (` + in.String() + `) THEN 1 ELSE 0 END AS int) AS FUT_WAITLIST`
+CAST(CASE WHEN ` + match + ` THEN 1 ELSE 0 END AS int) AS FUT_WAITLIST`
 	return frag, args
 }

@@ -235,6 +235,7 @@ type futureCandidate struct {
 	Exam      int64
 	Cancelled int
 	Status    int
+	Name      string
 }
 
 func chooseNextVisit(originalID int64, answer, now time.Time, exams []int64, cands []futureCandidate) (int64, bool) {
@@ -247,13 +248,7 @@ func chooseNextVisit(originalID int64, answer, now time.Time, exams []int64, can
 		if c.Branch != 106 && c.Branch != 3 && c.Branch != 496 {
 			continue
 		}
-		skip := false
-		for _, exam := range NormalizeWaitlistExamIDs(exams) {
-			if c.Exam == exam {
-				skip = true
-			}
-		}
-		if skip {
+		if ExamIsWaitlist(c.Name, c.Exam, exams) {
 			continue
 		}
 		if best == nil || c.Start.Before(best.Start) || (c.Start.Equal(best.Start) && c.ID < best.ID) {
@@ -274,6 +269,7 @@ func TestFutureApply_SecondVisitNotOriginalOrOlder(t *testing.T) {
 		{ID: 11, Created: answer.Add(-time.Minute), Start: answer.Add(2 * time.Hour), Branch: 106, Exam: 100},
 		{ID: 13, Created: answer.Add(time.Minute), Start: answer.Add(30 * time.Minute), Branch: 1, Exam: 100},
 		{ID: 14, Created: answer.Add(time.Minute), Start: answer.Add(40 * time.Minute), Branch: 106, Exam: 3118},
+		{ID: 15, Name: "Лист ожидания (тест)", Created: answer.Add(time.Minute), Start: answer.Add(20 * time.Minute), Branch: 106, Exam: 42},
 		{ID: 12, Created: answer.Add(time.Minute), Start: answer.Add(3 * time.Hour), Branch: 106, Exam: 100},
 	}
 	id, ok := chooseNextVisit(10, answer, now, []int64{3118}, cands)
@@ -292,7 +288,7 @@ func TestFutureApply_SecondVisitNotOriginalOrOlder(t *testing.T) {
 	for _, frag := range []string{
 		"p2.PLANNING_ID <> p.PLANNING_ID",
 		"ISNULL(ps2.FM_INTORG_ID, 0) IN (106, 3, 496)",
-		"ISNULL(p2.PL_EXAM_ID, 0) NOT IN",
+		"NOT (ISNULL(ex2.NAME,'') LIKE N'%ожидан%' OR ISNULL(p2.PL_EXAM_ID,0) IN (",
 		"p2.CREATE_DATE_TIME > CASE p.PLANNING_ID",
 		"CONVERT(datetime, @at0, 120)",
 		"SELECT TOP 1",

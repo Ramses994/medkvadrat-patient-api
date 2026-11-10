@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 )
 
 const (
@@ -31,6 +33,7 @@ var ErrUnknownWaitlistOutcome = errors.New("UNKNOWN_WAITLIST_OUTCOME")
 var ErrWaitlistNotFound = errors.New("WAITLIST_NOT_FOUND")
 var ErrWaitlistChanged = errors.New("WAITLIST_CHANGED")
 var ErrWaitlistMoved = errors.New("WAITLIST_MOVED")
+var ErrWaitlistOverloaded = errors.New("WAITLIST_OVERLOADED")
 
 // DashboardItem is a waitlist row plus Medialog fields for the staff page.
 type DashboardItem struct {
@@ -310,6 +313,64 @@ LIMIT ?`
 		rows = []WaitlistRow{}
 	}
 	return rows, rs.Err()
+}
+
+// ListDashboardRows returns waitlist rows for an in-memory dashboard page.
+// It does not filter by branch: the snapshot decides who can see a row.
+// More than cap rows is an error, not a silent cut.
+func (r *Repo) ListDashboardRows(ctx context.Context, f WaitlistListFilter, now time.Time, cap int) ([]WaitlistRow, error) {
+	if cap < 1 {
+		cap = 1
+	}
+	where, args := dashboardWhere(f, now)
+	q := `
+SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
+       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1)
+FROM waitlist` + where + `
+ORDER BY created_at DESC, id DESC
+LIMIT ?`
+	args = append(args, cap+1)
+	rs, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list dashboard waitlist: %w", err)
+	}
+	defer rs.Close()
+	var rows []WaitlistRow
+	for rs.Next() {
+		var row WaitlistRow
+		if err := rs.Scan(
+			&row.ID, &row.PlanningID, &row.PatientID, &row.ApptVersion, &row.ApptStart,
+			&row.Reason, &row.Source, &row.Status, &row.Outcome, &row.CreatedAt, &row.UpdatedAt,
+			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy, &row.Version,
+		); err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	if len(rows) > cap {
+		return nil, ErrWaitlistOverloaded
+	}
+	if rows == nil {
+		rows = []WaitlistRow{}
+	}
+	return rows, nil
+}
+
+func dashboardWhere(f WaitlistListFilter, now time.Time) (string, []any) {
+	cutoff := store.WaitlistClosedCutoff(now)
+	switch f.Status {
+	case WaitlistStatusNew, WaitlistStatusContacted:
+		return " WHERE status = ?", []any{f.Status}
+	case WaitlistStatusRebooked, WaitlistStatusClosed:
+		return " WHERE status = ? AND updated_at >= ?", []any{f.Status, cutoff}
+	}
+	if f.OpenOnly {
+		return " WHERE status IN ('new','contacted')", nil
+	}
+	return " WHERE (status IN ('new','contacted') OR (status IN ('rebooked','closed') AND updated_at >= ?))", []any{cutoff}
 }
 
 // SetWaitlistBranch stores the live Medialog branch in our database.

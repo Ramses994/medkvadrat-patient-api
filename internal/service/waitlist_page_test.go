@@ -28,8 +28,15 @@ VALUES(77,66,'v','2026-11-06 10:00:00','declined','max','new','2026-11-06T06:00:
 	if err := db.QueryRowContext(ctx, `SELECT id FROM waitlist`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	prev := loadPageEnrich
-	t.Cleanup(func() { loadPageEnrich = prev })
+	prev, prevMis := loadPageEnrich, loadMis
+	t.Cleanup(func() {
+		loadPageEnrich, loadMis = prev, prevMis
+		resetEnrichCache()
+	})
+	resetEnrichCache()
+	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
+		return nil, nil
+	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
 			77: {PlanningID: 77, BranchID: 3, DateStart: "2026-11-06 10:00:00", PatientName: "Иванов"},
@@ -110,13 +117,16 @@ func TestMisCache_NewKeyAfterMoscowMidnight(t *testing.T) {
 
 func TestMaxPage_OneMedialogQueryPerTick(t *testing.T) {
 	resetEnrichCache()
-	prev := loadPageEnrich
+	prev, prevMis := loadPageEnrich, loadMis
 	prevNow := misNow
 	t.Cleanup(func() {
-		loadPageEnrich = prev
+		loadPageEnrich, loadMis = prev, prevMis
 		misNow = prevNow
 		resetEnrichCache()
 	})
+	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
+		return nil, nil
+	}
 	var calls atomic.Int32
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		calls.Add(1)
@@ -203,7 +213,11 @@ VALUES(?,?, 'v', '2026-11-06 10:00:00', 'declined', 'max', 'new', ?, ?, '2026-11
 		}, nil
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
-		return pageEnrichment{}, nil
+		live := map[int64]repo.WaitlistPlanningLive{}
+		for _, id := range planningIDs {
+			live[id] = repo.WaitlistPlanningLive{PlanningID: id, BranchID: 106, PatientName: "Реестр"}
+		}
+		return pageEnrichment{live: live}, nil
 	}
 	resetMisCache()
 	t.Cleanup(resetMisCache)

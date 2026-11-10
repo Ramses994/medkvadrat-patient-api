@@ -15,11 +15,14 @@ import (
 
 func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 	resetEnrichCache()
-	prevEnrich := loadPageEnrich
+	prevEnrich, prevMis := loadPageEnrich, loadMis
 	t.Cleanup(func() {
-		loadPageEnrich = prevEnrich
+		loadPageEnrich, loadMis = prevEnrich, prevMis
 		resetEnrichCache()
 	})
+	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
+		return nil, nil
+	}
 	ctx := context.Background()
 	kash := staff.WithPrincipal(ctx, staff.Principal{ID: 2, Login: "kash", Role: staff.RoleRegistrar, BranchIDs: []int{106}})
 	kurk := staff.WithPrincipal(ctx, staff.Principal{ID: 3, Login: "kurk", Role: staff.RoleRegistrar, BranchIDs: []int{3}})
@@ -127,7 +130,11 @@ func TestWaitlistSort_MoscowEqualAndEmptyPage(t *testing.T) {
 		resetEnrichCache()
 	})
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
-		return pageEnrichment{}, nil
+		live := map[int64]repo.WaitlistPlanningLive{}
+		for _, id := range planningIDs {
+			live[id] = repo.WaitlistPlanningLive{PlanningID: id, BranchID: 106, PatientName: "Имя"}
+		}
+		return pageEnrichment{live: live}, nil
 	}
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return []repo.WaitlistMisRow{{
@@ -182,7 +189,11 @@ func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 		resetMisCache()
 	})
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
-		return pageEnrichment{}, nil
+		live := map[int64]repo.WaitlistPlanningLive{}
+		for _, id := range planningIDs {
+			live[id] = repo.WaitlistPlanningLive{PlanningID: id, BranchID: 106, PatientName: "СекретРеестра", Phone: "79990000000"}
+		}
+		return pageEnrichment{live: live}, nil
 	}
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	misNow = func() time.Time { return clock }
@@ -226,12 +237,17 @@ func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 func TestEnrichCache_MissingOriginalOneReadThenGone(t *testing.T) {
 	resetEnrichCache()
 	prev := loadPageEnrich
+	prevMis := loadMis
 	prevNow := misNow
 	t.Cleanup(func() {
 		loadPageEnrich = prev
+		loadMis = prevMis
 		misNow = prevNow
 		resetEnrichCache()
 	})
+	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
+		return nil, nil
+	}
 	clock := time.Date(2026, 11, 6, 15, 0, 0, 0, time.UTC)
 	misNow = func() time.Time { return clock }
 	var calls atomic.Int32
@@ -258,12 +274,6 @@ func TestEnrichCache_MissingOriginalOneReadThenGone(t *testing.T) {
 	if enrichCacheLen() != 0 {
 		t.Fatal("expired enrichment key remains")
 	}
-}
-
-func enrichCacheLen() int {
-	snapStore.mu.Lock()
-	defer snapStore.mu.Unlock()
-	return len(snapStore.m)
 }
 
 func insertOpen(t *testing.T, db *sql.DB, planning int64, branch int, status string) {

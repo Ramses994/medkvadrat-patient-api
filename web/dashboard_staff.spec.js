@@ -86,7 +86,13 @@ test('login form', async ({ page }) => {
 
 async function openBoard(page, opts) {
   opts = opts || {};
-  const state = { posts: [], role: opts.role || 'registrar', closedHidden: !!opts.closedHidden };
+  const state = {
+    posts: [],
+    role: opts.role || 'registrar',
+    closedHidden: !!opts.closedHidden,
+    banner: opts.banner || '',
+    list: (opts.items || [row()]).map(it => ({ ...it })),
+  };
   await page.clock.install({ time: new Date(opts.time || '2026-11-06T10:39:00.000Z') });
   await page.route('**/dashboard/me', async route => {
     await route.fulfill({
@@ -180,6 +186,7 @@ async function openBoard(page, opts) {
         });
         return;
       }
+      if (state.holdPatch) await state.holdPatch;
       const saved = row({
         status: body.action === 'reopen' ? 'contacted' : (body.outcome === 'no_answer' || body.outcome === 'call_back' ? 'contacted' : 'closed'),
         outcome: body.action === 'reopen' ? '' : body.outcome,
@@ -189,7 +196,7 @@ async function openBoard(page, opts) {
       return;
     }
     const url = new URL(route.request().url());
-    let items = (opts.items || [row()]).map(it => ({ ...it }));
+    let items = state.list.map(it => ({ ...it }));
     if (state.mirrorWork) {
       const last = state.posts.at(-1);
       if (last && last.outcome) {
@@ -202,7 +209,7 @@ async function openBoard(page, opts) {
     await route.fulfill({
       json: {
         success: true,
-        data: { open_total: visible.length, page: 1, total: visible.length, per_page: 50, items: visible, banner: opts.banner || '' },
+        data: { open_total: visible.length, page: 1, total: visible.length, per_page: 50, items: visible, banner: state.banner || '' },
       },
     });
   });
@@ -327,6 +334,48 @@ test('registry keeps the phone when enrichment fails', async ({ page }) => {
   await expect(page.locator('#waitlistList')).toContainText('+79991112233');
   await expect(page.locator('#waitlistList')).not.toContainText('Чужой');
   await expect(page.locator('#waitlistList')).not.toContainText('70000000000');
+});
+
+test('focused row clears medialog fields and keeps the outcome', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('.wl-outcome')).toBeVisible();
+  const saved = page.waitForRequest(r => r.method() === 'PATCH' && r.url().includes('/dashboard/waitlist/max/7'));
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await saved;
+  state.banner = 'Медиалог недоступен';
+  state.list = [row({
+    patient_name: '',
+    patient_phone: '',
+    patient_birth: '',
+    orig_date_start: '',
+    orig_doctor: '',
+    orig_service: '',
+    medialog_state: '',
+    future_label: '',
+    future_date_start: '',
+  })];
+  const refresh = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist'));
+  await page.clock.fastForward(11000);
+  await refresh;
+  await expect(page.locator('#banner')).toContainText('Медиалог недоступен');
+  await expect(page.locator('#waitlistList')).not.toContainText('+79990001122');
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
+  release();
+});
+
+test('conflict without enrichment reloads the row', async ({ page }) => {
+  const state = await openBoard(page, {});
+  state.bare409 = true;
+  await page.locator('#tabWaitlist').click();
+  const reload = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist'));
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await reload;
+  await expect(page.locator('#banner')).toContainText('Строку уже изменил другой сотрудник');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await expect(page.locator('#waitlistList')).not.toContainText('Чужой');
 });
 
 test('medialog banner stays on the waitlist', async ({ page }) => {

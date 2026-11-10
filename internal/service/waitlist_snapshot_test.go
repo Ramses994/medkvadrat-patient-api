@@ -99,7 +99,8 @@ func TestSnapshot_ReadFailureAfterTTL(t *testing.T) {
 			return pageEnrichment{}, errors.New("medialog down")
 		}
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			4: {PlanningID: 4, BranchID: 106, PatientName: "СекретМакс", Phone: "79990001122", DateStart: "2026-11-06 10:00:00"},
+			4:   {PlanningID: 4, BranchID: 106, PatientName: "СекретМакс", Phone: "79990001122", DateStart: "2026-11-06 10:00:00"},
+			880: {PlanningID: 880, BranchID: 106, PatientName: "СекретРеестра", Phone: "79991112233"},
 		}}, nil
 	}
 	ctx := context.Background()
@@ -131,11 +132,14 @@ func TestSnapshot_ReadFailureAfterTTL(t *testing.T) {
 
 func TestSnapshot_UnknownBranch(t *testing.T) {
 	resetEnrichCache()
-	prev := loadPageEnrich
+	prev, prevMis := loadPageEnrich, loadMis
 	t.Cleanup(func() {
-		loadPageEnrich = prev
+		loadPageEnrich, loadMis = prev, prevMis
 		resetEnrichCache()
 	})
+	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
+		return nil, nil
+	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
 			82: {PlanningID: 82, BranchID: 999, PatientName: "ЧужойФилиал", Phone: "79990000999"},
@@ -199,11 +203,14 @@ func TestSnapshot_MissingOriginal(t *testing.T) {
 
 func TestSnapshot_FuturesByOrigin(t *testing.T) {
 	resetEnrichCache()
-	prev := loadPageEnrich
+	prev, prevMis := loadPageEnrich, loadMis
 	t.Cleanup(func() {
-		loadPageEnrich = prev
+		loadPageEnrich, loadMis = prev, prevMis
 		resetEnrichCache()
 	})
+	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
+		return nil, nil
+	}
 	if !repo.VisitCreatedAfter("2026-11-10T09:00:00", "2026-11-10 18:00:00") {
 		t.Fatal("same-day later visit must stay")
 	}
@@ -355,11 +362,21 @@ func TestSnapshot_OpenSetReloadsTogether(t *testing.T) {
 		t.Fatalf("within ttl mis=%d enrich=%d", misCalls, enrichCalls)
 	}
 	insertOpen(t, db, 78, 106, "new")
-	if _, err := svc.DashboardWaitlist(ctx, filter); err != nil {
+	again, err := svc.DashboardWaitlist(ctx, filter)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if misCalls != 2 || enrichCalls != 2 {
-		t.Fatalf("new row mis=%d enrich=%d", misCalls, enrichCalls)
+	if misCalls != 1 || enrichCalls != 1 {
+		t.Fatalf("new row before ttl mis=%d enrich=%d", misCalls, enrichCalls)
+	}
+	var fresh confirmations.DashboardItem
+	for _, it := range again.Items {
+		if it.PlanningID == 78 {
+			fresh = it
+		}
+	}
+	if fresh.PlanningID != 78 || fresh.PatientName != "" || fresh.MedialogState != "запись не найдена в Медиалоге" {
+		t.Fatalf("row created after the snapshot %+v", fresh)
 	}
 }
 

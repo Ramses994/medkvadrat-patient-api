@@ -842,11 +842,14 @@ function paintWaitlist(data, key) {
       tbody.appendChild(tr);
       if (wlSeen.size) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
       wlSeen.set(rowKey(it), it.status);
-    } else if (rowBusy(tr)) {
-      if ((it.status || '') !== tr.dataset.status) showConflict(tr);
-      pendingWl.set(tr.dataset.key, it);
     } else {
-      applyWaitlistItem(tr, it);
+      applyMedialogFields(tr, it);
+      if (unsavedWork(tr)) {
+        if ((it.status || '') !== tr.dataset.status) showConflict(tr);
+        pendingWl.set(tr.dataset.key, it);
+      } else {
+        applyWaitlistItem(tr, it);
+      }
     }
     tr.classList.toggle('fresh', (wlFresh.get(rowKey(it)) || 0) > Date.now());
   });
@@ -922,7 +925,13 @@ function applyWorkingFields(tr, row) {
   }
 }
 
-function applyWaitlistItem(tr, it) {
+function unsavedWork(tr) {
+  const oc = tr.querySelector('.wl-outcome');
+  if (!oc) return false;
+  return oc.value !== (tr.dataset.outcome || '');
+}
+
+function applyMedialogFields(tr, it) {
   const cells = tr.children;
   tr.dataset.source = it.source || tr.dataset.source || 'max';
   tr.dataset.key = tr.dataset.source + ':' + tr.dataset.id;
@@ -966,7 +975,11 @@ function applyWaitlistItem(tr, it) {
   if (it.future_date_start) fut.appendChild(el('div', '', it.future_date_start));
   if (it.future_doctor) fut.appendChild(el('div', '', it.future_doctor));
   if (it.future_service) fut.appendChild(el('div', '', it.future_service));
+}
 
+function applyWaitlistItem(tr, it) {
+  applyMedialogFields(tr, it);
+  const cells = tr.children;
   const work = cells[6];
   const oc = work.querySelector('.wl-outcome');
   const closed = it.status === 'closed' || it.status === 'rebooked';
@@ -1026,7 +1039,7 @@ function scheduleRelease(tr) {
   }, 0);
 }
 function releaseRow(tr) {
-  if (rowBusy(tr)) return;
+  if (rowBusy(tr) || unsavedWork(tr)) return;
   const item = pendingWl.get(tr.dataset.key);
   if (item) applyWaitlistItem(tr, item);
 }
@@ -1132,6 +1145,7 @@ async function saveWaitlist(tr, outcome, action) {
       if (data && data.row) {
         applyWorkingFields(tr, data.row);
         if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(tr, data.full);
+        else await loadWaitlist();
       } else if (data && data.enriched && fullWaitlistRow(data)) {
         applyWaitlistItem(tr, data);
       } else if (oc && !(data && data.row)) {

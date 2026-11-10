@@ -59,17 +59,27 @@ func TestRouter_ResetPasswordOneTransactionAndLastAdmin(t *testing.T) {
 		t.Fatalf("employee before reset %d %s", mw.Code, mw.Body.String())
 	}
 
+	resetCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	reset := dashReq(http.MethodPost, "/dashboard/staff/"+strconv.FormatInt(employee.ID, 10), `{"reset_password":true}`, adminCookie)
 	reset.Header.Set("Content-Type", "application/json")
-	started := time.Now()
+	reset = reset.WithContext(resetCtx)
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, reset)
-	elapsed := time.Since(started)
+	if resetCtx.Err() != nil {
+		t.Fatalf("reset held the database: %v", resetCtx.Err())
+	}
 	if rw.Code != http.StatusOK {
 		t.Fatalf("reset %d %s", rw.Code, rw.Body.String())
 	}
-	if elapsed >= 3*time.Second {
-		t.Fatalf("reset took %s", elapsed)
+	follow := dashReq(http.MethodGet, "/dashboard/me", "", adminCookie).WithContext(resetCtx)
+	fw := httptest.NewRecorder()
+	h.ServeHTTP(fw, follow)
+	if resetCtx.Err() != nil {
+		t.Fatalf("sqlite connection was not released: %v", resetCtx.Err())
+	}
+	if fw.Code != http.StatusOK {
+		t.Fatalf("follow-up %d %s", fw.Code, fw.Body.String())
 	}
 	var body struct {
 		Data struct {
