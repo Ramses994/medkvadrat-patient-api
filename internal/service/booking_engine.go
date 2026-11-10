@@ -324,7 +324,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 		return e.readDown()
 	}
 	if !owner.Found || owner.PatientID != patientID {
-		return e.fail(404, "NOT_FOUND", "Запись не найдена")
+		return e.fail(404, "NOT_FOUND", booking.MsgNotFound)
 	}
 	intent := writeops.CancelIntent(planningID)
 	if out, done := e.lookup(ctx, patientID, writeops.ActionCancel, requestID, intent); done {
@@ -352,7 +352,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 		return e.readDown()
 	}
 	if !fresh.Found || fresh.PatientID != patientID {
-		return e.fail(404, "NOT_FOUND", "Запись не найдена")
+		return e.fail(404, "NOT_FOUND", booking.MsgNotFound)
 	}
 	if fresh.PlSubjID != owner.PlSubjID || e.Guard.CheckPlSubj(fresh.PlSubjID) != nil {
 		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
@@ -367,7 +367,7 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 		return e.readDown()
 	}
 	if !again.Found || again.PatientID != patientID {
-		return e.fail(404, "NOT_FOUND", "Запись не найдена")
+		return e.fail(404, "NOT_FOUND", booking.MsgNotFound)
 	}
 	if again.PlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(again.PlSubjID) != nil {
 		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport)
@@ -375,14 +375,14 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	if out, ok := e.cancelGate(ctx, planningID, again, e.now()); !ok {
 		return out
 	}
-	v1, s1, out, ok := e.loadCancelSnap(ctx, planningID)
+	v1, s1, out, ok := e.loadCancelSnap(ctx, planningID, patientID)
 	if !ok {
 		return out
 	}
 	// The owner is checked against the JWT before any answer that depends on the
 	// visit's state: someone else's (or a vanished) visit is always the same 404.
 	if !s1.PlanningFound || s1.PlanningPatientID != patientID {
-		return e.fail(404, "NOT_FOUND", "Запись не найдена")
+		return e.fail(404, "NOT_FOUND", booking.MsgNotFound)
 	}
 	if out := e.refuseJournal(); out.Status != 0 {
 		return out
@@ -412,13 +412,13 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 	}
 	// Final snapshot under both locks. Its last query to Medialog is PLANNING
 	// (owner, line, state); then only the conditional context UPDATE and EXEC.
-	v2, s2, out, ok := e.loadCancelSnap(ctx, planningID)
+	v2, s2, out, ok := e.loadCancelSnap(ctx, planningID, patientID)
 	if !ok {
 		return reject(out)
 	}
 	// pl_CancelVisit does not check the owner (S18).
 	if !s2.PlanningFound || s2.PlanningPatientID != patientID {
-		return reject(e.fail(404, "NOT_FOUND", "Запись не найдена"))
+		return reject(e.fail(404, "NOT_FOUND", booking.MsgNotFound))
 	}
 	if s2.PlanningPlSubjID != fresh.PlSubjID || e.Guard.CheckPlSubj(s2.PlanningPlSubjID) != nil {
 		return reject(e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport))
@@ -432,6 +432,10 @@ func (e *BookingEngine) Cancel(ctx context.Context, patientID, planningID int64,
 			msg = booking.MsgAlreadyCancel
 		}
 		return reject(e.fail(409, code, msg))
+	}
+	// The time limit is checked again on the final DATE_START with the current time.
+	if out, ok := e.cancelTimeGate(s2.PlanningDateStart, e.now()); !ok {
+		return reject(out)
 	}
 	cc := cancelContext{OrgID: again.OrgID, Variant: v2.variant, DirAnswID: v2.answ, PatdirecID: v2.dir, Before: s2}
 	if alt := e.saveContext(ctx, owned, mustJSON(cc), op.PlanningID); alt.Status != 0 {
@@ -508,7 +512,13 @@ func (e *BookingEngine) cancelGate(ctx context.Context, planningID int64, owner 
 	if owner.Cancelled != 0 || owner.Status != 0 {
 		return e.fail(409, "ALREADY_CANCELLED", booking.MsgAlreadyCancel), false
 	}
-	at, err := time.ParseInLocation(repo.SlotStartLayout, owner.DateStart, time.FixedZone("MSK", 3*3600))
+	return e.cancelTimeGate(owner.DateStart, now)
+}
+
+// cancelTimeGate checks CANCEL_MIN_HOURS_BEFORE against the visit start
+// (Moscow wall time). Too late is 422 CANCEL_TOO_LATE (B4.3).
+func (e *BookingEngine) cancelTimeGate(dateStart string, now time.Time) (WriteHTTP, bool) {
+	at, err := time.ParseInLocation(repo.SlotStartLayout, dateStart, time.FixedZone("MSK", 3*3600))
 	if err != nil {
 		return e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport), false
 	}
@@ -517,7 +527,7 @@ func (e *BookingEngine) cancelGate(ctx context.Context, planningID int64, owner 
 		minH = 24
 	}
 	if at.Before(now.In(at.Location()).Add(time.Duration(minH) * time.Hour)) {
-		return e.fail(409, "CANCEL_TOO_LATE", booking.Message("CANCEL_TOO_LATE")), false
+		return e.fail(422, "CANCEL_TOO_LATE", booking.Message("CANCEL_TOO_LATE")), false
 	}
 	return WriteHTTP{}, true
 }
@@ -689,13 +699,26 @@ type cancelSnap struct {
 	dir     *int64
 }
 
-func (e *BookingEngine) loadCancelSnap(ctx context.Context, planningID int64) (cancelSnap, booking.Snap, WriteHTTP, bool) {
+func (e *BookingEngine) loadCancelSnap(ctx context.Context, planningID, patientID int64) (cancelSnap, booking.Snap, WriteHTTP, bool) {
 	adm, err := e.Clinic.Admission(ctx, planningID)
 	if err != nil {
 		return cancelSnap{}, booking.Snap{}, e.readDown(), false
 	}
 	variant, ok := booking.Admit(planningID, adm)
 	if !ok {
+		// Even a refusal reads PLANNING (last) and checks the owner against the JWT
+		// first: someone else's or a vanished visit is 404, the patient's own
+		// cancelled visit is ALREADY_CANCELLED, anything else is not supported.
+		snap, err := e.Clinic.Snap(ctx, planningID, nil, nil)
+		if err != nil || !snap.ReadOK {
+			return cancelSnap{}, booking.Snap{}, e.readDown(), false
+		}
+		if !snap.PlanningFound || snap.PlanningPatientID != patientID {
+			return cancelSnap{}, booking.Snap{}, e.fail(404, "NOT_FOUND", booking.MsgNotFound), false
+		}
+		if snap.PlanningCancelled != 0 || snap.PlanningStatus != 0 {
+			return cancelSnap{}, booking.Snap{}, e.fail(409, "ALREADY_CANCELLED", booking.MsgAlreadyCancel), false
+		}
 		return cancelSnap{}, booking.Snap{}, e.fail(409, "CANCEL_NOT_SUPPORTED", booking.MsgCancelSupport), false
 	}
 	answ, dir := savedIDs(variant, adm)

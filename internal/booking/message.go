@@ -1,6 +1,7 @@
 package booking
 
 const (
+	MsgNotFound        = "Запись не найдена"
 	MsgSlotTaken       = "Это время только что заняли. Выберите другое"
 	MsgSlotLocked      = "Регистратура сейчас записывает на это время. Попробуйте через минуту или выберите другое"
 	MsgSlotUnavailable = "Это время недоступно для записи. Выберите другое"
@@ -52,6 +53,8 @@ func Message(code string) string {
 		return MsgAlreadyCancel
 	case "CANCEL_TOO_LATE":
 		return "Отмена доступна не позднее чем за указанное время до приёма"
+	case "NOT_FOUND":
+		return MsgNotFound
 	default:
 		return MsgRegistry
 	}
@@ -70,6 +73,8 @@ func StatusFor(code string) int {
 		return 503
 	case "WRITE_DISABLED", "WRITE_NOT_ALLOWED":
 		return 403
+	case "NOT_FOUND":
+		return 404
 	case "WRITE_NOT_CONFIGURED", "SLOT_TOKEN_UNAVAILABLE":
 		return 503
 	default:

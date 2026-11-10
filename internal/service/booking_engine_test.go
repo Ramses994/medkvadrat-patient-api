@@ -606,7 +606,7 @@ func TestCancel_Outcomes(t *testing.T) {
 	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: start}
 	c.adm = booking.Admission{Found: true, Active: true}
 	before := activeSnap()
-	after := booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningCancelled: 1}
+	after := booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", PlanningCancelled: 1}
 	c.snaps = []booking.Snap{before, before, after}
 	p.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true, Result: ""}
 	p.record = false
@@ -630,7 +630,7 @@ func TestCancel_Outcomes(t *testing.T) {
 	e3.Now = func() time.Time { return now }
 	c3.owners[5] = c.owners[5]
 	c3.adm = c.adm
-	part := booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningCancelled: 0, AnswFound: true, A: []int64{9}}
+	part := booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", PlanningCancelled: 0, AnswFound: true, A: []int64{9}}
 	clean := activeSnap()
 	c3.snaps = []booking.Snap{clean, clean, part}
 	p3.record = false
@@ -651,6 +651,7 @@ func TestCancel_NotSupportedWithoutCall(t *testing.T) {
 	e.Now = func() time.Time { return now }
 	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00", Cancelled: 0}
 	c.adm = booking.Admission{Directions: []booking.Direction{{ID: 1, PlanningCR: intPtr(5)}}}
+	c.snaps = []booking.Snap{activeSnap()} // the refusal still reads PLANNING: own, active visit
 	p.record = false
 	out := e.Cancel(context.Background(), 1, 5, "21212121-2121-2121-2121-212121212121")
 	if out.Code != "CANCEL_NOT_SUPPORTED" || p.calls.Load() != 0 {
@@ -761,7 +762,7 @@ func TestBook_CancelThenRebook(t *testing.T) {
 	id1, _ := first.Body.(map[string]any)["planning_id"].(int64)
 	c.owners[id1] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
 	clean := activeSnap()
-	c.snaps = []booking.Snap{clean, clean, {ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningCancelled: 1}}
+	c.snaps = []booking.Snap{clean, clean, {ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", PlanningCancelled: 1}}
 	id2 := int64(43)
 	p.next.PlanningID = &id2
 	cancelled := e.Cancel(ctx, 1, id1, "33333333-3333-4333-8333-333333333333")
@@ -795,7 +796,7 @@ func TestCancel_TimeoutThenLate(t *testing.T) {
 	if out.Code != "CANCEL_UNKNOWN" || p.calls.Load() != 1 {
 		t.Fatalf("timeout %s calls=%d", out.Code, p.calls.Load())
 	}
-	c.snaps = []booking.Snap{{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningCancelled: 1}}
+	c.snaps = []booking.Snap{{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", PlanningCancelled: 1}}
 	e.Now = func() time.Time { return now.Add(3 * time.Minute) }
 	e.Sweep(context.Background())
 	op, _ := e.Ops.Find(context.Background(), 1, writeops.ActionCancel, "35353535-3535-3535-3535-353535353535")
@@ -806,7 +807,7 @@ func TestCancel_TimeoutThenLate(t *testing.T) {
 	e2, c2, p2, _ := testEngine(t)
 	e2.Now = func() time.Time { return now }
 	c2.owners[5] = c.owners[5]
-	part := booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, AnswFound: true, A: []int64{9}}
+	part := booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", AnswFound: true, A: []int64{9}}
 	clean := activeSnap()
 	c2.snaps = []booking.Snap{clean, clean, part}
 	p2.record = false
@@ -857,7 +858,7 @@ func TestManualRejected_Unblocks(t *testing.T) {
 }
 
 func activeSnap() booking.Snap {
-	return booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119}
+	return booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00"}
 }
 
 func TestBook_UnmappedStaysUnknown(t *testing.T) {
@@ -979,10 +980,10 @@ func TestCancel_LastSnapshotBlocksProc(t *testing.T) {
 		last booking.Snap
 		code string
 	}{
-		{"bill", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, AnswBill: &bill}, "CANCEL_NOT_SUPPORTED"},
-		{"link", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, A: []int64{8}}, "CANCEL_NOT_SUPPORTED"},
-		{"cancelled", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningCancelled: 1}, "ALREADY_CANCELLED"},
-		{"answ state", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, AnswFound: true, AnswState: 2}, "CANCEL_NOT_SUPPORTED"},
+		{"bill", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", AnswBill: &bill}, "CANCEL_NOT_SUPPORTED"},
+		{"link", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", A: []int64{8}}, "CANCEL_NOT_SUPPORTED"},
+		{"cancelled", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", PlanningCancelled: 1}, "ALREADY_CANCELLED"},
+		{"answ state", booking.Snap{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", AnswFound: true, AnswState: 2}, "CANCEL_NOT_SUPPORTED"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1111,8 +1112,8 @@ func TestCancel_DirectionAppearsBeforeSave(t *testing.T) {
 		OwnDirection: &dir,
 	}
 	c.snaps = []booking.Snap{
-		{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119},
-		{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, A: []int64{1}, P: []int64{9}, D: []int64{9}},
+		{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00"},
+		{ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", A: []int64{1}, P: []int64{9}, D: []int64{9}},
 	}
 	p.record = false
 	out := e.Cancel(context.Background(), 1, 5, "53535353-5353-4353-8353-535353535353")
@@ -1129,7 +1130,7 @@ func TestCancel_LostFinalizeCASAnswersUnknown(t *testing.T) {
 	c.owners[5] = repo.OwnerRow{Found: true, PatientID: 1, PlSubjID: 1119, OrgID: 496, DateStart: "2026-11-08T10:00:00"}
 	c.adm = booking.Admission{Found: true, Active: true}
 	clean := activeSnap()
-	c.snaps = []booking.Snap{clean, clean, {ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningCancelled: 1}}
+	c.snaps = []booking.Snap{clean, clean, {ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00", PlanningCancelled: 1}}
 	p.record = false
 	p.next = repo.ProcResult{Sent: true, Finished: true, HasRow: true}
 	e.AfterProc = func() error {
@@ -1267,7 +1268,7 @@ func TestCancel_ThresholdPassesWhileWaiting(t *testing.T) {
 	}
 	p.record = false
 	out := e.Cancel(context.Background(), 1, 5, "64646464-6464-4464-8464-646464646464")
-	if out.Status != http.StatusConflict || out.Code != "CANCEL_TOO_LATE" || p.calls.Load() != 0 {
+	if out.Status != http.StatusUnprocessableEntity || out.Code != "CANCEL_TOO_LATE" || p.calls.Load() != 0 { // B4.3: 422
 		t.Fatalf("status=%d code=%s calls=%d", out.Status, out.Code, p.calls.Load())
 	}
 }

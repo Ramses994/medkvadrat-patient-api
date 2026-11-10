@@ -66,8 +66,9 @@ type Snap struct {
 	PlanningFound     bool
 	PlanningCancelled int
 	PlanningStatus    int
-	PlanningPatientID int64 // PLANNING.PATIENTS_ID, read in the same snapshot
-	PlanningPlSubjID  int64 // PLANNING.PL_SUBJ_ID, read in the same snapshot
+	PlanningPatientID int64  // PLANNING.PATIENTS_ID, read in the same snapshot
+	PlanningPlSubjID  int64  // PLANNING.PL_SUBJ_ID, read in the same snapshot
+	PlanningDateStart string // PLANNING.DATE_START, Moscow wall time yyyy-mm-ddThh:mm:ss
 	AnswExpected      bool
 	AnswFound         bool
 	AnswState         int
@@ -201,7 +202,8 @@ func SnapAllows(planningID int64, firstVariant string, first, last Snap) (code s
 		!samePtr(first.AnswPlanning, last.AnswPlanning) {
 		return "CANCEL_NOT_SUPPORTED", false
 	}
-	if first.PlanningPatientID != last.PlanningPatientID || first.PlanningPlSubjID != last.PlanningPlSubjID {
+	if first.PlanningPatientID != last.PlanningPatientID || first.PlanningPlSubjID != last.PlanningPlSubjID ||
+		first.PlanningDateStart != last.PlanningDateStart {
 		return "CANCEL_NOT_SUPPORTED", false
 	}
 	if firstVariant == "one" {

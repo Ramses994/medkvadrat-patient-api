@@ -31,7 +31,7 @@ func oneAdmission() booking.Admission {
 // from DIR_ANSW.PATDIREC_ID and PATDIREC.PLANNING_CR_ID.
 func oneSnapSvc() booking.Snap {
 	return booking.Snap{
-		ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119,
+		ReadOK: true, PlanningFound: true, PlanningPatientID: 1, PlanningPlSubjID: 1119, PlanningDateStart: "2026-11-08T10:00:00",
 		AnswExpected: true, AnswFound: true, AnswPlanning: i64(5), AnswPatdirec: i64(22),
 		DirExpected: true, DirFound: true, DirPlanningCR: i64(5),
 		A: []int64{7}, P: []int64{22},

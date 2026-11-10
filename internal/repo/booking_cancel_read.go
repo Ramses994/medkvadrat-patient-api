@@ -180,9 +180,11 @@ SELECT DIR_ANSW_ID FROM DIR_ANSW WHERE @has_dir = 1 AND PATDIREC_ID = @dir`,
 	// call uses the newest Medialog read.
 	err = db.QueryRowContext(ctx, `
 SELECT CAST(ISNULL(CANCELLED, 0) AS int), CAST(ISNULL(STATUS, 0) AS int),
-  ISNULL(PATIENTS_ID, 0), ISNULL(PL_SUBJ_ID, 0)
+  ISNULL(PATIENTS_ID, 0), ISNULL(PL_SUBJ_ID, 0),
+  ISNULL(CONVERT(varchar(19), DATE_START, 126), '')
 FROM PLANNING WHERE PLANNING_ID = @id`, sql.Named("id", planningID)).Scan(
-		&snap.PlanningCancelled, &snap.PlanningStatus, &snap.PlanningPatientID, &snap.PlanningPlSubjID)
+		&snap.PlanningCancelled, &snap.PlanningStatus, &snap.PlanningPatientID, &snap.PlanningPlSubjID,
+		&snap.PlanningDateStart)
 	if err == sql.ErrNoRows {
 		snap.PlanningFound = false
 	} else if err != nil {

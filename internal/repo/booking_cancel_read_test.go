@@ -24,8 +24,8 @@ func TestLoadSnap_ReadsActualLinks(t *testing.T) {
 	mock.ExpectQuery(`PATDIREC_ID FROM PATDIREC`).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(22))
 	mock.ExpectQuery(`DM_DOC_ID FROM DM_DOC`).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	// PLANNING (owner, line, state) is the last Medialog read of the snapshot.
-	mock.ExpectQuery(`PATIENTS_ID, 0\), ISNULL\(PL_SUBJ_ID, 0\)\s+FROM PLANNING WHERE PLANNING_ID`).
-		WillReturnRows(sqlmock.NewRows([]string{"c", "s", "pat", "subj"}).AddRow(0, 0, 1, 1119))
+	mock.ExpectQuery(`PATIENTS_ID, 0\), ISNULL\(PL_SUBJ_ID, 0\),\s+ISNULL\(CONVERT\(varchar\(19\), DATE_START, 126\), ''\)\s+FROM PLANNING WHERE PLANNING_ID`).
+		WillReturnRows(sqlmock.NewRows([]string{"c", "s", "pat", "subj", "ds"}).AddRow(0, 0, 1, 1119, "2026-11-08T10:00:00"))
 	snap, err := LoadSnap(context.Background(), db, 5, &answ, &dir)
 	if err != nil || !snap.ReadOK {
 		t.Fatalf("snap %+v err=%v", snap, err)
@@ -36,7 +36,7 @@ func TestLoadSnap_ReadsActualLinks(t *testing.T) {
 	if snap.DirPlanningCR == nil || *snap.DirPlanningCR != 99 {
 		t.Fatalf("direction owner %v", snap.DirPlanningCR)
 	}
-	if snap.PlanningPatientID != 1 || snap.PlanningPlSubjID != 1119 {
+	if snap.PlanningPatientID != 1 || snap.PlanningPlSubjID != 1119 || snap.PlanningDateStart != "2026-11-08T10:00:00" {
 		t.Fatalf("visit owner %d line %d", snap.PlanningPatientID, snap.PlanningPlSubjID)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
