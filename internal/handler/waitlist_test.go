@@ -48,7 +48,7 @@ func (f *fakeWaitlistSvc) PatchWaitlist(ctx context.Context, id int64, version i
 	item := confirmations.DashboardItem{
 		ID: id, PlanningID: 10, PatientID: 20, Reason: "declined",
 		CreatedAt: "2026-10-22T00:00:00Z", CreatedAtMSK: "2026-10-22 03:00:00",
-		BranchID: 106, Source: "max", MedialogState: "запись действует", Version: version,
+		BranchID: 106, Source: "max", MedialogState: "запись действует", Version: version, Enriched: true,
 	}
 	if f.err != nil {
 		return item, f.err

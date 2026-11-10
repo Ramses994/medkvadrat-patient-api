@@ -127,7 +127,34 @@ async function openBoard(page, opts) {
             success: false,
             error: 'WAITLIST_CHANGED',
             error_details: { message: 'Строку уже изменил другой сотрудник' },
-            data: fresh,
+            data: {
+              row: {
+                status: fresh.status,
+                outcome: fresh.outcome,
+                version: fresh.version,
+                updated_by: 'kash',
+                updated_at: '06.11 12:20',
+              },
+              enriched: true,
+              full: fresh,
+            },
+          },
+        });
+        return;
+      }
+      if (state.bare409 && body.outcome === 'call_back') {
+        state.bare409 = false;
+        await route.fulfill({
+          status: 409,
+          json: {
+            success: false,
+            error: 'WAITLIST_CHANGED',
+            error_details: { message: 'Строку уже изменил другой сотрудник' },
+            data: {
+              row: { status: 'new', outcome: '', version: body.version || 1, updated_by: '', updated_at: '' },
+              enriched: false,
+              full: { id: 7, patient_name: 'Чужой', patient_phone: '70000000000', medialog_state: 'запись отменена' },
+            },
           },
         });
         return;
@@ -175,7 +202,7 @@ async function openBoard(page, opts) {
     await route.fulfill({
       json: {
         success: true,
-        data: { open_total: visible.length, page: 1, total: visible.length, per_page: 50, items: visible },
+        data: { open_total: visible.length, page: 1, total: visible.length, per_page: 50, items: visible, banner: opts.banner || '' },
       },
     });
   });
@@ -265,6 +292,48 @@ test('failed enrichment keeps the patient and the close dialog', async ({ page }
   await page.locator('.wl-outcome').selectOption('refused');
   await expect(page.locator('#confirmModal')).toBeVisible();
   await expect(page.locator('#confirmText')).toHaveText(CONFIRM);
+});
+
+test('a conflict without enrichment keeps the active appointment dialog', async ({ page }) => {
+  const state = await openBoard(page, {});
+  state.bare409 = true;
+  await page.locator('#tabWaitlist').click();
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await expect(page.locator('#banner')).toContainText('Строку уже изменил другой сотрудник');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await expect(page.locator('#waitlistList')).not.toContainText('Чужой');
+  await expect(page.locator('#waitlistList')).toContainText('действует — отменить в клиенте');
+  await page.locator('.wl-outcome').selectOption('refused');
+  await expect(page.locator('#confirmModal')).toBeVisible();
+  await expect(page.locator('#confirmText')).toHaveText(CONFIRM);
+  await page.locator('#confirmNo').click();
+});
+
+test('registry keeps the phone when enrichment fails', async ({ page }) => {
+  const state = await openBoard(page, {
+    items: [row({
+      id: 88001,
+      source: 'registry',
+      patient_name: 'Сидорова Анна',
+      patient_phone: '+79991112233',
+      reason: '',
+      medialog_state: 'запись действует',
+    })],
+  });
+  state.thinNext = true;
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79991112233');
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await expect(page.locator('#waitlistList')).toContainText('+79991112233');
+  await expect(page.locator('#waitlistList')).not.toContainText('Чужой');
+  await expect(page.locator('#waitlistList')).not.toContainText('70000000000');
+});
+
+test('medialog banner stays on the waitlist', async ({ page }) => {
+  await openBoard(page, { banner: 'Медиалог недоступен', items: [row()] });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#banner')).toContainText('Медиалог недоступен');
+  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
 });
 
 test('refusing an active appointment still asks after a conflict response', async ({ page }) => {

@@ -22,8 +22,16 @@ var loadMis = repo.ListWaitlistMis
 var misNow = time.Now
 
 type pageEnrichment struct {
-	live    map[int64]repo.WaitlistPlanningLive
-	futures []repo.WaitlistFutureVisit
+	live     map[int64]repo.WaitlistPlanningLive
+	futures  []repo.WaitlistFutureVisit
+	byOrigin map[int64]repo.WaitlistFutureVisit
+}
+
+type tickSnap struct {
+	ok   bool
+	down bool
+	page pageEnrichment
+	mis  []repo.WaitlistMisRow
 }
 
 type waitTagged struct {
@@ -31,9 +39,8 @@ type waitTagged struct {
 	when time.Time
 }
 
-// dashboardCacheTTL is the maximum age of the registry window and of page
-// enrichment. A moved row may stay on the previous branch until the next
-// branch sync, which uses the same limit. See docs/lk/dashboard-snapshot.md.
+// dashboardCacheTTL is the maximum age of one dashboard snapshot.
+// Access, personal data and counters share it. See docs/lk/dashboard-snapshot.md.
 const dashboardCacheTTL = 30 * time.Second
 
 const dashboardCacheMaxKeys = 32
@@ -43,58 +50,42 @@ var loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientI
 	if err != nil {
 		return pageEnrichment{}, err
 	}
-	return pageEnrichment{live: live, futures: futures}, nil
+	return pageEnrichment{live: live, futures: futures, byOrigin: futuresByOrigin(futures)}, nil
 }
 
-var loadMaxBranches = repo.WaitlistBranches
+func futuresByOrigin(futures []repo.WaitlistFutureVisit) map[int64]repo.WaitlistFutureVisit {
+	out := map[int64]repo.WaitlistFutureVisit{}
+	for _, fut := range futures {
+		if fut.OriginID != 0 {
+			out[fut.OriginID] = fut
+		}
+	}
+	return out
+}
 
-type misCacheEntry struct {
+type storedSnap struct {
 	at   time.Time
-	rows []repo.WaitlistMisRow
-}
-
-var misRegistry = struct {
-	mu     sync.Mutex
-	cache  map[string]misCacheEntry
-	flight singleflight.Group
-}{cache: map[string]misCacheEntry{}}
-
-func resetMisCache() {
-	misRegistry.mu.Lock()
-	misRegistry.cache = map[string]misCacheEntry{}
-	misRegistry.mu.Unlock()
-}
-
-type enrichEntry struct {
-	at   time.Time
+	mis  []repo.WaitlistMisRow
 	page pageEnrichment
 }
 
-var enrichCache = struct {
+// snapStore is the one process-wide snapshot. Registry rows and enrichment
+// share takenAt, so a failed or newer read cannot be paired with the other.
+var snapStore = struct {
 	mu     sync.Mutex
-	m      map[string]enrichEntry
+	m      map[string]storedSnap
 	flight singleflight.Group
-}{m: map[string]enrichEntry{}}
+}{m: map[string]storedSnap{}}
 
-func resetEnrichCache() {
-	enrichCache.mu.Lock()
-	enrichCache.m = map[string]enrichEntry{}
-	enrichCache.mu.Unlock()
+func resetSnapStore() {
+	snapStore.mu.Lock()
+	snapStore.m = map[string]storedSnap{}
+	snapStore.mu.Unlock()
 }
 
-var branchSync = struct {
-	mu     sync.Mutex
-	at     time.Time
-	key    string
-	flight singleflight.Group
-}{}
+func resetMisCache() { resetSnapStore() }
 
-func resetBranchSync() {
-	branchSync.mu.Lock()
-	branchSync.at = time.Time{}
-	branchSync.key = ""
-	branchSync.mu.Unlock()
-}
+func resetEnrichCache() { resetSnapStore() }
 
 var ErrBranchForbidden = staff.ErrBranchForbidden
 
@@ -102,11 +93,9 @@ func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.W
 	wl := confirmations.NewRepo(s.SQLite)
 	page, per := waitlistPage(filter)
 	applyUnknownBranch(ctx, &filter)
-	if filter.Source != "registry" {
-		s.syncOpenMaxBranches(ctx, wl)
-	}
+	snap := s.prepareSnapshot(ctx, wl, filter)
 	if filter.Source == "max" {
-		return s.maxOnlyPage(ctx, wl, filter, page, per)
+		return s.maxOnlyPage(ctx, wl, filter, page, per, snap)
 	}
 	need := headLimit(page, per)
 
@@ -125,14 +114,9 @@ func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.W
 		}
 	}
 
-	var misRows []repo.WaitlistMisRow
-	if s.MSSQL != nil && filter.Source != "max" {
-		back, ahead := s.misWindow()
-		misRows, err = s.cachedMis(ctx, back, ahead, s.Config.WaitlistExamIDs)
-		if err != nil {
-			misRows = nil
-			err = nil
-		}
+	misRows := snap.mis
+	if !snap.ok {
+		misRows = nil
 	}
 	regHead, regTotal, work, err := s.registryHead(ctx, wl, filter, misRows, need)
 	if err != nil {
@@ -152,7 +136,7 @@ func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.W
 			pageItems = append(pageItems, t.item)
 		}
 	}
-	pageItems, err = s.decorateWaitlist(ctx, pageItems)
+	pageItems, err = s.decorateWaitlist(ctx, pageItems, snap)
 	if err != nil {
 		return confirmations.DashboardPage{}, err
 	}
@@ -160,10 +144,10 @@ func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.W
 	if err != nil {
 		return confirmations.DashboardPage{}, err
 	}
-	return confirmations.DashboardPage{Items: pageItems, Total: total, OpenTotal: openTotal, Page: page, PerPage: per}, nil
+	return confirmations.DashboardPage{Items: pageItems, Total: total, OpenTotal: openTotal, Page: page, PerPage: per, Banner: snap.banner()}, nil
 }
 
-func (s *Services) maxOnlyPage(ctx context.Context, wl *confirmations.Repo, filter confirmations.WaitlistListFilter, page, per int) (confirmations.DashboardPage, error) {
+func (s *Services) maxOnlyPage(ctx context.Context, wl *confirmations.Repo, filter confirmations.WaitlistListFilter, page, per int, snap tickSnap) (confirmations.DashboardPage, error) {
 	maxFilter := branchFilter(filter)
 	maxFilter.Page = page
 	maxFilter.PerPage = per
@@ -175,7 +159,7 @@ func (s *Services) maxOnlyPage(ctx context.Context, wl *confirmations.Repo, filt
 	for _, row := range rows {
 		items = append(items, itemFromWaitlist(row))
 	}
-	items, err = s.decorateWaitlist(ctx, items)
+	items, err = s.decorateWaitlist(ctx, items, snap)
 	if err != nil {
 		return confirmations.DashboardPage{}, err
 	}
@@ -186,7 +170,7 @@ func (s *Services) maxOnlyPage(ctx context.Context, wl *confirmations.Repo, filt
 	if err != nil {
 		return confirmations.DashboardPage{}, err
 	}
-	return confirmations.DashboardPage{Items: items, Total: total, OpenTotal: openTotal, Page: page, PerPage: per}, nil
+	return confirmations.DashboardPage{Items: items, Total: total, OpenTotal: openTotal, Page: page, PerPage: per, Banner: snap.banner()}, nil
 }
 
 func branchFilter(filter confirmations.WaitlistListFilter) confirmations.WaitlistListFilter {
@@ -392,67 +376,37 @@ func misCacheKey(now time.Time, back, ahead int, examIDs []int64) string {
 	return from + "|" + to + "|" + strings.Join(parts, ",")
 }
 
-func (s *Services) cachedMis(ctx context.Context, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
-	now := misNow()
-	key := misCacheKey(now, back, ahead, examIDs)
-	misRegistry.mu.Lock()
-	evictMisLocked(now)
-	if e, ok := misRegistry.cache[key]; ok && now.Sub(e.at) < dashboardCacheTTL {
-		rows := e.rows
-		misRegistry.mu.Unlock()
-		return rows, nil
-	}
-	misRegistry.mu.Unlock()
-	v, err, _ := misRegistry.flight.Do(key, func() (any, error) {
-		now := misNow()
-		misRegistry.mu.Lock()
-		evictMisLocked(now)
-		if e, ok := misRegistry.cache[key]; ok && now.Sub(e.at) < dashboardCacheTTL {
-			rows := e.rows
-			misRegistry.mu.Unlock()
-			return rows, nil
-		}
-		misRegistry.mu.Unlock()
-		rows, err := loadMis(ctx, s.MSSQL, now, back, ahead, examIDs)
-		if err != nil {
-			misRegistry.mu.Lock()
-			evictMisLocked(misNow())
-			misRegistry.mu.Unlock()
-			return nil, err
-		}
-		misRegistry.mu.Lock()
-		evictMisLocked(now)
-		misRegistry.cache[key] = misCacheEntry{at: now, rows: rows}
-		misRegistry.mu.Unlock()
-		return rows, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return v.([]repo.WaitlistMisRow), nil
-}
-
-func evictMisLocked(now time.Time) {
-	for k, e := range misRegistry.cache {
-		if now.Sub(e.at) >= dashboardCacheTTL {
-			delete(misRegistry.cache, k)
-		}
-	}
-}
-
 func sweepDashboardCaches(now time.Time) {
-	misRegistry.mu.Lock()
-	evictMisLocked(now)
-	misRegistry.mu.Unlock()
-	enrichCache.mu.Lock()
-	evictEnrichLocked(now)
-	enrichCache.mu.Unlock()
+	snapStore.mu.Lock()
+	evictSnapLocked(now)
+	snapStore.mu.Unlock()
+}
+
+func evictSnapLocked(now time.Time) {
+	for k, e := range snapStore.m {
+		if now.Sub(e.at) >= dashboardCacheTTL {
+			delete(snapStore.m, k)
+		}
+	}
+}
+
+func trimSnapLocked() {
+	for len(snapStore.m) > dashboardCacheMaxKeys {
+		var oldest string
+		var oldestAt time.Time
+		for k, e := range snapStore.m {
+			if oldest == "" || e.at.Before(oldestAt) {
+				oldest, oldestAt = k, e.at
+			}
+		}
+		delete(snapStore.m, oldest)
+	}
 }
 
 func enrichHoldsName(name string) bool {
-	enrichCache.mu.Lock()
-	defer enrichCache.mu.Unlock()
-	for _, e := range enrichCache.m {
+	snapStore.mu.Lock()
+	defer snapStore.mu.Unlock()
+	for _, e := range snapStore.m {
 		for _, live := range e.page.live {
 			if live.PatientName == name {
 				return true
@@ -463,10 +417,10 @@ func enrichHoldsName(name string) bool {
 }
 
 func misCacheHoldsName(name string) bool {
-	misRegistry.mu.Lock()
-	defer misRegistry.mu.Unlock()
-	for _, e := range misRegistry.cache {
-		for _, row := range e.rows {
+	snapStore.mu.Lock()
+	defer snapStore.mu.Unlock()
+	for _, e := range snapStore.m {
+		for _, row := range e.mis {
 			if row.PatientName == name {
 				return true
 			}
@@ -486,51 +440,56 @@ func (s *Services) misWindow() (int, int) {
 	return back, ahead
 }
 
-func (s *Services) decorateWaitlist(ctx context.Context, items []confirmations.DashboardItem) ([]confirmations.DashboardItem, error) {
+func (snap tickSnap) banner() string {
+	if !snap.down {
+		return ""
+	}
+	return "Медиалог недоступен"
+}
+
+func (s *Services) decorateWaitlist(ctx context.Context, items []confirmations.DashboardItem, snap tickSnap) ([]confirmations.DashboardItem, error) {
 	restricted, scope := staffScope(ctx)
-	if s.MSSQL == nil || len(items) == 0 {
+	if len(items) == 0 {
+		return items, nil
+	}
+	if s.MSSQL == nil || !snap.ok {
 		for i := range items {
 			items[i].Enriched = false
-			if items[i].Source != "registry" && items[i].MedialogState == "" {
+			if items[i].Source != "registry" && items[i].MedialogState == "" && s.MSSQL == nil {
 				items[i].MedialogState = "запись не найдена в Медиалоге"
 			}
 		}
 		return items, nil
 	}
-	planningIDs := make([]int64, 0)
-	patientIDs := make([]int64, 0)
-	answered := map[int64]string{}
-	seen := map[int64]bool{}
-	for _, it := range items {
-		if it.PatientID != 0 && !seen[it.PatientID] {
-			seen[it.PatientID] = true
-			patientIDs = append(patientIDs, it.PatientID)
-		}
-		if it.Source != "registry" {
-			planningIDs = append(planningIDs, it.PlanningID)
-			if it.CreatedAtMSK != "" {
-				answered[it.PlanningID] = it.CreatedAtMSK
-			}
-		}
-	}
-	now := misNow().In(confirmations.MoscowLocation())
-	page, err := s.pageEnrich(ctx, planningIDs, patientIDs, answered, now)
-	if err != nil {
-		return nil, err
-	}
-	live, futures := page.live, page.futures
+	live := snap.page.live
 	kept := items[:0]
 	for i := range items {
 		it := items[i]
-		it.Enriched = true
+		origin := it.CreatedAtMSK
 		if it.Source == "registry" {
-			if fut := pickFuture(it.CreatedAt, futures, it.PatientID, true); fut != nil {
-				applyFuture(&it, fut, restricted, scope)
+			origin = it.CreatedAt
+		}
+		if fut, ok := snap.page.byOrigin[it.PlanningID]; ok && repo.VisitCreatedAfter(origin, fut.CreatedAt) {
+			cp := fut
+			applyFuture(&it, &cp, restricted, scope)
+		}
+		if it.Source == "registry" {
+			if orig, ok := live[it.PlanningID]; ok {
+				if orig.PatientName != "" || orig.Phone != "" {
+					it.PatientName = orig.PatientName
+					it.PatientPhone = orig.Phone
+					it.PatientBirth = orig.BirthDate
+				}
+				if orig.BranchID != 0 {
+					it.BranchID = orig.BranchID
+				}
 			}
+			it.Enriched = it.PatientName != "" || it.PatientPhone != ""
 			kept = append(kept, it)
 			continue
 		}
 		if orig, ok := live[it.PlanningID]; ok {
+			it.Enriched = orig.PatientName != "" || orig.Phone != ""
 			it.PatientName = orig.PatientName
 			it.PatientPhone = orig.Phone
 			it.PatientBirth = orig.BirthDate
@@ -538,11 +497,12 @@ func (s *Services) decorateWaitlist(ctx context.Context, items []confirmations.D
 			it.OrigDoctor = orig.DoctorName
 			it.OrigService = orig.Service
 			it.MedialogState = repo.MedialogStateLabel(orig, it.ApptStart)
+			if orig.BranchID != 0 {
+				it.BranchID = orig.BranchID
+			}
 		} else {
+			it.Enriched = false
 			it.MedialogState = "запись не найдена в Медиалоге"
-		}
-		if fut := repo.PickNewerFuture(it.CreatedAtMSK, futures, it.PatientID); fut != nil {
-			applyFuture(&it, fut, restricted, scope)
 		}
 		kept = append(kept, it)
 	}
@@ -552,47 +512,29 @@ func (s *Services) decorateWaitlist(ctx context.Context, items []confirmations.D
 	return kept, nil
 }
 
-func (s *Services) pageEnrich(ctx context.Context, planningIDs, patientIDs []int64, answered map[int64]string, now time.Time) (pageEnrichment, error) {
-	key := enrichKey(planningIDs, patientIDs, now)
-	clock := misNow()
-	enrichCache.mu.Lock()
-	evictEnrichLocked(clock)
-	if e, ok := enrichCache.m[key]; ok && clock.Sub(e.at) < dashboardCacheTTL {
-		page := e.page
-		enrichCache.mu.Unlock()
-		return page, nil
+func snapshotKey(source string, planningIDs []int64, answered map[int64]string, now time.Time, back, ahead int, exams []int64) string {
+	day := now.In(confirmations.MoscowLocation()).Format("2006-01-02")
+	key := source + "|" + day + "|" + intsKey(planningIDs) + "|" + answeredKey(answered)
+	if source != "max" {
+		key += "|" + misCacheKey(now, back, ahead, exams)
 	}
-	enrichCache.mu.Unlock()
-	v, err, _ := enrichCache.flight.Do(key, func() (any, error) {
-		clock := misNow()
-		enrichCache.mu.Lock()
-		evictEnrichLocked(clock)
-		if e, ok := enrichCache.m[key]; ok && clock.Sub(e.at) < dashboardCacheTTL {
-			page := e.page
-			enrichCache.mu.Unlock()
-			return page, nil
-		}
-		enrichCache.mu.Unlock()
-		page, err := loadPageEnrich(ctx, s.MSSQL, planningIDs, patientIDs, s.Config.WaitlistExamIDs, now, answered)
-		if err != nil {
-			return pageEnrichment{}, err
-		}
-		enrichCache.mu.Lock()
-		evictEnrichLocked(misNow())
-		enrichCache.m[key] = enrichEntry{at: misNow(), page: page}
-		trimEnrichLocked()
-		enrichCache.mu.Unlock()
-		return page, nil
-	})
-	if err != nil {
-		return pageEnrichment{}, err
-	}
-	return v.(pageEnrichment), nil
+	return key
 }
 
-func enrichKey(planningIDs, patientIDs []int64, now time.Time) string {
-	day := now.In(confirmations.MoscowLocation()).Format("2006-01-02")
-	return intsKey(planningIDs) + "|" + intsKey(patientIDs) + "|" + day
+func answeredKey(answered map[int64]string) string {
+	if len(answered) == 0 {
+		return ""
+	}
+	ids := make([]int64, 0, len(answered))
+	for id := range answered {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(id, 10) + "=" + answered[id]
+	}
+	return strings.Join(parts, ",")
 }
 
 func intsKey(ids []int64) string {
@@ -605,79 +547,121 @@ func intsKey(ids []int64) string {
 	return strings.Join(parts, ",")
 }
 
-func evictEnrichLocked(now time.Time) {
-	for k, e := range enrichCache.m {
-		if now.Sub(e.at) >= dashboardCacheTTL {
-			delete(enrichCache.m, k)
-		}
+func snapLookup(key string, now time.Time) (storedSnap, bool) {
+	snapStore.mu.Lock()
+	defer snapStore.mu.Unlock()
+	evictSnapLocked(now)
+	e, ok := snapStore.m[key]
+	if !ok || now.Sub(e.at) >= dashboardCacheTTL {
+		return storedSnap{}, false
 	}
+	return e, true
 }
 
-func trimEnrichLocked() {
-	for len(enrichCache.m) > dashboardCacheMaxKeys {
-		var oldest string
-		var oldestAt time.Time
-		for k, e := range enrichCache.m {
-			if oldest == "" || e.at.Before(oldestAt) {
-				oldest, oldestAt = k, e.at
-			}
-		}
-		delete(enrichCache.m, oldest)
-	}
-}
-
-func (s *Services) syncOpenMaxBranches(ctx context.Context, wl *confirmations.Repo) {
-	if s.MSSQL == nil || wl == nil {
-		return
+func (s *Services) prepareSnapshot(ctx context.Context, wl *confirmations.Repo, filter confirmations.WaitlistListFilter) tickSnap {
+	startSnapshotSweep()
+	if s == nil || s.MSSQL == nil || wl == nil {
+		return tickSnap{ok: true}
 	}
 	rows, err := wl.ListOpenBranchRows(ctx)
-	if err != nil || len(rows) == 0 {
-		return
+	if err != nil {
+		sweepDashboardCaches(misNow())
+		return tickSnap{down: true}
 	}
-	key := intsKey(planningIDsOf(rows))
-	now := misNow()
-	branchSync.mu.Lock()
-	fresh := branchSync.key == key && !branchSync.at.IsZero() && now.Sub(branchSync.at) < dashboardCacheTTL
-	branchSync.mu.Unlock()
-	if fresh {
-		return
-	}
-	_, _, _ = branchSync.flight.Do(key, func() (any, error) {
-		now := misNow()
-		branchSync.mu.Lock()
-		fresh := branchSync.key == key && !branchSync.at.IsZero() && now.Sub(branchSync.at) < dashboardCacheTTL
-		branchSync.mu.Unlock()
-		if fresh {
-			return nil, nil
-		}
-		ids := planningIDsOf(rows)
-		found, err := loadMaxBranches(ctx, s.MSSQL, ids)
-		if err != nil {
-			return nil, nil
-		}
+	answered := map[int64]string{}
+	var ids []int64
+	if filter.Source != "registry" {
+		ids = make([]int64, 0, len(rows))
 		for _, row := range rows {
-			live, ok := found[row.PlanningID]
-			if !ok || live == 0 {
-				continue
-			}
-			if live != row.BranchID {
-				_ = wl.SetWaitlistBranch(ctx, row.ID, live)
+			ids = append(ids, row.PlanningID)
+			if row.CreatedAtMSK != "" {
+				answered[row.PlanningID] = row.CreatedAtMSK
 			}
 		}
-		branchSync.mu.Lock()
-		branchSync.at = misNow()
-		branchSync.key = key
-		branchSync.mu.Unlock()
-		return nil, nil
+	}
+	back, ahead := s.misWindow()
+	key := snapshotKey(filter.Source, ids, answered, misNow(), back, ahead, s.Config.WaitlistExamIDs)
+	if e, ok := snapLookup(key, misNow()); ok {
+		return s.materializeSnap(ctx, wl, filter, rows, e)
+	}
+	v, err, _ := snapStore.flight.Do(key, func() (any, error) {
+		now := misNow()
+		if e, ok := snapLookup(key, now); ok {
+			return e, nil
+		}
+		enrichIDs := append([]int64(nil), ids...)
+		var mis []repo.WaitlistMisRow
+		if filter.Source != "max" {
+			loaded, err := loadMis(ctx, s.MSSQL, now, back, ahead, s.Config.WaitlistExamIDs)
+			if err != nil {
+				return storedSnap{}, err
+			}
+			mis = loaded
+			seen := map[int64]bool{}
+			for _, id := range enrichIDs {
+				seen[id] = true
+			}
+			for _, row := range mis {
+				if row.PlanningID == 0 || seen[row.PlanningID] {
+					continue
+				}
+				seen[row.PlanningID] = true
+				enrichIDs = append(enrichIDs, row.PlanningID)
+			}
+		}
+		page, err := loadPageEnrich(ctx, s.MSSQL, enrichIDs, nil, s.Config.WaitlistExamIDs, now.In(confirmations.MoscowLocation()), answered)
+		if err != nil {
+			return storedSnap{}, err
+		}
+		for i := range mis {
+			if orig, ok := page.live[mis[i].PlanningID]; ok && orig.BranchID != 0 {
+				mis[i].BranchID = orig.BranchID
+			}
+		}
+		entry := storedSnap{at: misNow(), mis: mis, page: page}
+		snapStore.mu.Lock()
+		evictSnapLocked(misNow())
+		snapStore.m[key] = entry
+		trimSnapLocked()
+		snapStore.mu.Unlock()
+		return entry, nil
 	})
+	if err != nil {
+		sweepDashboardCaches(misNow())
+		return tickSnap{down: true}
+	}
+	return s.materializeSnap(ctx, wl, filter, rows, v.(storedSnap))
 }
 
-func planningIDsOf(rows []confirmations.WaitlistRow) []int64 {
-	ids := make([]int64, len(rows))
-	for i, row := range rows {
-		ids[i] = row.PlanningID
+func (s *Services) materializeSnap(ctx context.Context, wl *confirmations.Repo, filter confirmations.WaitlistListFilter, rows []confirmations.WaitlistRow, e storedSnap) tickSnap {
+	if filter.Source != "registry" {
+		s.applyLiveBranches(ctx, wl, rows, e.page.live)
 	}
-	return ids
+	return tickSnap{ok: true, page: e.page, mis: e.mis}
+}
+
+func (s *Services) applyLiveBranches(ctx context.Context, wl *confirmations.Repo, rows []confirmations.WaitlistRow, live map[int64]repo.WaitlistPlanningLive) {
+	for _, row := range rows {
+		orig, ok := live[row.PlanningID]
+		if !ok || orig.BranchID == 0 || orig.BranchID == row.BranchID {
+			continue
+		}
+		_ = wl.SetWaitlistBranch(ctx, row.ID, orig.BranchID)
+	}
+}
+
+var snapshotSweep sync.Once
+
+func startSnapshotSweep() {
+	snapshotSweep.Do(func() {
+		go func() {
+			tick := time.NewTicker(dashboardCacheTTL)
+			defer tick.Stop()
+			for range tick.C {
+				sweepDashboardCaches(misNow())
+			}
+		}()
+	})
 }
 
 func staffScope(ctx context.Context) (bool, []int) {
@@ -781,17 +765,13 @@ func (s *Services) currentMaxBranch(ctx context.Context, row confirmations.Waitl
 	if s.MSSQL == nil {
 		return row.BranchID, nil
 	}
-	answered := map[int64]string{}
-	if row.CreatedAtMSK != "" {
-		answered[row.PlanningID] = row.CreatedAtMSK
+	snap := s.prepareSnapshot(ctx, confirmations.NewRepo(s.SQLite), confirmations.WaitlistListFilter{Source: "max"})
+	if snap.down {
+		return row.BranchID, nil
 	}
-	page, err := loadPageEnrich(ctx, s.MSSQL, []int64{row.PlanningID}, nil, s.Config.WaitlistExamIDs, misNow(), answered)
-	if err != nil {
-		return 0, err
-	}
-	orig, ok := page.live[row.PlanningID]
-	br := currentBranchID(row.BranchID, orig.BranchID, ok)
-	if br != row.BranchID && s.SQLite != nil {
+	orig, ok := snap.page.live[row.PlanningID]
+	br := currentBranchID(row.BranchID, orig.BranchID, ok && orig.BranchID != 0)
+	if ok && orig.BranchID != 0 && br != row.BranchID && s.SQLite != nil {
 		if err := confirmations.NewRepo(s.SQLite).SetWaitlistBranch(ctx, row.ID, br); err != nil {
 			return 0, err
 		}
@@ -838,71 +818,108 @@ func (s *Services) PatchWaitlist(ctx context.Context, id int64, version int, out
 	if err != nil {
 		return confirmations.DashboardItem{}, err
 	}
-	br, err := s.currentMaxBranch(ctx, row)
-	if err != nil {
-		return confirmations.DashboardItem{}, err
+	snap := s.prepareSnapshot(ctx, wl, confirmations.WaitlistListFilter{Source: "max"})
+	if p, ok := staff.PrincipalFrom(ctx); ok {
+		if err := accessPatch(p, "max", row.BranchID, row.PlanningID, snap); err != nil {
+			return confirmations.DashboardItem{}, err
+		}
 	}
-	if p, ok := staff.PrincipalFrom(ctx); ok && !staff.SeesBranch(p, br) {
-		return confirmations.DashboardItem{}, confirmations.ErrWaitlistMoved
+	if snap.ok {
+		if orig, ok := snap.page.live[row.PlanningID]; ok && orig.BranchID != 0 && orig.BranchID != row.BranchID {
+			_ = wl.SetWaitlistBranch(ctx, row.ID, orig.BranchID)
+		}
 	}
 	applied, err := wl.ApplyWaitlist(ctx, id, version, outcome, action, updatedBy, time.Now().UTC())
-	item, derr := s.fullWaitlistItem(ctx, applied)
-	if derr != nil && item.ID == 0 {
-		item = itemFromWaitlist(applied)
-	}
+	item := s.fullWaitlistItem(ctx, applied, snap)
 	return item, err
 }
 
-func (s *Services) fullWaitlistItem(ctx context.Context, row confirmations.WaitlistRow) (confirmations.DashboardItem, error) {
-	if row.ID == 0 {
-		return confirmations.DashboardItem{}, nil
+func accessPatch(p staff.Principal, source string, storedBranch int, planningID int64, snap tickSnap) error {
+	if !snap.ok {
+		if source == "registry" {
+			return confirmations.ErrWaitlistNotFound
+		}
+		if !staff.SeesBranch(p, storedBranch) {
+			return staff.ErrBranchForbidden
+		}
+		return nil
 	}
-	items, err := s.decorateWaitlist(ctx, []confirmations.DashboardItem{itemFromWaitlist(row)})
+	if orig, found := snap.page.live[planningID]; found && orig.BranchID != 0 {
+		if !staff.SeesBranch(p, orig.BranchID) {
+			return confirmations.ErrWaitlistMoved
+		}
+		return nil
+	}
+	if source == "registry" {
+		for _, row := range snap.mis {
+			if row.PlanningID != planningID || row.BranchID == 0 {
+				continue
+			}
+			if !staff.SeesBranch(p, row.BranchID) {
+				return confirmations.ErrWaitlistMoved
+			}
+			return nil
+		}
+		return confirmations.ErrWaitlistNotFound
+	}
+	if !staff.SeesBranch(p, storedBranch) {
+		return staff.ErrBranchForbidden
+	}
+	return nil
+}
+
+func (s *Services) fullWaitlistItem(ctx context.Context, row confirmations.WaitlistRow, snap tickSnap) confirmations.DashboardItem {
+	if row.ID == 0 {
+		return confirmations.DashboardItem{}
+	}
+	items, err := s.decorateWaitlist(ctx, []confirmations.DashboardItem{itemFromWaitlist(row)}, snap)
 	if err != nil || len(items) == 0 {
 		item := itemFromWaitlist(row)
 		item.Enriched = false
-		return item, err
+		return item
 	}
-	return items[0], nil
+	return items[0]
 }
 
 func (s *Services) PatchRegistryWaitlist(ctx context.Context, planningID int64, version int, outcome, action, updatedBy string) (confirmations.DashboardItem, error) {
 	if s.MSSQL == nil {
 		return confirmations.DashboardItem{}, confirmations.ErrWaitlistNotFound
 	}
-	branch, ok, err := repo.WaitlistMisBranch(ctx, s.MSSQL, planningID, s.Config.WaitlistExamIDs)
-	if err != nil {
-		return confirmations.DashboardItem{}, err
+	wl := confirmations.NewRepo(s.SQLite)
+	snap := s.prepareSnapshot(ctx, wl, confirmations.WaitlistListFilter{Source: "registry"})
+	branch := 0
+	for _, row := range snap.mis {
+		if row.PlanningID == planningID {
+			branch = row.BranchID
+			break
+		}
 	}
-	if !ok {
+	if orig, ok := snap.page.live[planningID]; ok && orig.BranchID != 0 {
+		branch = orig.BranchID
+	}
+	if p, has := staff.PrincipalFrom(ctx); has {
+		if err := accessPatch(p, "registry", branch, planningID, snap); err != nil {
+			return confirmations.DashboardItem{}, err
+		}
+	} else if !snap.ok || branch == 0 {
 		return confirmations.DashboardItem{}, confirmations.ErrWaitlistNotFound
 	}
-	if p, has := staff.PrincipalFrom(ctx); has && !p.Allows(currentBranchID(0, branch, true)) {
-		return confirmations.DashboardItem{}, ErrBranchForbidden
-	}
-	work, err := confirmations.NewRepo(s.SQLite).ApplyMisWork(ctx, planningID, version, outcome, action, updatedBy, time.Now().UTC())
-	item := s.registryItem(ctx, work, branch)
-	items, derr := s.decorateWaitlist(ctx, []confirmations.DashboardItem{item})
+	work, err := wl.ApplyMisWork(ctx, planningID, version, outcome, action, updatedBy, time.Now().UTC())
+	item := registryItemFromSnap(work, branch, snap.mis)
+	items, derr := s.decorateWaitlist(ctx, []confirmations.DashboardItem{item}, snap)
 	if derr != nil || len(items) == 0 {
+		item.Enriched = false
 		return item, err
 	}
 	return items[0], err
 }
 
-func (s *Services) registryItem(ctx context.Context, work confirmations.MisWork, branch int) confirmations.DashboardItem {
+func registryItemFromSnap(work confirmations.MisWork, branch int, rows []repo.WaitlistMisRow) confirmations.DashboardItem {
 	item := confirmations.DashboardItem{
 		ID: work.PlanningID, PlanningID: work.PlanningID, Source: "registry",
 		Status: work.Status, Outcome: work.Outcome, BranchID: branch,
 		MedialogState: "запись действует", UpdatedBy: work.UpdatedBy, UpdatedAt: work.UpdatedAt,
 		Version: work.Version,
-	}
-	if s.MSSQL == nil || work.PlanningID == 0 {
-		return item
-	}
-	back, ahead := s.misWindow()
-	rows, err := s.cachedMis(ctx, back, ahead, s.Config.WaitlistExamIDs)
-	if err != nil {
-		return item
 	}
 	for _, row := range rows {
 		if row.PlanningID != work.PlanningID {

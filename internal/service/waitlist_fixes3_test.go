@@ -14,16 +14,12 @@ import (
 )
 
 func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
-	resetBranchSync()
-	prevBranches, prevEnrich := loadMaxBranches, loadPageEnrich
+	resetEnrichCache()
+	prevEnrich := loadPageEnrich
 	t.Cleanup(func() {
-		loadMaxBranches = prevBranches
 		loadPageEnrich = prevEnrich
-		resetBranchSync()
+		resetEnrichCache()
 	})
-	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
-		return pageEnrichment{}, nil
-	}
 	ctx := context.Background()
 	kash := staff.WithPrincipal(ctx, staff.Principal{ID: 2, Login: "kash", Role: staff.RoleRegistrar, BranchIDs: []int{106}})
 	kurk := staff.WithPrincipal(ctx, staff.Principal{ID: 3, Login: "kurk", Role: staff.RoleRegistrar, BranchIDs: []int{3}})
@@ -32,8 +28,10 @@ func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 	moveDB := openWaitlistDB(t, "wl_sync_move")
 	insertOpen(t, moveDB, 77, 106, "new")
 	insertOpen(t, moveDB, 78, 106, "closed")
-	loadMaxBranches = func(ctx context.Context, db *sql.DB, ids []int64) (map[int64]int, error) {
-		return map[int64]int{77: 3, 78: 3}, nil
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
+		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
+			77: {PlanningID: 77, BranchID: 3, PatientName: "Перенесён"},
+		}}, nil
 	}
 	svc := &Services{SQLite: moveDB, MSSQL: moveDB}
 	visible, err := svc.DashboardWaitlist(kurk, confirmations.WaitlistListFilter{BranchIDs: []int{3}, OpenOnly: true, Page: 1, PerPage: 50, Source: "max"})
@@ -58,11 +56,11 @@ func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 		t.Fatalf("closed row branch=%d", closedBranch)
 	}
 
-	resetBranchSync()
+	resetEnrichCache()
 	deleted := openWaitlistDB(t, "wl_sync_deleted")
 	insertOpen(t, deleted, 81, 106, "new")
-	loadMaxBranches = func(ctx context.Context, db *sql.DB, ids []int64) (map[int64]int, error) {
-		return map[int64]int{}, nil
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
+		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{}}, nil
 	}
 	svc = &Services{SQLite: deleted, MSSQL: deleted}
 	kept, err := svc.DashboardWaitlist(kash, confirmations.WaitlistListFilter{BranchIDs: []int{106}, OpenOnly: true, Page: 1, PerPage: 50, Source: "max"})
@@ -73,11 +71,13 @@ func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 		t.Fatalf("deleted source %+v total=%d", kept.Items, kept.Total)
 	}
 
-	resetBranchSync()
+	resetEnrichCache()
 	unknown := openWaitlistDB(t, "wl_sync_unknown")
 	insertOpen(t, unknown, 82, 106, "new")
-	loadMaxBranches = func(ctx context.Context, db *sql.DB, ids []int64) (map[int64]int, error) {
-		return map[int64]int{82: 999}, nil
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
+		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
+			82: {PlanningID: 82, BranchID: 999, PatientName: "ЧужойФилиал"},
+		}}, nil
 	}
 	svc = &Services{SQLite: unknown, MSSQL: unknown}
 	allBranches := []int{106, 3, 496}
@@ -88,7 +88,7 @@ func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 	if seen.Total != 1 || len(seen.Items) != 1 || seen.Items[0].BranchID != 999 {
 		t.Fatalf("admin unknown %+v total=%d", seen.Items, seen.Total)
 	}
-	resetBranchSync()
+	resetEnrichCache()
 	missed, err := svc.DashboardWaitlist(kash, confirmations.WaitlistListFilter{BranchIDs: []int{106}, OpenOnly: true, Page: 1, PerPage: 50, Source: "max"})
 	if err != nil {
 		t.Fatal(err)
@@ -97,19 +97,22 @@ func TestBranchSync_MoveDeletedUnknownAndReadError(t *testing.T) {
 		t.Fatalf("registrar saw unknown %+v", missed.Items)
 	}
 
-	resetBranchSync()
+	resetEnrichCache()
 	failed := openWaitlistDB(t, "wl_sync_err")
 	insertOpen(t, failed, 83, 106, "new")
-	loadMaxBranches = func(ctx context.Context, db *sql.DB, ids []int64) (map[int64]int, error) {
-		return nil, errors.New("medialog down")
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
+		return pageEnrichment{}, errors.New("medialog down")
 	}
 	svc = &Services{SQLite: failed, MSSQL: failed}
 	still, err := svc.DashboardWaitlist(kash, confirmations.WaitlistListFilter{BranchIDs: []int{106}, OpenOnly: true, Page: 1, PerPage: 50, Source: "max"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if still.Total != 1 || len(still.Items) != 1 || still.Items[0].BranchID != 106 {
+	if still.Total != 1 || len(still.Items) != 1 || still.Items[0].BranchID != 106 || still.Items[0].PatientPhone != "" {
 		t.Fatalf("read error %+v", still.Items)
+	}
+	if still.Banner != "Медиалог недоступен" {
+		t.Fatalf("banner=%q", still.Banner)
 	}
 }
 
@@ -209,8 +212,11 @@ func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Total != 1 || len(second.Items) != 1 || second.Items[0].Source != "max" {
+	if second.Total != 1 || len(second.Items) != 1 || second.Items[0].Source != "max" || second.Items[0].PatientPhone != "" {
 		t.Fatalf("after error %+v total=%d", second.Items, second.Total)
+	}
+	if second.Banner != "Медиалог недоступен" {
+		t.Fatalf("banner=%q", second.Banner)
 	}
 	if misCacheHoldsName("СекретРеестра") {
 		t.Fatal("expired registry name survived a failed read")
@@ -255,9 +261,9 @@ func TestEnrichCache_MissingOriginalOneReadThenGone(t *testing.T) {
 }
 
 func enrichCacheLen() int {
-	enrichCache.mu.Lock()
-	defer enrichCache.mu.Unlock()
-	return len(enrichCache.m)
+	snapStore.mu.Lock()
+	defer snapStore.mu.Unlock()
+	return len(snapStore.m)
 }
 
 func insertOpen(t *testing.T, db *sql.DB, planning int64, branch int, status string) {

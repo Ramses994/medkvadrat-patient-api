@@ -36,6 +36,7 @@ type WaitlistFutureVisit struct {
 	Service    string
 	IsWaitlist bool
 	BranchID   int
+	OriginID   int64
 }
 
 func waitlistIN(prefix string, ids []int64) (string, []any) {
@@ -222,6 +223,47 @@ func WaitlistPageEnrich(ctx context.Context, db *sql.DB, planningIDs, patientIDs
 		rows, err := WaitlistFutures(ctx, db, patientIDs, now, waitlistIDs)
 		return live, rows, err
 	}
+	const batch = 100
+	for start := 0; start < len(planningIDs); start += batch {
+		end := start + batch
+		if end > len(planningIDs) {
+			end = len(planningIDs)
+		}
+		partLive, partFut, err := waitlistPageEnrichChunk(ctx, db, planningIDs[start:end], waitlistIDs, now, answered)
+		if err != nil {
+			return nil, nil, err
+		}
+		for id, row := range partLive {
+			live[id] = row
+		}
+		futures = append(futures, partFut...)
+	}
+	covered := map[int64]bool{}
+	for _, row := range live {
+		covered[row.PatientID] = true
+	}
+	var missing []int64
+	seen := map[int64]bool{}
+	for _, id := range patientIDs {
+		if id == 0 || covered[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		missing = append(missing, id)
+	}
+	if len(missing) == 0 {
+		return live, futures, nil
+	}
+	extra, err := WaitlistFutures(ctx, db, missing, now, waitlistIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return live, append(futures, extra...), nil
+}
+
+func waitlistPageEnrichChunk(ctx context.Context, db *sql.DB, planningIDs, waitlistIDs []int64, now time.Time, answered map[int64]string) (map[int64]WaitlistPlanningLive, []WaitlistFutureVisit, error) {
+	live := map[int64]WaitlistPlanningLive{}
+	var futures []WaitlistFutureVisit
 	q, args := waitlistPageSQL(planningIDs, waitlistIDs, now, answered)
 	rs, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -256,6 +298,7 @@ func WaitlistPageEnrich(ctx context.Context, db *sql.DB, planningIDs, patientIDs
 		live[row.PlanningID] = row
 		if futID.Valid {
 			futures = append(futures, WaitlistFutureVisit{
+				OriginID:   row.PlanningID,
 				PlanningID: futID.Int64,
 				PatientID:  row.PatientID,
 				CreatedAt:  futCreated.String,
@@ -270,27 +313,30 @@ func WaitlistPageEnrich(ctx context.Context, db *sql.DB, planningIDs, patientIDs
 	if err := rs.Err(); err != nil {
 		return nil, nil, err
 	}
-	covered := map[int64]bool{}
-	for _, row := range live {
-		covered[row.PatientID] = true
+	return live, futures, nil
+}
+
+func VisitCreatedAfter(origin, candidate string) bool {
+	left := parseMoscowClock(origin)
+	right := parseMoscowClock(candidate)
+	if left.IsZero() || right.IsZero() {
+		return false
 	}
-	var missing []int64
-	seen := map[int64]bool{}
-	for _, id := range patientIDs {
-		if id == 0 || covered[id] || seen[id] {
-			continue
+	return right.After(left)
+}
+
+func parseMoscowClock(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	loc := moscowLocation()
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02T15:04:05Z07:00"} {
+		if t, err := time.ParseInLocation(layout, raw, loc); err == nil {
+			return t
 		}
-		seen[id] = true
-		missing = append(missing, id)
 	}
-	if len(missing) == 0 {
-		return live, futures, nil
-	}
-	extra, err := WaitlistFutures(ctx, db, missing, now, waitlistIDs)
-	if err != nil {
-		return nil, nil, err
-	}
-	return live, append(futures, extra...), nil
+	return time.Time{}
 }
 
 func WaitlistBranches(ctx context.Context, db *sql.DB, ids []int64) (map[int64]int, error) {

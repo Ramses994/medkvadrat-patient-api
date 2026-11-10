@@ -122,7 +122,7 @@ func (h DashboardPageHandler) LoginPost(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h DashboardPageHandler) PasswordForm(w http.ResponseWriter, r *http.Request) {
-	h.writePassword(w, "")
+	h.writePassword(w, http.StatusOK, "")
 }
 
 func (h DashboardPageHandler) PasswordPost(w http.ResponseWriter, r *http.Request) {
@@ -132,25 +132,25 @@ func (h DashboardPageHandler) PasswordPost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.writePassword(w, "Не удалось сменить пароль")
+		h.writePassword(w, http.StatusOK, "Не удалось сменить пароль")
 		return
 	}
 	err := h.Users.ChangePassword(r.Context(), p.ID, r.FormValue("current_password"), r.FormValue("new_password"))
 	if err != nil {
 		if errors.Is(err, staff.ErrShortPassword) {
-			h.writePassword(w, "Пароль не короче 10 символов")
+			h.writePassword(w, http.StatusOK, "Пароль не короче 10 символов")
 			return
 		}
 		if errors.Is(err, staff.ErrStale) {
-			h.writePassword(w, "Пароль уже изменён, войдите снова")
+			h.writePassword(w, http.StatusConflict, "Пароль уже изменён — войдите заново")
 			return
 		}
-		h.writePassword(w, "Неверный текущий пароль")
+		h.writePassword(w, http.StatusOK, "Неверный текущий пароль")
 		return
 	}
 	fresh, err := h.Users.ByID(r.Context(), p.ID)
 	if err != nil {
-		h.writePassword(w, "Не удалось сменить пароль")
+		h.writePassword(w, http.StatusOK, "Не удалось сменить пароль")
 		return
 	}
 	h.setStaffCookie(w, fresh.ID, fresh.SessionVersion)
@@ -226,10 +226,13 @@ func (h DashboardPageHandler) writeLogin(w http.ResponseWriter, status int, errM
 	_, _ = w.Write([]byte(b.String()))
 }
 
-func (h DashboardPageHandler) writePassword(w http.ResponseWriter, errMsg string) {
+func (h DashboardPageHandler) writePassword(w http.ResponseWriter, status int, errMsg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
 	var b strings.Builder
 	b.WriteString(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>Смена пароля</title>`)
 	b.WriteString(`<style>body{font-family:system-ui,sans-serif;background:#EEF1EE;color:#0F1E1C;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}`)

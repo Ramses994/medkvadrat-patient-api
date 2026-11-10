@@ -62,6 +62,7 @@ type waitlistPageDTO struct {
 	OpenTotal int               `json:"open_total"`
 	Page      int               `json:"page"`
 	PerPage   int               `json:"per_page"`
+	Banner    string            `json:"banner,omitempty"`
 }
 
 func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +136,7 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	response.OK(w, waitlistPageDTO{
 		Items: items, Total: pageData.Total, OpenTotal: pageData.OpenTotal,
-		Page: pageData.Page, PerPage: pageData.PerPage,
+		Page: pageData.Page, PerPage: pageData.PerPage, Banner: pageData.Banner,
 	})
 }
 
@@ -167,7 +168,7 @@ func (h WaitlistHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	if source == "registry" {
 		item, err := h.Svc.PatchRegistryWaitlist(r.Context(), id, req.Version, req.Outcome, req.Action, by)
 		if err != nil {
-			h.writeWaitlistErr(w, err, id, itemDTO(item))
+			h.writeWaitlistErr(w, err, id, item)
 			return
 		}
 		response.OK(w, patchEnvelope(item))
@@ -175,7 +176,7 @@ func (h WaitlistHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := h.Svc.PatchWaitlist(r.Context(), id, req.Version, req.Outcome, req.Action, by)
 	if err != nil {
-		h.writeWaitlistErr(w, err, id, itemDTO(rec))
+		h.writeWaitlistErr(w, err, id, rec)
 		return
 	}
 	if h.Logger != nil {
@@ -225,12 +226,12 @@ func itemDTO(it confirmations.DashboardItem) waitlistItemDTO {
 	}
 }
 
-func (h WaitlistHandler) writeWaitlistErr(w http.ResponseWriter, err error, id int64, fresh waitlistItemDTO) {
+func (h WaitlistHandler) writeWaitlistErr(w http.ResponseWriter, err error, id int64, fresh confirmations.DashboardItem) {
 	switch {
 	case errors.Is(err, confirmations.ErrWaitlistNotFound):
 		response.Error(w, http.StatusNotFound, "NOT_FOUND", "Строка листа не найдена")
 	case errors.Is(err, confirmations.ErrWaitlistChanged):
-		response.ErrorWithData(w, http.StatusConflict, "WAITLIST_CHANGED", "Строку уже изменил другой сотрудник", fresh)
+		response.ErrorWithData(w, http.StatusConflict, "WAITLIST_CHANGED", "Строку уже изменил другой сотрудник", patchEnvelope(fresh))
 	case errors.Is(err, confirmations.ErrUnknownWaitlistOutcome):
 		response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Недопустимый итог звонка")
 	case errors.Is(err, confirmations.ErrWaitlistMoved):

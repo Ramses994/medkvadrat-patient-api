@@ -781,7 +781,8 @@ async function loadWaitlist() {
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
     if (epoch !== viewEpoch || selectingText()) return;
     lastOkAt = Date.now();
-    hideBanner();
+    if (body.data && body.data.banner) showBanner(body.data.banner);
+    else hideBanner();
     paintWaitlist(body.data, q.key);
   } catch (err) {
     if (epoch === viewEpoch) showBanner(`Не удалось обновить лист ожидания: ${err.message}.`);
@@ -1121,15 +1122,21 @@ async function saveWaitlist(tr, outcome, action) {
     if (await authStop(res)) return;
     if (res.status === 409) {
       let msg = 'Строку уже изменил другой сотрудник';
-      let fresh = null;
+      let data = null;
       try {
         const body = await res.json();
         if (body.error_details && body.error_details.message) msg = body.error_details.message;
         else if (body.error) msg = body.error;
-        fresh = body.data || null;
+        data = body.data || null;
       } catch (e) {}
-      if (fullWaitlistRow(fresh)) applyWaitlistItem(tr, fresh);
-      else if (oc) oc.value = prev;
+      if (data && data.row) {
+        applyWorkingFields(tr, data.row);
+        if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(tr, data.full);
+      } else if (data && data.enriched && fullWaitlistRow(data)) {
+        applyWaitlistItem(tr, data);
+      } else if (oc && !(data && data.row)) {
+        oc.value = prev;
+      }
       showBanner(msg);
       return;
     }

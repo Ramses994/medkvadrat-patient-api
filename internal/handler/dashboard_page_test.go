@@ -68,6 +68,44 @@ func TestDashboardPage_ServesHTML(t *testing.T) {
 	}
 }
 
+func TestPasswordPost_StaleIs409(t *testing.T) {
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	users := staff.New(db)
+	created, _, err := users.Create(context.Background(), staff.CreateUser{
+		Login: "reg", FullName: "R", Role: staff.RoleRegistrar, Branches: "106", Password: "password123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users.Compare = func(hash, password []byte) error {
+		_, err := db.ExecContext(context.Background(), `UPDATE staff_users SET session_version = session_version + 1 WHERE id = ?`, created.ID)
+		return err
+	}
+	principal, err := users.ByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := DashboardPageHandler{Users: users, Secret: []byte("0123456789abcdef0123456789abcdef")}
+	r := httptest.NewRequest(http.MethodPost, "/dashboard/password", strings.NewReader("current_password=password123&new_password=new-password-1"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r = r.WithContext(staff.WithPrincipal(r.Context(), principal))
+	w := httptest.NewRecorder()
+	h.PasswordPost(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Пароль уже изменён — войдите заново") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
 func TestDashboardPage_NotConfigured(t *testing.T) {
 	h := DashboardPageHandler{HTML: []byte("x")}
 	r := httptest.NewRequest(http.MethodGet, "/dashboard", nil)

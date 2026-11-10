@@ -8,6 +8,30 @@ import (
 	"time"
 )
 
+func TestCreate_WritesAdminLog(t *testing.T) {
+	db := openStaffDB(t)
+	ctx := context.Background()
+	s := New(db)
+	user, _, err := s.Create(ctx, CreateUser{
+		Login: "reg", FullName: "R", Role: RoleRegistrar, Branches: "106", Password: "password123",
+		ActorID: 7, ActorLogin: "admin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actor, target int64
+	var login, change string
+	if err := db.QueryRowContext(ctx, `SELECT actor_id, actor_login, target_id, change FROM staff_admin_log`).Scan(&actor, &login, &target, &change); err != nil {
+		t.Fatal(err)
+	}
+	if actor != 7 || login != "admin" || target != user.ID || !strings.Contains(change, "role=registrar") || !strings.Contains(change, "branches=106") {
+		t.Fatalf("actor=%d login=%s target=%d change=%s", actor, login, target, change)
+	}
+	if strings.Contains(change, "password123") || strings.Contains(strings.ToLower(change), "password") {
+		t.Fatalf("journal leaked a password: %s", change)
+	}
+}
+
 func TestChangePassword_CompareDoesNotHoldSQLite(t *testing.T) {
 	db := openStaffDB(t)
 	ctx := context.Background()
@@ -44,7 +68,7 @@ func TestChangePassword_CompareDoesNotHoldSQLite(t *testing.T) {
 	}
 	var actor int64
 	var login, change string
-	if err := db.QueryRowContext(ctx, `SELECT actor_id, actor_login, change FROM staff_admin_log`).Scan(&actor, &login, &change); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT actor_id, actor_login, change FROM staff_admin_log WHERE change = 'password'`).Scan(&actor, &login, &change); err != nil {
 		t.Fatal(err)
 	}
 	if actor != 1 || login != "reg" || change != "password" || strings.Contains(change, "new-password") {
@@ -108,7 +132,7 @@ func TestAdminJournal_SameTransactionAsUpdate(t *testing.T) {
 	var actor int64
 	var login, change string
 	var target int64
-	if err := db.QueryRowContext(ctx, `SELECT actor_id, actor_login, target_id, change FROM staff_admin_log`).Scan(&actor, &login, &target, &change); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT actor_id, actor_login, target_id, change FROM staff_admin_log WHERE change LIKE 'role=%'`).Scan(&actor, &login, &target, &change); err != nil {
 		t.Fatal(err)
 	}
 	if actor != 1 || login != "admin" || target != 2 || !strings.Contains(change, "reset_password=1") || strings.Contains(change, temp) {

@@ -85,7 +85,8 @@ func (h StaffHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h StaffHandler) Create(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if _, ok := requireAdmin(w, r); !ok {
+	actor, ok := requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var body struct {
@@ -101,6 +102,7 @@ func (h StaffHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	user, temp, err := h.Store.Create(r.Context(), staff.CreateUser{
 		Login: body.Login, FullName: body.FullName, Role: body.Role, Branches: body.Branches, Password: body.Password,
+		ActorID: actor.ID, ActorLogin: actor.Login,
 	})
 	if err != nil {
 		h.writeStaffErr(w, err)

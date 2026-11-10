@@ -70,6 +70,7 @@ type DashboardPage struct {
 	OpenTotal int
 	Page      int
 	PerPage   int
+	Banner    string
 }
 
 // WaitlistRow is a gateway.db waitlist record (no FIO/phone/doctor).
@@ -314,7 +315,7 @@ LIMIT ?`
 // SetWaitlistBranch stores the live Medialog branch in our database.
 func (r *Repo) ListOpenBranchRows(ctx context.Context) ([]WaitlistRow, error) {
 	rs, err := r.db.QueryContext(ctx, `
-SELECT id, planning_id, branch_id
+SELECT id, planning_id, branch_id, IFNULL(created_at_msk, '')
 FROM waitlist
 WHERE status IN ('new','contacted')
 ORDER BY id`)
@@ -325,7 +326,7 @@ ORDER BY id`)
 	var rows []WaitlistRow
 	for rs.Next() {
 		var row WaitlistRow
-		if err := rs.Scan(&row.ID, &row.PlanningID, &row.BranchID); err != nil {
+		if err := rs.Scan(&row.ID, &row.PlanningID, &row.BranchID, &row.CreatedAtMSK); err != nil {
 			return nil, err
 		}
 		rows = append(rows, row)

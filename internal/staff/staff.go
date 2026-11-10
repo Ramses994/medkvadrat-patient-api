@@ -500,11 +500,13 @@ WHERE id = ?`, string(nextHash), now, id); err != nil {
 }
 
 type CreateUser struct {
-	Login    string
-	FullName string
-	Role     string
-	Branches string
-	Password string
+	Login      string
+	FullName   string
+	Role       string
+	Branches   string
+	Password   string
+	ActorID    int64
+	ActorLogin string
 }
 
 func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error) {
@@ -545,15 +547,26 @@ func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error)
 	if must {
 		mustBit = 1
 	}
-	res, err := s.db.ExecContext(ctx, `
+	var id int64
+	err = s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		res, err := conn.ExecContext(ctx, `
 INSERT INTO staff_users (
   login, full_name, password_hash, role, branches, active, must_change_password, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-		login, strings.TrimSpace(in.FullName), string(hash), strings.ToLower(in.Role), strings.TrimSpace(in.Branches), mustBit, now, now)
+			login, strings.TrimSpace(in.FullName), string(hash), strings.ToLower(in.Role), strings.TrimSpace(in.Branches), mustBit, now, now)
+		if err != nil {
+			return err
+		}
+		id, err = res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		change := fmt.Sprintf("create;role=%s;branches=%s", strings.ToLower(in.Role), strings.TrimSpace(in.Branches))
+		return insertAdminLog(ctx, conn, in.ActorID, in.ActorLogin, id, change, now)
+	})
 	if err != nil {
 		return User{}, "", err
 	}
-	id, _ := res.LastInsertId()
 	u, err := s.userByID(ctx, id)
 	return u, temp, err
 }
