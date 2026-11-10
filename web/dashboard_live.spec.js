@@ -221,7 +221,7 @@ test('a row inserted above the viewport leaves the visible row in place', async 
   expect(Math.abs(topAfter - top)).toBeLessThan(2);
 });
 
-test('an open waitlist choice survives a tick and applies after five idle seconds', async ({ page }) => {
+test('a focused unsaved choice keeps the outcome while the medialog name updates', async ({ page }) => {
   const state = freshState();
   await openDashboard(page, state);
   await page.locator('#tabWaitlist').click();
@@ -237,11 +237,11 @@ test('an open waitlist choice survives a tick and applies after five idle second
   await page.clock.fastForward(2_000);
   await expect(page.locator('.wl-outcome')).toHaveValue('refused');
   await expect(page.locator('.wl-outcome')).toBeFocused();
-  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  await expect(page.locator('#waitlistList')).toContainText('Петров Пётр');
   await page.locator('.wl-outcome').evaluate(el => el.blur());
   await page.clock.fastForward(5_000);
   await expect(page.locator('#waitlistList')).toContainText('Петров Пётр');
-  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(page.locator('.wl-outcome')).toHaveValue('refused');
 });
 
 test('a server status change during editing shows the other-staff notice', async ({ page }) => {
@@ -261,7 +261,7 @@ test('a server status change during editing shows the other-staff notice', async
   await expect(page.locator('.wl-conflict')).toContainText('Изменено другим сотрудником');
   await expect(page.getByRole('button', { name: 'Обновить строку' })).toBeVisible();
   await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
-  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  await expect(page.locator('#waitlistList')).toContainText('Чужое имя');
 });
 
 test('reload after another date returns to today and scrolls to 13:09', async ({ page }) => {
