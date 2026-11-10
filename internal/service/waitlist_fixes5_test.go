@@ -95,7 +95,7 @@ func TestSnapshot_WriteFailureDoesNotRestoreOldBranch(t *testing.T) {
 			77: {PlanningID: 77, PatientID: 77, BranchID: 3, PatientName: "Макс", Phone: phone},
 		}}, nil
 	}
-	storeWaitlistBranch = func(ctx context.Context, wl *confirmations.Repo, id int64, branch int) error {
+	storeWaitlistBranch = func(ctx context.Context, conn *sql.Conn, id int64, branch int) error {
 		return errors.New("disk")
 	}
 	ctx := context.Background()

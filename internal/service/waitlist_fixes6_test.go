@@ -142,9 +142,9 @@ func TestSnapshot_ExpiredBeforeServeDropsPhone(t *testing.T) {
 
 func TestSnapshot_ExpiredRegistryPatchDoesNotWrite(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, beforePatchApply
+	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, afterWriteLock
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, beforePatchApply = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, misNow, afterWriteLock = prevMis, prevEnrich, prevNow, prevHook
 		resetSnapStore()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
@@ -159,7 +159,7 @@ func TestSnapshot_ExpiredRegistryPatchDoesNotWrite(t *testing.T) {
 			50: {PlanningID: 50, PatientID: 1, BranchID: 106, PatientName: "Реестр", Phone: "79990000050", IsWaitlist: true},
 		}}, nil
 	}
-	beforePatchApply = func() { clock = clock.Add(31 * time.Second) }
+	afterWriteLock = func() { clock = clock.Add(31 * time.Second) }
 	db := openWaitlistDB(t, "wl_expire_patch")
 	svc := &Services{SQLite: db, MSSQL: db}
 	_, err := svc.PatchRegistryWaitlist(context.Background(), 50, 1, "call_back", "", "admin")

@@ -166,6 +166,8 @@ async function openDashboard(page, state) {
       return;
     }
     const saved = state.saved || {};
+    const changedByOther = !!(state.wlOutcome || state.forceStatus);
+    const version = state.wlVersion || (changedByOther ? Number(saved.version || 1) + 2 : (saved.version ? Number(saved.version) + 1 : 1));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -173,6 +175,7 @@ async function openDashboard(page, state) {
         patient_name: state.wlName,
         status: state.forceStatus || saved.status || state.wlStatus,
         outcome: state.wlOutcome || saved.outcome || '',
+        version,
       }))),
     });
   });

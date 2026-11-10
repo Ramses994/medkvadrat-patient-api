@@ -891,9 +891,11 @@ function applyHeldRow(tr, it) {
 }
 
 function incomingWorkDiffers(tr, it) {
+  const incoming = Number(it.version || 0);
+  const saved = Number(tr.dataset.version || 0);
+  if (!(incoming > saved)) return false;
   if ((it.status || '') !== (tr.dataset.status || '')) return true;
-  const oc = tr.querySelector('.wl-outcome');
-  return !!oc && (it.outcome || '') !== oc.value;
+  return (it.outcome || '') !== (tr.dataset.outcome || '');
 }
 
 function renderWaitlistRow(it) {

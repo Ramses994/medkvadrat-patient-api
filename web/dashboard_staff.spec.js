@@ -381,6 +381,21 @@ test('focused row clears medialog fields and keeps the outcome', async ({ page }
   release();
 });
 
+test('a poll at the saved version is not a conflict while the patch is in flight', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('.wl-outcome')).toBeVisible();
+  await page.locator('.wl-outcome').selectOption('call_back');
+  const refresh = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist'));
+  await page.clock.fastForward(11000);
+  await refresh;
+  await expect(page.locator('.wl-conflict')).toHaveCount(0);
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
+  release();
+});
+
 async function selectRowText(page, locator) {
   await locator.evaluate(el => {
     const range = document.createRange();

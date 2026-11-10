@@ -445,13 +445,12 @@ func (r *Repo) OpenWaitlistPlanningIDs(ctx context.Context, planningIDs []int64)
 	return out, rs.Err()
 }
 
-func (r *Repo) UpdateWaitlist(ctx context.Context, id int64, status, outcome, updatedBy string, now time.Time) (WaitlistRow, error) {
+func (r *Repo) UpdateWaitlist(ctx context.Context, id int64, status, outcome, updatedBy string, now time.Time, guard SQLGuard) (WaitlistRow, error) {
 	status = strings.ToLower(strings.TrimSpace(status))
 	outcome = strings.ToLower(strings.TrimSpace(outcome))
 	if !ValidOutcome(outcome) {
 		return WaitlistRow{}, ErrUnknownWaitlistOutcome
 	}
-
 	row, err := r.getWaitlist(ctx, id)
 	if err != nil {
 		return WaitlistRow{}, err
@@ -462,31 +461,38 @@ func (r *Repo) UpdateWaitlist(ctx context.Context, id int64, status, outcome, up
 	if !waitlistTransitionOK(row.Status, status) {
 		return WaitlistRow{}, ErrInvalidWaitlistTransition
 	}
-
 	updated := FormatWaitlistUTC(now)
-	res, err := r.db.ExecContext(ctx, `
+	var out WaitlistRow
+	err = r.withImmediate(ctx, ctx, guard, func(conn *sql.Conn) error {
+		res, err := conn.ExecContext(ctx, `
 UPDATE waitlist SET status = ?, outcome = ?, updated_at = ?, updated_by = ?, version = version + 1
 WHERE id = ? AND status = ? AND version = ?`,
-		status, outcome, updated, updatedBy, id, row.Status, row.Version)
-	if err != nil {
-		return WaitlistRow{}, fmt.Errorf("update waitlist: %w", err)
-	}
-	n, err := res.RowsAffected()
+			status, outcome, updated, updatedBy, id, row.Status, row.Version)
+		if err != nil {
+			return fmt.Errorf("update waitlist: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, getErr := scanWaitlist(ctx, conn, id); getErr != nil {
+				return getErr
+			}
+			return ErrWaitlistChanged
+		}
+		row.Status = status
+		row.Outcome = outcome
+		row.UpdatedAt = updated
+		row.UpdatedBy = updatedBy
+		row.Version++
+		out = row
+		return nil
+	})
 	if err != nil {
 		return WaitlistRow{}, err
 	}
-	if n == 0 {
-		if _, getErr := r.getWaitlist(ctx, id); getErr != nil {
-			return WaitlistRow{}, getErr
-		}
-		return WaitlistRow{}, ErrWaitlistChanged
-	}
-	row.Status = status
-	row.Outcome = outcome
-	row.UpdatedAt = updated
-	row.UpdatedBy = updatedBy
-	row.Version++
-	return row, nil
+	return out, nil
 }
 
 func waitlistTransitionOK(from, to string) bool {
@@ -508,9 +514,17 @@ func (r *Repo) GetWaitlist(ctx context.Context, id int64) (WaitlistRow, error) {
 	return r.getWaitlist(ctx, id)
 }
 
+type rowQuery interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func (r *Repo) getWaitlist(ctx context.Context, id int64) (WaitlistRow, error) {
+	return scanWaitlist(ctx, r.db, id)
+}
+
+func scanWaitlist(ctx context.Context, q rowQuery, id int64) (WaitlistRow, error) {
 	var row WaitlistRow
-	err := r.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
        IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1)
 FROM waitlist WHERE id = ?`, id).Scan(

@@ -34,6 +34,7 @@ type Config struct {
 	LKAuthorMedecinsID         int64
 	LKAuthorMeddepID           int64
 	MedialogRWTimeout          time.Duration
+	DashboardMedialogTimeout   time.Duration
 	WaitlistMisDaysBack        int
 	WaitlistMisDaysAhead       int
 
@@ -138,6 +139,7 @@ func Load() (Config, error) {
 		LKAuthorMedecinsID:         authorMedecinsID(),
 		LKAuthorMeddepID:           authorMeddepID(),
 		MedialogRWTimeout:          time.Duration(positiveOr(mustInt(getEnv("MEDIALOG_RW_TIMEOUT_SECONDS", "30"), 30), 30)) * time.Second,
+		DashboardMedialogTimeout:   time.Duration(positiveOr(mustInt(getEnv("DASHBOARD_MEDIALOG_TIMEOUT_SECONDS", "15"), 15), 15)) * time.Second,
 		WaitlistMisDaysBack:        mustInt(getEnv("WAITLIST_MIS_DAYS_BACK", "7"), 7),
 		WaitlistMisDaysAhead:       mustInt(getEnv("WAITLIST_MIS_DAYS_AHEAD", "60"), 60),
 		HTTP: HTTPConfig{

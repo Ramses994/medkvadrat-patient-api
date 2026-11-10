@@ -20,11 +20,13 @@ const (
 	RoleManager   = "manager"
 	RoleRegistrar = "registrar"
 
-	BcryptCost     = 12
 	MinPasswordLen = 10
 	LockFailures   = 5
 	LockWindow     = 15 * time.Minute
 )
+
+// BcryptCost is the production hash cost. Tests lower it.
+var BcryptCost = 12
 
 var (
 	ErrNotFound        = errors.New("staff not found")

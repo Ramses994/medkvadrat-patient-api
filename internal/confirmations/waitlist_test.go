@@ -189,13 +189,13 @@ func TestWaitlist_TransitionsAndPurge(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := rows[0].ID
-	if _, err := r.UpdateWaitlist(ctx, id, "rebooked", "rebooked", "staffabcd1234", now); err != nil {
+	if _, err := r.UpdateWaitlist(ctx, id, "rebooked", "rebooked", "staffabcd1234", now, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.UpdateWaitlist(ctx, id, "new", "other", "staff", now); err != ErrInvalidWaitlistTransition {
+	if _, err := r.UpdateWaitlist(ctx, id, "new", "other", "staff", now, nil); err != ErrInvalidWaitlistTransition {
 		t.Fatalf("back: %v", err)
 	}
-	if _, err := r.UpdateWaitlist(ctx, id, "closed", "nope", "staff", now); err != ErrUnknownWaitlistOutcome {
+	if _, err := r.UpdateWaitlist(ctx, id, "closed", "nope", "staff", now, nil); err != ErrUnknownWaitlistOutcome {
 		t.Fatalf("outcome: %v", err)
 	}
 
