@@ -57,6 +57,19 @@ func Issue(secret string, p Payload, now time.Time) (string, error) {
 
 // Verify checks the signature, expiry, patient and the line/exam the caller asked for.
 func Verify(secret, token string, now time.Time, patientID, plSubjID, plExamID int64) (Payload, error) {
+	p, err := Parse(secret, token, now, patientID, true)
+	if err != nil {
+		return Payload{}, err
+	}
+	if p.PlSubjID != plSubjID || p.PlExamID != plExamID {
+		return Payload{}, ErrPair
+	}
+	return p, nil
+}
+
+// Parse checks the signature and patient. Expiry is enforced only when checkExp is set,
+// so an idempotent replay can read the claim after the token has lapsed.
+func Parse(secret, token string, now time.Time, patientID int64, checkExp bool) (Payload, error) {
 	if !SecretOK(secret) {
 		return Payload{}, ErrSecret
 	}
@@ -80,14 +93,11 @@ func Verify(secret, token string, now time.Time, patientID, plSubjID, plExamID i
 	if err := json.Unmarshal(raw, &p); err != nil || p.V != formatVersion {
 		return Payload{}, ErrToken
 	}
-	if now.Unix() > p.Exp {
+	if checkExp && now.Unix() > p.Exp {
 		return Payload{}, ErrExpired
 	}
 	if p.PatientID != patientID {
 		return Payload{}, ErrPatient
-	}
-	if p.PlSubjID != plSubjID || p.PlExamID != plExamID {
-		return Payload{}, ErrPair
 	}
 	return p, nil
 }

@@ -25,6 +25,7 @@ type bookingState struct {
 	mu      sync.Mutex
 	pairsAt time.Time
 	active  map[string]repo.BookingOption
+	failed  map[string]bool // configured pairs whose last load hit a read error
 	slots   map[string]slotCache
 }
 
@@ -50,6 +51,7 @@ func (s *Services) RefreshBookingPairs(ctx context.Context) {
 		return
 	}
 	active := map[string]repo.BookingOption{}
+	failed := map[string]bool{}
 	for _, p := range s.Config.BookingPairs {
 		opt, err := repo.LoadBookingPair(ctx, s.MSSQL, p.PlSubjID, p.PlExamID)
 		if err != nil {
@@ -59,6 +61,7 @@ func (s *Services) RefreshBookingPairs(ctx context.Context) {
 				continue
 			}
 			s.log().Error("booking pair load failed", "pl_subj_id", p.PlSubjID, "pl_exam_id", p.PlExamID, "err", err)
+			failed[pairKey(p.PlSubjID, p.PlExamID)] = true
 			continue
 		}
 		active[pairKey(p.PlSubjID, p.PlExamID)] = opt
@@ -66,6 +69,7 @@ func (s *Services) RefreshBookingPairs(ctx context.Context) {
 	st := s.booking()
 	st.mu.Lock()
 	st.active = active
+	st.failed = failed
 	st.pairsAt = time.Now()
 	st.mu.Unlock()
 }
@@ -88,13 +92,19 @@ func (s *Services) ensurePairs(ctx context.Context) {
 	s.RefreshBookingPairs(ctx)
 }
 
-func (s *Services) activePair(ctx context.Context, subj, exam int64) (repo.BookingOption, bool) {
+func (s *Services) activePair(ctx context.Context, subj, exam int64) (repo.BookingOption, error) {
 	s.ensurePairs(ctx)
 	st := s.booking()
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	opt, ok := st.active[pairKey(subj, exam)]
-	return opt, ok
+	key := pairKey(subj, exam)
+	if opt, ok := st.active[key]; ok {
+		return opt, nil
+	}
+	if st.failed[key] {
+		return repo.BookingOption{}, repo.ErrPairUnavailable
+	}
+	return repo.BookingOption{}, repo.ErrInactivePair
 }
 
 // BookingOptions lists active pilot pairs.
@@ -123,8 +133,11 @@ func (s *Services) BookingSlots(ctx context.Context, subj, exam int64, from, to 
 	if len(days) == 0 {
 		return []repo.BookingSlot{}, nil
 	}
-	opt, ok := s.activePair(ctx, subj, exam)
-	if !ok {
+	opt, err := s.activePair(ctx, subj, exam)
+	if errors.Is(err, repo.ErrPairUnavailable) {
+		return nil, repo.ErrSlotsUnavailable
+	}
+	if err != nil {
 		return nil, repo.ErrInactivePair
 	}
 	offers := make([]repo.BookingSlot, 0)

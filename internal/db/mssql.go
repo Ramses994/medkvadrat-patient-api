@@ -21,7 +21,14 @@ func OpenMSSQLRW(cfg config.MSSQLConfig) (*sql.DB, error) {
 	if user == "" {
 		return nil, nil
 	}
-	return openMSSQLWithCreds(cfg, user, cfg.RWPassword)
+	db, err := openMSSQLWithCreds(cfg, user, cfg.RWPassword)
+	if err != nil || db == nil {
+		return db, err
+	}
+	// Drop the connection after each write. A timed-out call is still an unknown outcome.
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(0)
+	return db, nil
 }
 
 func openMSSQLWithCreds(cfg config.MSSQLConfig, user, password string) (*sql.DB, error) {

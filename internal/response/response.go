@@ -26,6 +26,10 @@ func OK(w http.ResponseWriter, data interface{}) {
 	writeJSON(w, http.StatusOK, ResponseOK{Success: true, Data: data})
 }
 
+func JSON(w http.ResponseWriter, status int, data interface{}) {
+	writeJSON(w, status, ResponseOK{Success: status >= 200 && status < 300, Data: data})
+}
+
 func NoContent(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNoContent)
 }

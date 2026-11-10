@@ -21,9 +21,6 @@ func (s stubPlanningLookup) PlSubjIDForPlanning(context.Context, int64) (int64, 
 	return s.plSubj, s.plSubjErr
 }
 
-func (s stubPlanningLookup) PlanningIDForMotconsu(context.Context, int64, int64) (int64, error) {
-	return s.planningID, s.planningErr
-}
 
 func TestGuardBook_CheckOrder(t *testing.T) {
 	tests := []struct {

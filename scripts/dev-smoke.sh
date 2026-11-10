@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev-only smoke: OTP → /api/me + catalog, then book → cancel → rebook → cancel.
+# Dev-only smoke: OTP → /api/me + catalog reads. Does not book or cancel.
 # Requires: curl, jq. Tested on Linux and Git Bash (GNU or BSD date for slot window).
 set -euo pipefail
 
@@ -24,12 +24,10 @@ BODY="${TMP}/body"
 
 if date -u -d "today" +%F >/dev/null 2>&1; then
   DF=$(date -u -d "today" +%F)
-  DT14=$(date -u -d "today + 14 days" +%F)
-  DT=$(date -u -d "today + 45 days" +%F)
+  DT1=$(date -u -d "today + 1 day" +%F)
 else
   DF=$(date -u +%F)
-  DT14=$(date -u -v+14d +%F 2>/dev/null || date -u +%F)
-  DT=$(date -u -v+45d +%F 2>/dev/null || date -u +%F)
+  DT1=$(date -u -v+1d +%F 2>/dev/null || date -u +%F)
 fi
 
 ok=0
@@ -119,67 +117,19 @@ if [[ -z "${DOCTOR_IDS}" ]]; then
   exit 1
 fi
 
-DOCTOR_ID=
-PLAN_ID=
-for DOC_ID in ${DOCTOR_IDS}; do
-  do_curl "catalog slots (probe)" "GET" \
-    "${BASE_URL}/api/catalog/slots?doctor_id=${DOC_ID}&date_from=${DF}&date_to=${DT14}" \
+# 6) Booking options and slots. Read only: this script does not book.
+do_curl "booking options" "GET" "${BASE_URL}/api/catalog/booking-options" "${AUTH[@]}"
+[[ "$LAST_CODE" =~ ^2 ]] || exit 1
+SUBJ=$(jq -r '.data[0].pl_subj_id // empty' <"$BODY")
+EXAM=$(jq -r '.data[0].pl_exam_id // empty' <"$BODY")
+if [[ -n "$SUBJ" && "$SUBJ" != "null" && -n "$EXAM" && "$EXAM" != "null" ]]; then
+  do_curl "catalog slots" "GET" \
+    "${BASE_URL}/api/catalog/slots?pl_subj_id=${SUBJ}&pl_exam_id=${EXAM}&date_from=${DF}&date_to=${DT1}" \
     "${AUTH[@]}"
-  [[ "$LAST_CODE" =~ ^2 ]] || continue
-  PID=$(jq -r '.data[0].planning_id // empty' <"$BODY")
-  if [[ -n "$PID" && "$PID" != "null" ]]; then
-    DOCTOR_ID="$DOC_ID"
-    PLAN_ID="$PID"
-    echo "Picked doctor_id=${DOCTOR_ID}, planning_id=${PLAN_ID} (window ${DF}..${DT14})"
-    echo
-    break
-  fi
-done
-if [[ -z "$PLAN_ID" || "$PLAN_ID" == "null" ]]; then
-  echo "FAIL: no doctor with slots in ${DF}..${DT14} (filtered by name: test|expert|docexpert)" >&2
-  exit 1
+  [[ "$LAST_CODE" =~ ^2 ]] || exit 1
+else
+  echo "booking-options empty; slots skipped"
 fi
-
-# 6) Catalog slots
-do_curl "catalog slots" "GET" \
-  "${BASE_URL}/api/catalog/slots?doctor_id=${DOCTOR_ID}&date_from=${DF}&date_to=${DT}" \
-  "${AUTH[@]}"
-[[ "$LAST_CODE" =~ ^2 ]] || exit 1
-PLAN_ID=$(jq -r --argjson fallback "$PLAN_ID" '.data[0].planning_id // $fallback' <"$BODY")
-if [[ -z "$PLAN_ID" || "$PLAN_ID" == "null" ]]; then
-  echo "catalog/slots: empty list for picked doctor ${DOCTOR_ID} in ${DF}..${DT}" >&2
-  exit 1
-fi
-
-# 7) Book
-do_curl "me book" "POST" "${BASE_URL}/api/me/appointments" \
-  "${AUTH[@]}" -H "Content-Type: application/json" \
-  -d "$(jq -n --argjson p "$PLAN_ID" '{planning_id: $p}')"
-[[ "$LAST_CODE" =~ ^2 ]] || exit 1
-MOT_ID=$(jq -r '.data.motconsu_id // empty' <"$BODY")
-if [[ -z "$MOT_ID" || "$MOT_ID" == "null" ]]; then
-  echo "book: missing motconsu_id" >&2
-  exit 1
-fi
-
-# 8) Cancel
-do_curl "me cancel" "DELETE" "${BASE_URL}/api/me/appointments/${MOT_ID}" "${AUTH[@]}"
-[[ "$LAST_CODE" =~ ^2 ]] || exit 1
-
-# 9) Rebook same slot
-do_curl "me rebook" "POST" "${BASE_URL}/api/me/appointments" \
-  "${AUTH[@]}" -H "Content-Type: application/json" \
-  -d "$(jq -n --argjson p "$PLAN_ID" '{planning_id: $p}')"
-[[ "$LAST_CODE" =~ ^2 ]] || exit 1
-MOT2=$(jq -r '.data.motconsu_id // empty' <"$BODY")
-if [[ -z "$MOT2" || "$MOT2" == "null" ]]; then
-  echo "rebook: missing motconsu_id" >&2
-  exit 1
-fi
-
-# 10) Final cancel
-do_curl "me cancel after rebook" "DELETE" "${BASE_URL}/api/me/appointments/${MOT2}" "${AUTH[@]}"
-[[ "$LAST_CODE" =~ ^2 ]] || exit 1
 
 echo "========== SUMMARY =========="
 if (( fail == 0 )); then

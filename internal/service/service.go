@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"log/slog"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
@@ -26,6 +28,10 @@ type Services struct {
 	WriteGuard      medialogwrite.Guard
 	WriteLog        *medialogwrite.LogRepo
 	book            *bookingState
+	eng             *BookingEngine
+	engOnce         sync.Once
+	engAtomic       atomic.Pointer[BookingEngine]
+	rwLang          atomic.Bool
 }
 
 func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int, cfg config.Config) *Services {
@@ -116,44 +122,12 @@ func (s *Services) attachConfirmations(ctx context.Context, rows []repo.Planning
 	return rows, nil
 }
 
-func (s *Services) MeBookAppointment(ctx context.Context, patientID int64, planningID int, now time.Time) (motconsuID int64, restored bool, err error) {
-	db := s.MSSQLWrite
-	if db == nil {
-		return 0, false, medialogwrite.ErrWriteNotConfigured
-	}
-	res, err := repo.BookMe(ctx, db, s.Repos.Planning, s.Repos.Motconsu, planningID, patientID, s.DefaultModelsID, now)
-	if err != nil {
-		return 0, false, err
-	}
-	return res.MotconsuID, res.Restored, nil
-}
-
-func (s *Services) MeCancelAppointment(ctx context.Context, patientID int64, motconsuID int64, now time.Time) error {
-	minH := s.Config.CancelMinHoursBefore
-	if minH <= 0 {
-		minH = 24
-	}
-	db := s.MSSQLWrite
-	if db == nil {
-		return medialogwrite.ErrWriteNotConfigured
-	}
-	return repo.CancelMe(ctx, db, motconsuID, patientID, time.Duration(minH)*time.Hour, now)
-}
-
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
 	return s.Repos.Patient.SearchByPhone(ctx, repo.CleanPhoneLast10(phone))
 }
 
 func (s *Services) ScheduleChanges(ctx context.Context, since time.Time) ([]repo.ScheduleChange, error) {
 	return s.Repos.Motconsu.ChangesSince(ctx, since)
-}
-
-func (s *Services) Book(ctx context.Context, in repo.BookInput) (repo.BookResult, error) {
-	db := s.MSSQLWrite
-	if db == nil {
-		return repo.BookResult{}, medialogwrite.ErrWriteNotConfigured
-	}
-	return repo.Book(ctx, db, s.Repos.Planning, s.Repos.Motconsu, in, s.DefaultModelsID)
 }
 
 func (s *Services) LabResults(ctx context.Context, patientID string, daysBack int) ([]repo.LabResult, error) {
@@ -169,7 +143,10 @@ func (s *Services) LabPanels(ctx context.Context, patientID string, daysBack int
 }
 
 func (s *Services) HealthSnapshot(ctx context.Context) health.Snapshot {
-	out := health.Snapshot{API: "ok", Medialog: "ok"}
+	out := health.Snapshot{API: "ok", Medialog: "ok", WriteJournal: "ok"}
+	if eng := s.engAtomic.Load(); eng != nil && eng.journalDown.Load() {
+		out.WriteJournal = "degraded"
+	}
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := s.MSSQL.PingContext(pingCtx); err != nil {

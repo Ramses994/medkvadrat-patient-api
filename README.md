@@ -14,13 +14,47 @@ On the dev stand (with a test phone and dev OTP), run:
 ./scripts/dev-smoke.sh http://localhost:8082 79935950695
 ```
 
-The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OTP auth, `/api/me` and catalog reads, then books and cancels twice so the database ends with a normal cancelled (D) motconsu row.
+The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OTP auth, `/api/me` and catalog reads, including booking options and slots. It does not book or cancel.
 
 `GET /api/me/profile` exposes `birth_date` (`YYYY-MM-DD`) from Medialog `PATIENTS.NE_LE` when set, otherwise `birth_year` from `GOD_ROGDENIQ`. Clients should show one or the other, not both.
 
 ## Booking slots (LK-2a)
 
-`GET /api/catalog/booking-options` and `GET /api/catalog/slots` (patient JWT) read free time from `pl_TelemedGetAvaliableSlots` for pairs in `LK_BOOKING_PAIRS`. The old `GET /api/schedule/slots` route is removed. `SLOT_TOKEN_SECRET` must be at least 32 bytes or slots answer `503`. Times are Moscow wall-clock strings without an offset.
+`GET /api/catalog/booking-options` and `GET /api/catalog/slots` (patient JWT) read free time from `pl_TelemedGetAvaliableSlots` for pairs in `LK_BOOKING_PAIRS`. The old `GET /api/schedule/slots` route is removed. `SLOT_TOKEN_SECRET` must be at least 32 bytes or slots and booking answer `503`. Times are Moscow wall-clock strings without an offset.
+
+## Booking and cancel (LK-2b)
+
+One API process holds the patient lock and then the line lock. Do not run a second instance against the same clinic lines.
+
+`POST /api/me/appointments` with `{"slot_token":"…"}` and header `Idempotency-Key` (UUID) books through `dbo.pl_AddVisitContext`. `DELETE /api/me/appointments/{planning_id}` with the same header cancels through `dbo.pl_CancelVisit`. The old `POST /api/schedule/book` route and cancel by `motconsu_id` are removed.
+
+Writes stay off unless `MEDIALOG_WRITE_ENABLED=true`, the patient and line are allowlisted, `DB_RW_USER` is set, `LK_AUTHOR_MEDDEP_ID` is set, and `@@LANGUAGE` on the RW login is `us_english`. The RW pool uses 2 open connections and 0 idle. A short or empty `SLOT_TOKEN_SECRET` makes booking answer `503`.
+
+`GET /api/internal/write-ops?state=unknown,partial` and `POST /api/internal/write-ops/{op_id}/resolve` are API-token routes and also require a dashboard LAN address. Journal rows live in `gateway.db` (`lk_write_ops`). Unknown and partial rows are not retried.
+
+Owner-only live check (changes the clinic database; run only on D1, never from CI):
+
+```sh
+LK_INTEGRATION_WRITE=1 go test -tags integration_write -count=1 -p 1 ./internal/integration/ -run TestLK2 -v
+```
+
+Allowlists must be exactly patient `1` and line `1119`, `LK_BOOKING_PAIRS` must include `1119:10000688`, and the RW login language must be `us_english`. The test refuses to start otherwise. It books only slots at least `CANCEL_MIN_HOURS_BEFORE` plus 2 hours ahead and cancels them through the same API.
+
+## Запуск B7 владельцем
+
+B7 — это `TestLK2`. Он пишет в клинику. Из CI его не запускают.
+
+Перед стартом нужны `LK_INTEGRATION_WRITE=1`, `LK_LIVE_API_URL` (стенд API) и `LK_LIVE_API_TOKEN` (внутренний токен стенда). Тест вызывает `GET /api/internal/write-ops?state=in_flight,unknown,partial` (тайм-аут 10 с). Стартует **только** при ответе `200` с `{"success":true,"data":[]}`; непустой список, `data` нет или `null`, `success:false`, неразборчивый ответ, ошибка или тайм-аут — тест не стартует. Ключ отмены создаётся один на `planning_id` до первого `DELETE` и используется и в сценарии, и в очистке.
+
+Чтение до сценариев: у пациента `1` на линии `1119` нет действующих будущих записей. Слоты берутся не раньше `сейчас + CANCEL_MIN_HOURS_BEFORE + 2 часа`. Иначе тест не стартует.
+
+Списки допуска — ровно пациент `1` и линия `1119`, пара `1119:10000688`, язык RW-логина `us_english`.
+
+Первая ошибка сценария останавливает остальные. Записанные `planning_id` всё равно уходят в очистку. Отмена повторяется с тем же ключом идемпотентности. Если ответ «уже отменена» или `CANCEL_NOT_SUPPORTED`, тест проверяет чтением, что запись отменена или строки нет.
+
+Лог обработчика и `gateway.db` остаются в каталоге `./b7-run-<время>/`. Путь печатается в начале и в конце.
+
+После очистки тест ещё раз читает записи пациента `1` на линии `1119` с автором ЛК, созданные после старта. Действующая запись — ошибка со списком `planning_id` и инструкцией: Расписание → линия 1119 → запись → «Пациент не придёт».
 
 ## Staff dashboard
 
@@ -37,7 +71,7 @@ S2S clients keep using `GET /api/dashboard/schedule` with `Authorization: Bearer
 
 ## Integration tests (MSSQL)
 
-Integration tests verify behavior against a real dev MSSQL instance. They cover write paths (book/cancel/restore) that mocks can't simulate — clinic-side triggers and stored procedures.
+The Docker script below runs the read-only `integration` tag. It does not book. The live book/cancel check is the `integration_write` command in the booking section; that one changes the clinic database and is owner-only.
 
 Prerequisites:
 - Docker installed.

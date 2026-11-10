@@ -63,13 +63,6 @@ type LabPanelRow struct {
 	OrderedAt *time.Time
 }
 
-type BookInput struct {
-	PlanningID int
-	PatientID  int
-	ModelsID   int
-	MeddepID   int
-}
-
 type Specialty struct {
 	SpecialtyID int
 	Code        string
