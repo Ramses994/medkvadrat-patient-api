@@ -114,6 +114,18 @@ async function openBoard(page, opts) {
     });
   });
   await page.route('**/dashboard/data**', async route => {
+    if (state.holdData) await state.holdData;
+    if (state.abortData) {
+      state.abortData = false;
+      await route.abort('failed');
+      return;
+    }
+    if (state.dataReply) {
+      const reply = state.dataReply;
+      state.dataReply = null;
+      await route.fulfill(reply);
+      return;
+    }
     const body = JSON.parse(JSON.stringify(opts.schedule || schedule()));
     const raw = new URL(route.request().url()).searchParams.get('branch') || '';
     const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
@@ -1052,4 +1064,216 @@ test('update row applies newer work without restoring the phone', async ({ page 
   await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
   await expect(line).toHaveAttribute('data-version', '2');
   expect(await page.locator('#waitlistList').evaluate(el => el.innerHTML)).not.toContain('79990001122');
+});
+
+test('search keeps work fields of rows that leave and come back', async ({ page }) => {
+  const state = await openBoard(page, {
+    items: [
+      row({ id: 7, patient_name: 'Иванов Иван', version: 4, status: 'contacted', outcome: 'call_back' }),
+      row({ id: 8, patient_name: 'Петров Пётр', version: 4, status: 'closed', outcome: 'refused' }),
+    ],
+  });
+  await page.locator('#tabWaitlist').click();
+  const open = page.locator('#waitlistList tr[data-key="max:7"]');
+  const closed = page.locator('#waitlistList tr[data-key="max:8"]');
+  await expect(open.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(open).toHaveAttribute('data-version', '4');
+  await expect(closed.getByRole('button', { name: 'Вернуть в работу' })).toBeVisible();
+  await expect(closed).toHaveAttribute('data-version', '4');
+  const searched = page.waitForResponse(r => r.request().method() === 'GET' && r.url().includes('q='));
+  await page.locator('#wlQuery').fill('zzz');
+  await page.clock.fastForward(400);
+  await searched;
+  await expect(page.locator('#waitlistList tr[data-key]')).toHaveCount(0);
+  const back = page.waitForResponse(r => r.request().method() === 'GET' && r.url().includes('per_page=50') && !r.url().includes('q='));
+  await page.locator('#wlClear').click();
+  await back;
+  await expect(open.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(open).toHaveAttribute('data-version', '4');
+  await expect(closed.getByRole('button', { name: 'Вернуть в работу' })).toBeVisible();
+  await expect(closed).toHaveAttribute('data-version', '4');
+  const saved = page.waitForRequest(r => r.method() === 'PATCH' && r.url().includes('/dashboard/waitlist/max/8'));
+  await closed.getByRole('button', { name: 'Вернуть в работу' }).click();
+  expect((await saved).postDataJSON()).toMatchObject({ action: 'reopen', version: 4 });
+  expect(state.posts.at(-1).version).toBe(4);
+});
+
+test('a save that lands off the list comes back at the saved version', async ({ page }) => {
+  const state = await openBoard(page, {
+    items: [row({ patient_name: 'Иванов Иван', version: 4, status: 'contacted', outcome: 'call_back' })],
+  });
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await page.locator('.wl-outcome').selectOption('no_answer');
+  const gone = page.waitForResponse(r => r.request().method() === 'GET' && r.url().includes('q='));
+  await page.locator('#wlQuery').fill('неттакого');
+  await page.clock.fastForward(400);
+  await gone;
+  await expect(page.locator('#waitlistList tr[data-key]')).toHaveCount(0);
+  state.reply = {
+    json: {
+      success: true,
+      data: {
+        row: { status: 'contacted', outcome: 'no_answer', version: 6, updated_by: 'kash', updated_at: '06.11 12:40' },
+      },
+    },
+  };
+  state.list = [row({ patient_name: 'Иванов Иван', version: 4, status: 'contacted', outcome: 'call_back' })];
+  const patched = page.waitForResponse(r => r.request().method() === 'PATCH' && r.url().includes('/dashboard/waitlist/max/7'));
+  release();
+  await patched;
+  const back = page.waitForResponse(r => r.request().method() === 'GET' && r.url().includes('per_page=50') && !r.url().includes('q='));
+  await page.locator('#wlClear').click();
+  await back;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toHaveAttribute('data-version', '6');
+  await expect(line.locator('.wl-outcome')).toHaveValue('no_answer');
+});
+
+test('a late patch does not undo a newer list while the row is focused', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await page.clock.fastForward(6000);
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await page.locator('.wl-outcome').focus();
+  state.list = [row({ version: 4, status: 'contacted', outcome: 'no_answer' })];
+  const first = listResponse(page);
+  await page.clock.fastForward(5000);
+  await first;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toHaveAttribute('data-version', '1');
+  await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
+  state.reply = {
+    json: {
+      success: true,
+      data: {
+        row: { status: 'contacted', outcome: 'call_back', version: 2, updated_by: 'kash', updated_at: '06.11 12:20' },
+      },
+    },
+  };
+  release();
+  await expect(line.locator('.wl-saved')).not.toContainText('Сохранено');
+  await expect(line).toHaveAttribute('data-version', '1');
+  await page.locator('.wl-outcome').evaluate(el => el.blur());
+  await page.clock.fastForward(6000);
+  await expect(line).toHaveAttribute('data-version', '4');
+  await expect(line.locator('.wl-outcome')).toHaveValue('no_answer');
+});
+
+test('a late moved error keeps a row that a newer list already returned', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await page.clock.fastForward(6000);
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await page.locator('.wl-outcome').focus();
+  state.list = [row({ version: 4, status: 'contacted', outcome: 'no_answer' })];
+  const first = listResponse(page);
+  await page.clock.fastForward(5000);
+  await first;
+  state.reply = {
+    status: 403,
+    json: {
+      success: false,
+      error: 'Строка перенесена',
+      error_details: { code: 'WAITLIST_MOVED', message: 'Строка перенесена в другой филиал' },
+    },
+  };
+  const reread = listResponse(page);
+  release();
+  await reread;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toBeVisible();
+  await page.locator('.wl-outcome').evaluate(el => el.blur());
+  await page.clock.fastForward(6000);
+  await expect(line).toHaveAttribute('data-version', '4');
+  await expect(line.locator('.wl-outcome')).toHaveValue('no_answer');
+});
+
+test('a password change that arrives during logout does not navigate', async ({ page }) => {
+  const state = await openBoard(page, { items: [] });
+  await page.waitForLoadState('networkidle');
+  let releaseGet;
+  state.holdData = new Promise(resolve => { releaseGet = resolve; });
+  let releaseOut;
+  await page.route('**/dashboard/logout', async route => {
+    await new Promise(resolve => { releaseOut = resolve; });
+    await route.fulfill({ status: 503, contentType: 'application/json', body: '{"success":false}' });
+  });
+  const started = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/data'));
+  await page.evaluate(() => { load(); });
+  await started;
+  await page.locator('#accountMenu summary').click();
+  const logging = page.waitForRequest(r => r.url().includes('/dashboard/logout') && r.method() === 'POST');
+  await page.locator('#logoutBtn').click();
+  await logging;
+  state.dataReply = {
+    status: 403,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      success: false,
+      error: 'Нужно сменить пароль',
+      error_details: { code: 'PASSWORD_CHANGE_REQUIRED' },
+    }),
+  };
+  const answered = page.waitForResponse(r => r.url().includes('/dashboard/data') && r.status() === 403);
+  releaseGet();
+  await answered;
+  await expect(page).not.toHaveURL(/password/);
+  await expect(page.locator('#board')).toBeVisible();
+  releaseOut();
+});
+
+test('a network failure during logout does not show a banner', async ({ page }) => {
+  const state = await openBoard(page, { items: [] });
+  await page.waitForLoadState('networkidle');
+  let releaseGet;
+  state.holdData = new Promise(resolve => { releaseGet = resolve; });
+  let releaseOut;
+  await page.route('**/dashboard/logout', async route => {
+    await new Promise(resolve => { releaseOut = resolve; });
+    await route.fulfill({ status: 503, contentType: 'application/json', body: '{"success":false}' });
+  });
+  const started = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/data'));
+  await page.evaluate(() => { load(); });
+  await started;
+  await page.locator('#accountMenu summary').click();
+  const logging = page.waitForRequest(r => r.url().includes('/dashboard/logout') && r.method() === 'POST');
+  await page.locator('#logoutBtn').click();
+  await logging;
+  state.abortData = true;
+  const failed = page.waitForEvent('requestfailed', r => r.url().includes('/dashboard/data'));
+  releaseGet();
+  await failed;
+  await expect(page.locator('#banner')).not.toContainText('Не удалось обновить');
+  releaseOut();
+});
+
+test('the staff tab does not reload the waitlist after a save', async ({ page }) => {
+  const state = await openBoard(page, { role: 'admin', items: [row()] });
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await expect(page.locator('#tabStaff')).toBeVisible();
+  await page.locator('#tabWaitlist').click();
+  const sent = page.waitForRequest(r => r.method() === 'PATCH' && r.url().includes('/dashboard/waitlist/max/7'));
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await sent;
+  await page.locator('#tabStaff').click();
+  const leaked = page.waitForRequest(
+    r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist') && r.url().includes('per_page=50'),
+    { timeout: 1500 },
+  ).then(() => true).catch(() => false);
+  const patched = page.waitForResponse(r => r.request().method() === 'PATCH' && r.url().includes('/dashboard/waitlist/max/7'));
+  release();
+  await patched;
+  expect(await leaked).toBe(false);
+  const again = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist') && r.url().includes('per_page=50'));
+  await page.locator('#tabWaitlist').click();
+  await again;
+  await expect(page.locator('#waitlistList tr[data-key="max:7"]')).toHaveAttribute('data-version', '2');
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
 });
