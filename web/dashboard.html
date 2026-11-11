@@ -379,7 +379,9 @@ let followedDay = '';
 let scheduleKey = '';
 let waitlistKey = '';
 const wlWork = new Map();
+const wlDenied = new Map();
 let getSeqGlobal = 0;
+let requestSeq = 0;
 let waitlistStale = false;
 const BUSY_MS = 5000;
 const BRANCH_NAME = {106:'Каширка', 3:'Куркино', 496:'Куркино 2'};
@@ -864,6 +866,7 @@ async function loadWaitlist(keepPoll) {
   waitlistBusy = true;
   const epoch = viewEpoch;
   const q = waitlistURL();
+  const seq = ++requestSeq;
   try {
     const res = await api(q.url, {credentials:'same-origin'});
     if (!res || loggingOut) return;
@@ -876,8 +879,8 @@ async function loadWaitlist(keepPoll) {
     lastOkAt = Date.now();
     if (body.data && body.data.banner) showBanner(body.data.banner);
     else hideBanner();
-    if (selectingText()) paintWaitlistSelection(body.data);
-    else paintWaitlist(body.data, q.key);
+    if (selectingText()) paintWaitlistSelection(body.data, seq);
+    else paintWaitlist(body.data, q.key, seq);
   } catch (err) {
     if (epoch === viewEpoch) showBanner(`Не удалось обновить лист ожидания: ${err.message}.`);
   } finally {
@@ -892,7 +895,39 @@ async function loadWaitlist(keepPoll) {
   }
 }
 
-function paintWaitlist(data, key) {
+function deniedGate(key, seq) {
+  const denied = wlDenied.get(key);
+  if (denied == null) return 'ok';
+  if (Number(seq) > denied) return 'fresh';
+  return 'stale';
+}
+
+function dropListedRow(tr, seq) {
+  if (deniedGate(tr.dataset.key, seq) === 'stale') return false;
+  wlDenied.delete(tr.dataset.key);
+  tr.remove();
+  return true;
+}
+
+function syncListedRow(tr, it, seq) {
+  const gate = deniedGate(tr.dataset.key, seq);
+  if (gate === 'stale') return false;
+  if (gate === 'fresh') {
+    wlDenied.delete(tr.dataset.key);
+    delete tr.dataset.access;
+    applyMedialogFields(tr, it);
+    acceptWork(tr.dataset.key, workOf(it), 'get');
+    paintWork(tr);
+    paintMedialogAlert(tr);
+    markRow(tr, '');
+    noteSeen(tr, it);
+    return true;
+  }
+  applyHeldRow(tr, it);
+  return true;
+}
+
+function paintWaitlist(data, key, seq) {
   getSeqGlobal++;
   const items = data.items || [];
   $('waitlistCount').textContent = String(data.open_total || 0);
@@ -905,11 +940,20 @@ function paintWaitlist(data, key) {
   const keepScroll = wrap.scrollTop;
   waitlistKey = key;
   if (!items.length) {
-    if (!wrap.querySelector('.empty')) {
-      wrap.querySelectorAll('table,.empty').forEach(n => n.remove());
-      wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
+    const tbody = wrap.querySelector('tbody');
+    const held = [];
+    if (tbody) {
+      [...tbody.querySelectorAll('tr')].forEach(tr => {
+        if (!dropListedRow(tr, seq)) held.push(tr);
+      });
     }
-    wlSeen = new Map();
+    if (!held.length) {
+      if (!wrap.querySelector('.empty')) {
+        wrap.querySelectorAll('table,.empty').forEach(n => n.remove());
+        wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
+      }
+      wlSeen = new Map();
+    }
     wrap.scrollTop = keepScroll;
     return;
   }
@@ -931,19 +975,22 @@ function paintWaitlist(data, key) {
   const tbody = table.querySelector('tbody');
   const ids = items.map(it => (it.source || 'max') + ':' + it.id);
   items.forEach(it => {
-    let tr = tbody.querySelector(`tr[data-key="${(it.source || 'max') + ':' + it.id}"]`);
+    const id = (it.source || 'max') + ':' + it.id;
+    if (deniedGate(id, seq) === 'stale') return;
+    let tr = tbody.querySelector(`tr[data-key="${id}"]`);
     if (!tr) {
+      if (deniedGate(id, seq) === 'fresh') wlDenied.delete(id);
       tr = renderWaitlistRow(it);
       tbody.appendChild(tr);
       if (wlSeen.size) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
       wlSeen.set(rowKey(it), it.status);
     } else {
-      applyHeldRow(tr, it);
+      syncListedRow(tr, it, seq);
     }
     tr.classList.toggle('fresh', (wlFresh.get(rowKey(it)) || 0) > Date.now());
   });
   [...tbody.querySelectorAll('tr')].forEach(tr => {
-    if (!ids.includes(tr.dataset.key)) tr.remove();
+    if (!ids.includes(tr.dataset.key)) dropListedRow(tr, seq);
   });
   let after = null;
   ids.forEach(id => {
@@ -955,7 +1002,7 @@ function paintWaitlist(data, key) {
   wrap.scrollTop = keepScroll;
 }
 
-function paintWaitlistSelection(data) {
+function paintWaitlistSelection(data, seq) {
   const items = data.items || [];
   $('waitlistCount').textContent = String(data.open_total || 0);
   const tbody = $('waitlistList').querySelector('tbody');
@@ -965,10 +1012,10 @@ function paintWaitlistSelection(data) {
   const byKey = new Map(items.map(it => [(it.source || 'max') + ':' + it.id, it]));
   [...tbody.querySelectorAll('tr')].forEach(tr => {
     if (!ids.includes(tr.dataset.key)) {
-      tr.remove();
+      dropListedRow(tr, seq);
       return;
     }
-    applyHeldRow(tr, byKey.get(tr.dataset.key));
+    syncListedRow(tr, byKey.get(tr.dataset.key), seq);
   });
 }
 
@@ -1004,7 +1051,7 @@ function acceptWork(key, work, origin) {
 }
 
 function paintWork(tr) {
-  if (!tr) return;
+  if (!tr || tr.dataset.access === 'checking') return;
   const work = wlWork.get(tr.dataset.key);
   if (!work) return;
   const oc = tr.querySelector('.wl-outcome');
@@ -1168,16 +1215,17 @@ function paintMedialogAlert(tr) {
   med.textContent = tr.dataset.medialog || '';
 }
 
-function showConflict(tr) {
+function showConflict(tr, message) {
   const work = tr.children[6];
   if (!work || work.querySelector('.wl-conflict')) return;
   const box = el('div', 'wl-conflict');
-  box.appendChild(el('div', '', 'Изменено другим сотрудником'));
+  box.appendChild(el('div', '', message || 'Изменено другим сотрудником'));
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'btn';
   btn.textContent = 'Обновить строку';
   btn.addEventListener('click', () => {
+    if (tr.dataset.access === 'checking') return;
     paintWork(tr);
     paintMedialogAlert(tr);
   });
@@ -1202,6 +1250,7 @@ function scheduleRelease(tr) {
   }, 0);
 }
 function releaseRow(tr) {
+  if (tr.dataset.access === 'checking') return;
   if (rowBusy(tr)) return;
   const stored = wlWork.get(tr.dataset.key);
   const shown = Number(tr.dataset.version || 0);
@@ -1226,18 +1275,21 @@ async function onOutcome(tr) {
   const outcome = oc.value;
   const prev = tr.dataset.outcome || '';
   if (!outcome || outcome === prev) return;
+  const shownVersion = Number(tr.dataset.version || 0);
+  let waited = false;
   if (CLOSING.has(outcome) && tr.dataset.medialog === 'запись действует') {
+    waited = true;
     const ok = await askClose(outcome);
     if (!ok) {
       oc.value = prev;
       return;
     }
   }
-  saveWaitlist(tr, outcome, '');
+  saveWaitlist(tr, outcome, '', shownVersion, waited);
 }
 
 function reopenRow(tr) {
-  saveWaitlist(tr, '', 'reopen');
+  saveWaitlist(tr, '', 'reopen', Number(tr.dataset.version || 0), true);
 }
 
 function askClose(outcome) {
@@ -1291,16 +1343,39 @@ function restoreUnsavedChoice(row, sentVersion, prev) {
   if (liveOc) liveOc.value = row.dataset.outcome || prev;
 }
 
-async function saveWaitlist(tr, outcome, action) {
+function concealRow(tr) {
+  applyMedialogFields(tr, { source: tr.dataset.source });
+  paintMedialogAlert(tr);
+  const oc = tr.querySelector('.wl-outcome');
+  if (oc) oc.hidden = true;
+  const text = tr.querySelector('.wl-outcome-text');
+  if (text) text.hidden = true;
+  const back = tr.querySelector('.wl-reopen');
+  if (back) back.hidden = true;
+  const note = tr.querySelector('.wl-conflict');
+  if (note) note.remove();
+  tr.dataset.access = 'checking';
+  markRow(tr, 'Доступ к строке проверяется…');
+  wlDenied.set(tr.dataset.key, ++requestSeq);
+}
+
+async function saveWaitlist(tr, outcome, action, shownVersion, blockIfNewer) {
   const source = tr.dataset.source || 'max';
   const id = tr.dataset.id;
   const key = source + ':' + id;
   const prev = tr.dataset.outcome || '';
-  markRow(tr, 'Сохраняется…');
+  const parsed = Number(shownVersion);
+  const seen = Number.isFinite(parsed) ? parsed : Number(tr.dataset.version || 0);
   const stored = wlWork.get(key);
-  const version = stored ? Number(stored.version || 0) : 0;
-  const sentSeq = stored ? Number(stored.getSeq || 0) : 0;
-  const payload = action === 'reopen' ? {action: 'reopen', version} : {outcome, version};
+  if (blockIfNewer && stored && Number(stored.version || 0) > seen) {
+    paintWork(tr);
+    paintMedialogAlert(tr);
+    showConflict(tr, 'Строку изменил другой сотрудник — проверьте и повторите');
+    markRow(tr, '');
+    return;
+  }
+  markRow(tr, 'Сохраняется…');
+  const payload = action === 'reopen' ? {action: 'reopen', version: seen} : {outcome, version: seen};
   try {
     const res = await api(`${CONFIG.API_BASE}${CONFIG.WAITLIST}/${source}/${id}`, {
       method: 'PATCH',
@@ -1326,13 +1401,22 @@ async function saveWaitlist(tr, outcome, action) {
       const row = waitlistRow(key);
       if (!applied) {
         if (!row) return;
-        restoreUnsavedChoice(row, version, prev);
-        if (Number(row.dataset.version || 0) === version) showBanner(msg);
+        markRow(row, '');
+        const known = wlWork.get(key);
+        if (known && Number(known.version || 0) > seen) {
+          paintWork(row);
+          paintMedialogAlert(row);
+          showBanner(msg);
+          return;
+        }
+        restoreUnsavedChoice(row, seen, prev);
+        if (Number(row.dataset.version || 0) === seen) showBanner(msg);
         return;
       }
       if (row) {
-        syncHeldWork(row, true);
+        paintWork(row);
         paintMedialogAlert(row);
+        markRow(row, '');
       }
       showBanner(msg);
       loadWaitlist(true);
@@ -1346,19 +1430,15 @@ async function saveWaitlist(tr, outcome, action) {
       else if (body.error) msg = body.error;
       if (loggingOut) return;
       if (res.status === 403 && code === 'WAITLIST_MOVED') {
-        const cur = wlWork.get(key);
-        if (cur && Number(cur.getSeq || 0) > sentSeq) {
-          loadWaitlist();
-          return;
-        }
         const gone = waitlistRow(key);
-        if (gone) gone.remove();
-        showBanner('Строка перенесена в другой филиал');
+        if (gone) concealRow(gone);
+        else wlDenied.set(key, ++requestSeq);
+        loadWaitlist();
         return;
       }
       const row = waitlistRow(key);
       if (!row) return;
-      restoreUnsavedChoice(row, version, prev);
+      restoreUnsavedChoice(row, seen, prev);
       showBanner(msg);
       markRow(row, msg);
       return;
@@ -1378,12 +1458,13 @@ async function saveWaitlist(tr, outcome, action) {
       loadWaitlist(true);
       return;
     }
+    if (row) markRow(row, '');
     if (row && !saved) loadWaitlist(true);
   } catch (err) {
     if (loggingOut) return;
     const row = waitlistRow(key);
     if (!row) return;
-    restoreUnsavedChoice(row, version, prev);
+    restoreUnsavedChoice(row, seen, prev);
     showBanner(`Не удалось сохранить: ${err.message}`);
     markRow(row, err.message);
   }

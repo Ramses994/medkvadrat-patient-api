@@ -235,6 +235,16 @@ async function openBoard(page, opts) {
       });
       return;
     }
+    if (state.holdList) {
+      const gate = state.holdList;
+      state.holdList = null;
+      await gate;
+    }
+    if (state.abortList) {
+      state.abortList = false;
+      await route.abort('failed');
+      return;
+    }
     const url = new URL(route.request().url());
     let items = state.list.map(it => ({ ...it }));
     if (state.mirrorWork) {
@@ -1276,4 +1286,165 @@ test('the staff tab does not reload the waitlist after a save', async ({ page })
   await again;
   await expect(page.locator('#waitlistList tr[data-key="max:7"]')).toHaveAttribute('data-version', '2');
   await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
+});
+
+test('confirming a close does not save a version the dialog did not show', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('.wl-outcome')).toBeVisible();
+  await page.locator('.wl-outcome').selectOption('refused');
+  await expect(page.locator('#confirmModal')).toBeVisible();
+  state.list = [row({ version: 4, status: 'contacted', outcome: 'call_back', updated_by: 'other' })];
+  const polled = listResponse(page);
+  await page.clock.fastForward(10000);
+  await polled;
+  const before = state.posts.length;
+  await page.locator('#confirmYes').click();
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toHaveAttribute('data-version', '4');
+  await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(line).toContainText('Строку изменил другой сотрудник — проверьте и повторите');
+  await expect(line.locator('.wl-saved')).not.toContainText('Сохраняется');
+  expect(state.posts.length).toBe(before);
+});
+
+test('reopening does not save a version newer than the row on screen', async ({ page }) => {
+  const state = await openBoard(page, {
+    items: [row({ version: 1, status: 'closed', outcome: 'refused' })],
+  });
+  await page.locator('#tabWaitlist').click();
+  await page.clock.fastForward(6000);
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await line.getByRole('button', { name: 'Вернуть в работу' }).focus();
+  state.list = [row({ version: 4, status: 'contacted', outcome: 'call_back', updated_by: 'other' })];
+  const polled = listResponse(page);
+  await page.clock.fastForward(5000);
+  await polled;
+  await expect(line).toHaveAttribute('data-version', '1');
+  const before = state.posts.length;
+  await line.getByRole('button', { name: 'Вернуть в работу' }).click();
+  await expect(line).toHaveAttribute('data-version', '4');
+  await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(line).toContainText('Строку изменил другой сотрудник — проверьте и повторите');
+  await expect(line.locator('.wl-saved')).not.toContainText('Сохраняется');
+  expect(state.posts.length).toBe(before);
+});
+
+test('a busy row sends the version on screen and shows the newer row', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await page.clock.fastForward(6000);
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await line.locator('.wl-outcome').focus();
+  state.list = [row({ version: 4, status: 'contacted', outcome: 'call_back', updated_by: 'other' })];
+  const polled = listResponse(page);
+  await page.clock.fastForward(5000);
+  await polled;
+  await expect(line).toHaveAttribute('data-version', '1');
+  state.reply = {
+    status: 409,
+    json: {
+      success: false,
+      error: 'WAITLIST_CHANGED',
+      error_details: { message: 'Строку уже изменил другой сотрудник' },
+      data: {
+        row: { status: 'contacted', outcome: 'call_back', version: 4, updated_by: 'other', updated_at: '06.11 12:40' },
+      },
+    },
+  };
+  const sent = page.waitForRequest(r => r.method() === 'PATCH' && r.url().includes('/dashboard/waitlist/max/7'));
+  await line.locator('.wl-outcome').selectOption('no_answer');
+  expect((await sent).postDataJSON()).toMatchObject({ outcome: 'no_answer', version: 1 });
+  await expect(line).toHaveAttribute('data-version', '4');
+  await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(line.locator('.wl-saved')).not.toContainText('Сохраняется');
+});
+
+test('a moved error hides the patient when the reread fails', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.locator('.wl-outcome').selectOption('call_back');
+  state.abortList = true;
+  state.reply = {
+    status: 403,
+    json: {
+      success: false,
+      error: 'Строка перенесена',
+      error_details: { code: 'WAITLIST_MOVED', message: 'Строка перенесена в другой филиал' },
+    },
+  };
+  const failed = page.waitForEvent('requestfailed', r => r.url().includes('/dashboard/waitlist') && r.url().includes('per_page=50'));
+  release();
+  await failed;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toContainText('Доступ к строке проверяется');
+  await expect(line).not.toContainText('Иванов');
+  await expect(line).not.toContainText('79990001122');
+  await expect(line.locator('.wl-outcome')).toBeHidden();
+  await expect(line.getByRole('button')).toHaveCount(0);
+});
+
+test('a reread after a moved error brings the patient back', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await page.locator('.wl-outcome').selectOption('call_back');
+  state.reply = {
+    status: 403,
+    json: {
+      success: false,
+      error: 'Строка перенесена',
+      error_details: { code: 'WAITLIST_MOVED', message: 'Строка перенесена в другой филиал' },
+    },
+  };
+  const reread = listResponse(page);
+  release();
+  await reread;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toContainText('Иванов Иван');
+  await expect(line).toContainText('+79990001122');
+  await expect(line.locator('.wl-outcome')).toBeVisible();
+  await expect(line.locator('.wl-saved')).not.toContainText('Доступ к строке проверяется');
+});
+
+test('a list sent before a moved error does not bring the patient back', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  let releaseList;
+  state.holdList = new Promise(resolve => { releaseList = resolve; });
+  const sent = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist') && r.url().includes('per_page=50'));
+  await page.evaluate(() => { loadWaitlist(); });
+  await sent;
+  let releasePatch;
+  state.holdPatch = new Promise(resolve => { releasePatch = resolve; });
+  const patching = page.waitForRequest(r => r.method() === 'PATCH' && r.url().includes('/dashboard/waitlist/max/7'));
+  await page.locator('.wl-outcome').selectOption('no_answer');
+  await patching;
+  let releaseNext;
+  state.holdList = new Promise(resolve => { releaseNext = resolve; });
+  state.reply = {
+    status: 403,
+    json: {
+      success: false,
+      error: 'Строка перенесена',
+      error_details: { code: 'WAITLIST_MOVED', message: 'Строка перенесена в другой филиал' },
+    },
+  };
+  const stale = page.waitForResponse(r => r.request().method() === 'GET' && r.url().includes('/dashboard/waitlist') && r.url().includes('per_page=50'));
+  releasePatch();
+  await expect(page.locator('#waitlistList tr[data-key="max:7"]')).toContainText('Доступ к строке проверяется');
+  releaseList();
+  await stale;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).not.toContainText('Иванов');
+  await expect(line).not.toContainText('79990001122');
+  await expect(line.locator('.wl-outcome')).toBeHidden();
+  await expect(line.getByRole('button')).toHaveCount(0);
+  releaseNext();
 });
