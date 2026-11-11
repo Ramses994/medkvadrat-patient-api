@@ -76,7 +76,9 @@ type DashboardPage struct {
 	Banner    string
 }
 
-// WaitlistRow is a gateway.db waitlist record (no FIO/phone/doctor).
+// WaitlistRow is a gateway.db waitlist record.
+// PatientName and PatientPhone are optional text stored with the MAX row.
+// Medialog names are not copied into these columns.
 type WaitlistRow struct {
 	ID           int64
 	PlanningID   int64
@@ -93,6 +95,8 @@ type WaitlistRow struct {
 	BranchID     int
 	UpdatedBy    string
 	Version      int
+	PatientName  string
+	PatientPhone string
 }
 
 func ValidOutcome(outcome string) bool {
@@ -146,6 +150,7 @@ type WaitlistListFilter struct {
 	Page                 int
 	PerPage              int
 	IncludeOtherBranches bool
+	Query                string
 }
 
 func (r *Repo) ListWaitlist(ctx context.Context, f WaitlistListFilter) (rows []WaitlistRow, total int, err error) {
@@ -325,7 +330,8 @@ func (r *Repo) ListDashboardRows(ctx context.Context, f WaitlistListFilter, now 
 	where, args := dashboardWhere(f, now)
 	q := `
 SELECT id, planning_id, patient_id, appt_version, appt_start, reason, source, status,
-       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1)
+       IFNULL(outcome,''), created_at, updated_at, created_at_msk, branch_id, IFNULL(updated_by,''), IFNULL(version,1),
+       IFNULL(patient_name,''), IFNULL(patient_phone,'')
 FROM waitlist` + where + `
 ORDER BY created_at DESC, id DESC
 LIMIT ?`
@@ -341,7 +347,7 @@ LIMIT ?`
 		if err := rs.Scan(
 			&row.ID, &row.PlanningID, &row.PatientID, &row.ApptVersion, &row.ApptStart,
 			&row.Reason, &row.Source, &row.Status, &row.Outcome, &row.CreatedAt, &row.UpdatedAt,
-			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy, &row.Version,
+			&row.CreatedAtMSK, &row.BranchID, &row.UpdatedBy, &row.Version, &row.PatientName, &row.PatientPhone,
 		); err != nil {
 			return nil, err
 		}

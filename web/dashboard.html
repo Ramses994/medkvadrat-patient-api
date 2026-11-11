@@ -85,7 +85,7 @@
 
   /* ---------- сетка филиалов ---------- */
   .board{
-    flex:1;display:grid;grid-template-columns:repeat(3,1fr);
+    flex:1;display:grid;grid-template-columns:repeat(var(--cols, 3),1fr);
     gap:1px;background:var(--line);min-height:0;
   }
   .col{background:var(--paper);display:flex;flex-direction:column;min-height:0}
@@ -151,14 +151,17 @@
   .tab{font:inherit;font-size:13px;padding:6px 12px;border-radius:6px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink)}
   .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
   .tab .count{font-family:var(--mono);margin-left:6px;opacity:.85}
-  .waitlist-panel{flex:1;display:flex;flex-direction:column;min-height:0;padding:12px 18px 24px}
-  .waitlist-filters{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:13px}
-  .waitlist-filters select{font:inherit;padding:4px 8px}
+  .waitlist-panel{flex:1;display:flex;flex-direction:column;min-height:0;padding:12px 18px 8px}
+  .waitlist-filters{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:13px;flex:none}
+  .waitlist-filters select,.wl-search input{font:inherit;padding:4px 8px}
+  #waitlistList{flex:1;min-height:0;overflow:auto}
   .waitlist-table{width:100%;border-collapse:collapse;background:var(--surface);font-size:13px}
   .waitlist-table th,.waitlist-table td{border-bottom:1px solid var(--line-soft);padding:8px 10px;text-align:left;vertical-align:top}
-  .waitlist-table th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .waitlist-table th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:#fff;z-index:1}
   .waitlist-table tr.fresh{background:var(--brand-soft)}
-  .pager{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px}
+  .pager{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px;flex:none}
+  .wl-search{display:flex;align-items:center;gap:6px}
+  .wl-search input{min-width:180px}
   .btn.light,.waitlist-table .btn,.staff-panel .btn,.modal-actions .btn{
     color:var(--ink);background:#fff;border:1px solid #5C675F;
   }
@@ -166,7 +169,19 @@
     color:#3A4440;background:#D5DBD7;border-color:#5C675F;cursor:default;
   }
   .branch-label{font-size:13px;color:#fff}
-  select.top-select{font:inherit;font-size:13px;padding:5px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.12);color:#fff}
+  select.top-select,button.top-select{font:inherit;font-size:13px;padding:5px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.12);color:#fff}
+  select.top-select option{color:#14302a;background:#fff}
+  .branch-picker{position:relative}
+  .branch-menu{position:absolute;z-index:6;top:calc(100% + 4px);left:0;min-width:200px;padding:8px 10px;background:#fff;color:#14302a;border:1px solid #D5DBD7;border-radius:8px;box-shadow:0 8px 24px rgba(15,30,28,.16)}
+  .branch-menu label{display:flex;gap:8px;align-items:center;color:#14302a;background:#fff;font-size:13px;padding:4px 0}
+  .branch-native{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+  .who{font-size:12px;line-height:1.35;max-width:320px}
+  .account{position:relative}
+  .account summary{cursor:pointer;font-size:13px}
+  .account-menu{position:absolute;right:0;top:calc(100% + 4px);min-width:180px;background:#fff;color:#14302a;border:1px solid #D5DBD7;border-radius:8px;padding:6px;z-index:6}
+  .account-menu a,.account-menu button{display:block;width:100%;text-align:left;background:#fff;color:#14302a;border:0;font:inherit;padding:8px;cursor:pointer;text-decoration:none}
+  .staff-secret{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px;margin:8px 0;max-width:520px}
+  .staff-secret p{margin:0 0 8px}
   .med-alert{color:#9A5B00;font-weight:700}
   .wl-saved{color:var(--ok);font-size:12px;margin-top:6px}
   .wl-meta{color:var(--muted);font-size:11px;margin-top:6px}
@@ -194,9 +209,25 @@
 <header class="top">
   <div class="brand">МедКвадрат <span>расписание филиалов</span></div>
   <div class="top-right">
-    <select id="branch" class="top-select" aria-label="Филиал"><option value="">Все мои</option></select>
+    <div class="branch-picker" id="branchPicker">
+      <button type="button" class="top-select" id="branchButton" aria-haspopup="true" aria-expanded="false" aria-controls="branchMenu">Все мои</button>
+      <div class="branch-menu" id="branchMenu" hidden>
+        <label><input type="checkbox" id="branchAll"> Все мои</label>
+        <div id="branchChecks"></div>
+      </div>
+      <span id="branchLabel" class="branch-label" hidden></span>
+    </div>
+    <select id="branch" class="top-select branch-native" aria-hidden="true" tabindex="-1"><option value="">Все мои</option></select>
     <input type="date" id="date" autocomplete="off" aria-label="Дата расписания">
     <button class="btn" id="today">Сегодня</button>
+    <div class="who" id="whoami"></div>
+    <details class="account" id="accountMenu">
+      <summary>Меню</summary>
+      <div class="account-menu">
+        <a href="/dashboard/password">Сменить пароль</a>
+        <button type="button" id="logoutBtn">Выйти</button>
+      </div>
+    </details>
     <div class="live"><span class="dot" id="dot"></span><span id="liveText">подключение…</span></div>
     <div class="clock" id="clock">--:--:--</div>
   </div>
@@ -237,6 +268,10 @@
         <option value="registry">регистратура</option>
       </select>
     </label>
+    <label class="wl-search">Поиск
+      <input id="wlQuery" autocomplete="off" placeholder="ФИО или телефон" maxlength="64">
+      <button type="button" class="btn light" id="wlClear" hidden>Очистить</button>
+    </label>
   </div>
   <div id="waitlistList"></div>
   <div class="pager" id="wlPager">
@@ -260,7 +295,13 @@
     <label>Филиалы <input id="staffBranches" value="106" placeholder="106 или 3,496 или *"></label>
     <button class="btn" type="submit" style="color:var(--ink);border-color:var(--line)">Добавить</button>
   </form>
-  <div id="staffTemp" class="wl-saved"></div>
+  <div id="staffTemp" class="staff-secret" hidden>
+    <p id="staffTempText"></p>
+    <p>Передайте сотруднику лично; при первом входе он задаст свой пароль.</p>
+    <button type="button" class="btn" id="staffCopy">Скопировать</button>
+    <button type="button" class="btn" id="staffHide">Скрыть</button>
+  </div>
+  <div id="staffStatus" class="wl-saved"></div>
   <div id="staffTable"></div>
 </section>
 <div class="modal" id="confirmModal" hidden>
@@ -308,6 +349,11 @@ let lastSeen = new Map();   // planning_id -> confirmation (для диффа)
 let freshUntil = new Map(); // planning_id -> timestamp
 let lastOkAt = 0;
 let timer = null;
+let queryTimer = null;
+let staffSecretTimer = null;
+let pollsStopped = false;
+let dashMe = null;
+let branchChoice = [];
 let activeTab = 'schedule';
 let wlPage = 1;
 let wlSeen = new Map();
@@ -397,11 +443,11 @@ async function loadSchedule() {
   scheduleBusy = true;
   const epoch = viewEpoch;
   const date = $('date').value || todayISO();
-  const branch = $('branch') ? $('branch').value : '';
+  const branch = branchParam();
   const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINT}?date=${encodeURIComponent(date)}${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`;
   try {
     const res = await fetch(url, {credentials: 'same-origin'});
-    if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || ($('branch') && branch !== $('branch').value) || activeTab !== 'schedule') return;
+    if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || branch !== branchParam() || activeTab !== 'schedule') return;
     if (await authStop(res)) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
@@ -425,6 +471,7 @@ async function loadSchedule() {
 
 function paintSchedule(data) {
   const branches = data.branches || [];
+  board.style.setProperty('--cols', String(Math.min(Math.max(branches.length, 1), 3)));
   const date = data.date || $('date').value;
   const key = date + '|' + branches.map(b => b.branch_id).join(',');
   const fresh = key !== scheduleKey;
@@ -704,12 +751,15 @@ function renderStaleness() {
   if (age < CONFIG.STALE_MS) {
     dot.className = 'dot';
     liveText.textContent = 'обновляется';
+    liveText.title = '';
   } else if (age < CONFIG.STALE_MS * 3) {
     dot.className = 'dot stale';
     liveText.textContent = `данные от ${new Date(lastOkAt).toTimeString().slice(0,8)}`;
+    liveText.title = 'Медиалог отвечает медленно — показаны данные из последнего успешного чтения';
   } else {
     dot.className = 'dot down';
     liveText.textContent = 'нет связи с сервером';
+    liveText.title = 'Нет ответа от сервера дашборда — проверьте сеть';
   }
 }
 function showBanner(msg){ banner.textContent = msg; banner.classList.add('show'); }
@@ -733,6 +783,7 @@ function setTab(name) {
       if (branch && !userScrolled.has(branch)) autoScroll(list, $('date').value === todayISO());
     });
   }
+  if (name !== 'staff') hideStaffSecret();
   if (name === 'waitlist') waitlistKey = '';
   if (name === 'staff') { loadStaff(); return; }
   load();
@@ -742,7 +793,8 @@ async function refreshWaitlistCount() {
   if (waitlistBusy) return;
   waitlistBusy = true;
   try {
-    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}?status=open&page=1&per_page=1`, {credentials:'same-origin'});
+    const branch = branchParam();
+    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}?status=open&page=1&per_page=1${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`, {credentials:'same-origin'});
     if (!res.ok) return;
     const body = await res.json();
     if (body.success && body.data) $('waitlistCount').textContent = String(body.data.open_total || 0);
@@ -760,11 +812,13 @@ function waitlistURL() {
   const scope = $('wlStatus').value || 'open';
   const work = $('wlWork') ? $('wlWork').value : 'all';
   const source = $('wlSource') ? $('wlSource').value : 'all';
-  const branch = $('branch') ? $('branch').value : '';
+  const branch = branchParam();
   const status = work && work !== 'all' ? work : scope;
   const params = new URLSearchParams({status, page: String(wlPage), per_page: '50', source});
+  const q = ($('wlQuery').value || '').trim();
+  if ([...q].length >= 2) params.set('q', q);
   if (branch) params.set('branch', branch);
-  return {key: `${status}|${branch}|${wlPage}|${source}`, url: `${CONFIG.API_BASE}${CONFIG.WAITLIST}?${params}`};
+  return {key: `${status}|${branch}|${wlPage}|${source}|${[...q].length >= 2 ? q : ''}`, url: `${CONFIG.API_BASE}${CONFIG.WAITLIST}?${params}`};
 }
 
 async function loadWaitlist() {
@@ -802,8 +856,11 @@ function paintWaitlist(data, key) {
   $('waitlistCount').textContent = String(data.open_total || 0);
   const pages = Math.max(1, Math.ceil((data.total || 0) / (data.per_page || 50)));
   $('wlPageLabel').textContent = `${data.page || 1} / ${pages}`;
-  $('wlPager').hidden = pages <= 1;
+  $('wlPager').hidden = false;
+  $('wlPrev').disabled = (data.page || 1) <= 1;
+  $('wlNext').disabled = (data.page || 1) >= pages;
   const wrap = $('waitlistList');
+  const keepScroll = wrap.scrollTop;
   const rebuild = key !== waitlistKey;
   if (rebuild) {
     waitlistKey = key;
@@ -817,6 +874,7 @@ function paintWaitlist(data, key) {
       wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
     }
     wlSeen = new Map();
+    wrap.scrollTop = keepScroll;
     return;
   }
   wrap.querySelectorAll('.empty').forEach(n => n.remove());
@@ -861,6 +919,7 @@ function paintWaitlist(data, key) {
     if (tr.previousElementSibling !== after) tbody.insertBefore(tr, after ? after.nextSibling : tbody.firstChild);
     after = tr;
   });
+  wrap.scrollTop = keepScroll;
 }
 
 function paintWaitlistSelection(data) {
@@ -1226,7 +1285,7 @@ async function saveWaitlist(tr, outcome, action) {
 
 function arm() {
   clearTimeout(timer);
-  if (document.hidden) return;
+  if (pollsStopped || document.hidden) return;
   timer = setTimeout(() => { load(); }, CONFIG.POLL_MS);
 }
 
@@ -1271,6 +1330,108 @@ function restoreChoice(id, key) {
   if ([...el.options].some(o => o.value === saved)) el.value = saved;
 }
 
+function roleLabel(role) {
+  return {admin: 'ИТ', manager: 'Директор / колл-центр', registrar: 'Регистратор'}[role] || role || '';
+}
+
+function branchCaption(me) {
+  const list = me.branches || [];
+  const ids = list.map(b => Number(b.id));
+  if (ids.length && [106, 3, 496].every(id => ids.includes(id))) return 'все филиалы';
+  return list.map(b => b.name).filter(Boolean).join(', ');
+}
+
+function branchStorageKey() {
+  return 'mk_dash_branches:' + ((dashMe && dashMe.login) || '');
+}
+
+function branchParam() {
+  const branches = (dashMe && dashMe.branches) || [];
+  if (branches.length <= 1) return branches[0] ? String(branches[0].id) : '';
+  if (!branchChoice.length || branchChoice.length === branches.length) return '';
+  return branchChoice.join(',');
+}
+
+function renderBranchPicker(me) {
+  const branches = me.branches || [];
+  const one = branches.length <= 1;
+  $('branchButton').hidden = one;
+  $('branchMenu').hidden = true;
+  $('branchLabel').hidden = !one;
+  $('branchLabel').textContent = one && branches[0] ? branches[0].name : '';
+  const sel = $('branch');
+  while (sel.options.length > 1) sel.remove(1);
+  const box = $('branchChecks');
+  box.replaceChildren();
+  branches.forEach(b => {
+    const o = document.createElement('option');
+    o.value = String(b.id);
+    o.textContent = b.name;
+    sel.appendChild(o);
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = String(b.id);
+    input.addEventListener('change', () => {
+      const ids = [...box.querySelectorAll('input')].filter(el => el.checked).map(el => el.value);
+      chooseBranches(ids.length === branches.length ? [] : ids);
+    });
+    label.appendChild(input);
+    label.appendChild(document.createTextNode(' ' + b.name));
+    box.appendChild(label);
+  });
+  const allowed = new Set(branches.map(b => String(b.id)));
+  const saved = storageGet(branchStorageKey());
+  if (one && branches[0]) branchChoice = [String(branches[0].id)];
+  else branchChoice = saved.split(',').filter(id => allowed.has(id));
+  if (!one && branchChoice.length === branches.length) branchChoice = [];
+  syncBranchChecks();
+}
+
+function syncBranchChecks() {
+  const branches = (dashMe && dashMe.branches) || [];
+  const all = branches.length > 1 && (!branchChoice.length || branchChoice.length === branches.length);
+  $('branchAll').checked = all || branches.length <= 1;
+  document.querySelectorAll('#branchChecks input').forEach(input => {
+    input.checked = all || branchChoice.includes(input.value);
+  });
+  const names = branches.filter(b => all || branchChoice.includes(String(b.id))).map(b => b.name);
+  $('branchButton').textContent = all || !names.length ? 'Все мои' : names.join(', ');
+  const sel = $('branch');
+  const param = branchParam();
+  if ([...sel.options].some(o => o.value === param)) sel.value = param;
+}
+
+function chooseBranches(ids) {
+  const branches = (dashMe && dashMe.branches) || [];
+  const allowed = new Set(branches.map(b => String(b.id)));
+  branchChoice = ids.filter(id => allowed.has(id));
+  if (branchChoice.length === branches.length) branchChoice = [];
+  storageSet(branchStorageKey(), branchChoice.join(','));
+  syncBranchChecks();
+  viewEpoch++;
+  userScrolled.clear();
+  scheduleKey = '';
+  waitlistKey = '';
+  wlPage = 1;
+  load();
+}
+
+function showStaffSecret(password) {
+  clearTimeout(staffSecretTimer);
+  $('staffStatus').textContent = '';
+  $('staffTempText').textContent = password;
+  $('staffTemp').hidden = false;
+  staffSecretTimer = setTimeout(hideStaffSecret, 60000);
+}
+
+function hideStaffSecret() {
+  clearTimeout(staffSecretTimer);
+  staffSecretTimer = null;
+  $('staffTempText').textContent = '';
+  $('staffTemp').hidden = true;
+}
+
 async function loadMe() {
   restoreChoice('wlStatus', 'mk_dash_wl_scope');
   restoreChoice('wlWork', 'mk_dash_wl_status');
@@ -1285,29 +1446,11 @@ async function loadMe() {
     const body = await res.json();
     if (!body.success || !body.data) return;
     const me = body.data;
+    dashMe = me;
     dashUser = me.full_name || me.login || '';
-    const sel = $('branch');
-    const one = (me.branches || []).length <= 1;
-    [...sel.options].slice(1).forEach(o => o.remove());
-    (me.branches || []).forEach(b => {
-      const o = document.createElement('option');
-      o.value = String(b.id);
-      o.textContent = b.name;
-      sel.appendChild(o);
-    });
-    const saved = storageGet('mk_dash_branch');
-    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
-    if (one && me.branches && me.branches[0]) sel.value = String(me.branches[0].id);
-    let label = $('branchLabel');
-    if (!label) {
-      label = document.createElement('span');
-      label.id = 'branchLabel';
-      label.className = 'branch-label';
-      sel.after(label);
-    }
-    sel.hidden = one;
-    label.hidden = !one;
-    label.textContent = one && me.branches[0] ? me.branches[0].name : '';
+    renderBranchPicker(me);
+    const who = me.full_name || me.login || '';
+    $('whoami').textContent = [who, roleLabel(me.role), branchCaption(me)].filter(Boolean).join(' · ');
     if (me.role === 'admin') $('tabStaff').hidden = false;
   } catch (e) {}
 }
@@ -1382,26 +1525,54 @@ async function updateStaff(id, payload) {
     if (await authStop(res)) return;
     const body = await res.json();
     if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
-    if (body.data && body.data.temporary_password) $('staffTemp').textContent = 'Временный пароль: ' + body.data.temporary_password;
-    else $('staffTemp').textContent = 'Сохранено';
+    if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password);
+    else { hideStaffSecret(); $('staffStatus').textContent = 'Сохранено'; }
     loadStaff();
   } catch (err) {
-    $('staffTemp').textContent = err.message;
+    $('staffStatus').textContent = err.message;
   }
 }
 
 $('tabSchedule').addEventListener('click', () => setTab('schedule'));
 $('tabWaitlist').addEventListener('click', () => setTab('waitlist'));
 $('tabStaff').addEventListener('click', () => setTab('staff'));
-$('branch').addEventListener('change', () => {
-  storageSet('mk_dash_branch', $('branch').value);
-  viewEpoch++;
-  userScrolled.clear();
-  scheduleKey = '';
-  waitlistKey = '';
-  wlPage = 1;
-  load();
+$('branchButton').addEventListener('click', () => {
+  const menu = $('branchMenu');
+  menu.hidden = !menu.hidden;
+  $('branchButton').setAttribute('aria-expanded', menu.hidden ? 'false' : 'true');
 });
+$('branchAll').addEventListener('change', () => chooseBranches([]));
+document.addEventListener('click', event => {
+  if (!$('branchPicker').contains(event.target)) {
+    $('branchMenu').hidden = true;
+    $('branchButton').setAttribute('aria-expanded', 'false');
+  }
+});
+$('wlQuery').addEventListener('input', () => {
+  $('wlClear').hidden = $('wlQuery').value === '';
+  clearTimeout(queryTimer);
+  queryTimer = setTimeout(() => {
+    wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
+  }, 300);
+});
+$('wlClear').addEventListener('click', () => {
+  $('wlQuery').value = '';
+  $('wlClear').hidden = true;
+  wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
+});
+$('logoutBtn').addEventListener('click', async () => {
+  pollsStopped = true;
+  clearTimeout(timer);
+  clearTimeout(queryTimer);
+  await fetch('/dashboard/logout', {method: 'POST', credentials: 'same-origin'});
+  location.href = '/dashboard/login';
+});
+$('staffCopy').addEventListener('click', async () => {
+  const text = $('staffTempText').textContent;
+  if (!text) return;
+  try { await navigator.clipboard.writeText(text); } catch (e) {}
+});
+$('staffHide').addEventListener('click', hideStaffSecret);
 $('wlStatus').addEventListener('change', () => {
   storageSet('mk_dash_wl_scope', $('wlStatus').value);
   wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
@@ -1433,12 +1604,13 @@ $('staffForm').addEventListener('submit', async event => {
     if (await authStop(res)) return;
     const body = await res.json();
     if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
-    $('staffTemp').textContent = body.data && body.data.temporary_password ? 'Временный пароль: ' + body.data.temporary_password : 'Сохранено';
+    if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password);
+    else hideStaffSecret();
     $('staffForm').reset();
     $('staffBranches').value = '106';
     loadStaff();
   } catch (err) {
-    $('staffTemp').textContent = err.message;
+    $('staffStatus').textContent = err.message;
   }
 });
 

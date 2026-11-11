@@ -88,9 +88,8 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	// Staff dashboard (session cookie; not API_TOKEN)
 	mux.HandleFunc("GET /dashboard/login", dashboardPageH.LoginForm)
 	mux.Handle("POST /dashboard/login", middleware.RequireSameOrigin(http.HandlerFunc(dashboardPageH.LoginPost)))
-	mux.Handle("POST /dashboard/logout", middleware.RequireSameOrigin(http.HandlerFunc(dashboardPageH.Logout)))
-
 	staffMW := middleware.RequireStaff{Secret: []byte(cfg.Dashboard.Secret), Lookup: users.ByID}
+	mux.Handle("POST /dashboard/logout", staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(dashboardPageH.Logout))))
 	mux.Handle("GET /dashboard", staffMW.Wrap(http.HandlerFunc(dashboardPageH.Page)))
 	mux.Handle("GET /dashboard/password", staffMW.Wrap(http.HandlerFunc(dashboardPageH.PasswordForm)))
 	mux.Handle("POST /dashboard/password", staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(dashboardPageH.PasswordPost))))

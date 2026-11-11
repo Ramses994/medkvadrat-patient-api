@@ -75,18 +75,13 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "date: формат YYYY-MM-DD")
 		return
 	}
-	if p, ok := staff.PrincipalFrom(r.Context()); ok {
-		if raw := strings.TrimSpace(r.URL.Query().Get("branch")); raw != "" {
-			b, convErr := strconv.Atoi(raw)
-			if convErr != nil || (b != 106 && b != 3 && b != 496) {
-				response.Error(w, http.StatusBadRequest, "VALIDATION", "branch: 106, 3 или 496")
-				return
-			}
-			if !p.Allows(b) {
-				response.Error(w, http.StatusForbidden, "FORBIDDEN", "Нет доступа к этому филиалу")
-				return
-			}
+	if _, code, msg := dashboardBranches(r); code != 0 {
+		kind := "VALIDATION"
+		if code == http.StatusForbidden {
+			kind = "FORBIDDEN"
 		}
+		response.Error(w, code, kind, msg)
+		return
 	}
 
 	sched, err := h.Svc.DashboardSchedule(r.Context(), date)
@@ -132,12 +127,64 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 
 func scheduleBranchVisible(r *http.Request, branch int) bool {
 	p, ok := staff.PrincipalFrom(r.Context())
+	ids, code, _ := dashboardBranches(r)
+	if code != 0 {
+		return false
+	}
+	if len(ids) > 0 && !branchInList(ids, branch) {
+		return false
+	}
 	if !ok {
 		return true
 	}
-	if raw := strings.TrimSpace(r.URL.Query().Get("branch")); raw != "" {
-		b, err := strconv.Atoi(raw)
-		return err == nil && b == branch && p.Allows(branch)
-	}
 	return p.Allows(branch)
+}
+
+func dashboardBranches(r *http.Request) ([]int, int, string) {
+	p, has := staff.PrincipalFrom(r.Context())
+	raw := strings.TrimSpace(r.URL.Query().Get("branch"))
+	if raw == "" {
+		return nil, 0, ""
+	}
+	var ids []int
+	seen := map[int]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		b, err := strconv.Atoi(part)
+		if err != nil || !knownDashboardBranch(b) {
+			return nil, http.StatusBadRequest, "branch: 106, 3 или 496"
+		}
+		if has && !p.Allows(b) {
+			return nil, http.StatusForbidden, "Нет доступа к этому филиалу"
+		}
+		if !seen[b] {
+			seen[b] = true
+			ids = append(ids, b)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, http.StatusBadRequest, "branch: 106, 3 или 496"
+	}
+	return ids, 0, ""
+}
+
+func knownDashboardBranch(id int) bool {
+	for _, b := range staff.DashboardBranchIDs {
+		if b == id {
+			return true
+		}
+	}
+	return false
+}
+
+func branchInList(ids []int, branch int) bool {
+	for _, id := range ids {
+		if id == branch {
+			return true
+		}
+	}
+	return false
 }

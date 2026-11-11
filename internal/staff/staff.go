@@ -449,6 +449,16 @@ FROM staff_users WHERE id = ?`, id)
 	return scanUser(row)
 }
 
+// EndSession invalidates every cookie for this employee.
+func (s *Store) EndSession(ctx context.Context, id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+UPDATE staff_users
+SET session_version = IFNULL(session_version,1) + 1, updated_at = ?
+WHERE id = ?`, now, id)
+	return err
+}
+
 func (s *Store) ChangePassword(ctx context.Context, id int64, current, next string) error {
 	if !passwordLongEnough(next) {
 		return ErrShortPassword

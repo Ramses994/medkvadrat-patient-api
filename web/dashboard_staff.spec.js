@@ -99,8 +99,8 @@ async function openBoard(page, opts) {
       json: {
         success: true,
         data: {
-          login: 'kash',
-          full_name: 'Каширка Регистратор',
+          login: opts.login || 'kash',
+          full_name: opts.fullName === undefined ? 'Каширка Регистратор' : opts.fullName,
           role: state.role,
           branches: opts.branches || [
             { id: 106, name: 'Каширка' },
@@ -113,7 +113,13 @@ async function openBoard(page, opts) {
     });
   });
   await page.route('**/dashboard/data**', async route => {
-    await route.fulfill({ json: opts.schedule || schedule() });
+    const body = JSON.parse(JSON.stringify(opts.schedule || schedule()));
+    const raw = new URL(route.request().url()).searchParams.get('branch') || '';
+    const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
+    if (ids.length && body.data && body.data.branches) {
+      body.data.branches = body.data.branches.filter(b => ids.includes(String(b.branch_id)));
+    }
+    await route.fulfill({ json: body });
   });
   await page.route('**/dashboard/waitlist**', async route => {
     if (route.request().method() !== 'GET') {
@@ -218,17 +224,38 @@ async function openBoard(page, opts) {
         items = items.map(it => it.id === 7 ? { ...it, outcome: last.outcome, status: 'contacted', version: (last.version || 1) + 1 } : it);
       }
     }
-    const visible = state.closedHidden && url.searchParams.get('status') === 'open'
+    let visible = state.closedHidden && url.searchParams.get('status') === 'open'
       ? items.filter(it => (state.posts.at(-1) || {}).status !== 'closed' || it.id !== 7)
       : items;
+    const branch = url.searchParams.get('branch') || '';
+    if (branch) {
+      const ids = branch.split(',').map(s => s.trim());
+      visible = visible.filter(it => ids.includes(String(it.branch_id)));
+    }
+    const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+    const matched = [...q].length >= 2
+      ? visible.filter(it => (it.patient_name || '').toLowerCase().includes(q))
+      : visible;
     await route.fulfill({
       json: {
         success: true,
-        data: { open_total: visible.length, page: 1, total: visible.length, per_page: 50, items: visible, banner: state.banner || '' },
+        data: { open_total: visible.length, page: 1, total: matched.length, per_page: 50, items: matched, banner: state.banner || '' },
       },
     });
   });
   await page.route('**/dashboard/staff**', async route => {
+    if (route.request().method() !== 'GET') {
+      await route.fulfill({
+        json: {
+          success: true,
+          data: {
+            temporary_password: opts.tempPassword || '',
+            user: { id: 2, login: 'new', full_name: 'Новый', role: 'registrar', branches: '106', active: true, must_change_password: true },
+          },
+        },
+      });
+      return;
+    }
     await route.fulfill({
       json: {
         success: true,
@@ -260,8 +287,9 @@ test('header branch select and two waitlist sources', async ({ page }) => {
       }),
     ],
   });
-  await expect(page.locator('#branch')).toBeVisible();
+  await expect(page.locator('#branchButton')).toBeVisible();
   await expect(page.locator('#branch option')).toHaveCount(4);
+  await expect(page.locator('#whoami')).toContainText('Регистратор');
   await page.screenshot({ path: join(shots, 'branch-select.png') });
   await page.locator('#tabWaitlist').click();
   await expect(page.locator('#wlWork')).toBeVisible();
@@ -538,12 +566,12 @@ test('schedule fits the window at both desk sizes', async ({ page }) => {
   await page.screenshot({ path: join(shots, 'schedule-bottom.png') });
 });
 
-test('one branch is a label and the pager is hidden on a single page', async ({ page }) => {
+test('one branch is a label and the pager stays on the page', async ({ page }) => {
   await openBoard(page, { branches: [{ id: 106, name: 'Каширка' }], items: [row()] });
-  await expect(page.locator('#branch')).toBeHidden();
+  await expect(page.locator('#branchButton')).toBeHidden();
   await expect(page.locator('#branchLabel')).toHaveText('Каширка');
   await page.locator('#tabWaitlist').click();
-  await expect(page.locator('#wlPager')).toBeHidden();
+  await expect(page.locator('#wlPager')).toBeVisible();
   await expect(page.locator('#noteWaitlist')).toContainText('отмену или перенос делайте в клиенте');
   await page.screenshot({ path: join(shots, 'waitlist-one-result.png') });
 });
@@ -561,4 +589,120 @@ test('staff tab is admin-only and lists employees without a password hash', asyn
 test('registrar does not see the staff tab', async ({ page }) => {
   await openBoard(page, { role: 'registrar', items: [] });
   await expect(page.locator('#tabStaff')).toBeHidden();
+});
+
+test('branch option text is darker than its background', async ({ page }) => {
+  await openBoard(page, { role: 'manager', fullName: 'Мартынов Д. Н.', items: [] });
+  const colors = await page.locator('select.top-select option').first().evaluate(el => {
+    const style = getComputedStyle(el);
+    return { color: style.color, background: style.backgroundColor };
+  });
+  expect(colors.color).not.toBe(colors.background);
+  await expect(page.locator('#whoami')).toHaveText('Мартынов Д. Н. · Директор / колл-центр · все филиалы');
+  await page.screenshot({ path: join(shots, 'header-manager.png') });
+});
+
+test('registrar header names the one branch', async ({ page }) => {
+  await openBoard(page, {
+    role: 'registrar', login: 'reg106', fullName: '',
+    branches: [{ id: 106, name: 'Каширка' }], items: [],
+  });
+  await expect(page.locator('#whoami')).toHaveText('reg106 · Регистратор · Каширка');
+  await expect(page.locator('#branchButton')).toBeHidden();
+  await page.screenshot({ path: join(shots, 'header-registrar.png') });
+  await expect(page.locator('.col')).toHaveCount(1);
+  const wide = await page.evaluate(() => {
+    const board = document.getElementById('board').getBoundingClientRect();
+    const col = document.querySelector('#board .col').getBoundingClientRect();
+    return col.width / board.width;
+  });
+  expect(wide).toBeGreaterThanOrEqual(0.9);
+  await page.screenshot({ path: join(shots, 'board-one-branch.png') });
+});
+
+test('manager can keep two branches and the choice survives reload', async ({ page }) => {
+  await openBoard(page, { role: 'manager', fullName: 'Мартынов Д. Н.', items: [row(), row({ id: 8, branch_id: 3, patient_name: 'Петров' }), row({ id: 9, branch_id: 496, patient_name: 'Сидоров' })] });
+  await page.locator('#branchButton').click();
+  await expect(page.locator('#branchMenu')).toBeVisible();
+  await page.screenshot({ path: join(shots, 'branch-menu.png') });
+  await page.locator('#branchChecks input[value="496"]').uncheck();
+  await page.locator('#branchButton').click();
+  await expect(page.locator('#branchMenu')).toBeHidden();
+  await expect(page.locator('.col')).toHaveCount(2);
+  const halves = await page.evaluate(() => {
+    const board = document.getElementById('board').getBoundingClientRect();
+    return [...document.querySelectorAll('#board .col')].map(col => col.getBoundingClientRect().width / board.width);
+  });
+  expect(halves).toHaveLength(2);
+  halves.forEach(part => expect(part).toBeGreaterThan(0.4));
+  await page.screenshot({ path: join(shots, 'board-two-branches.png') });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов');
+  await expect(page.locator('#waitlistList')).toContainText('Петров');
+  await expect(page.locator('#waitlistList')).not.toContainText('Сидоров');
+  await page.reload();
+  await expect(page.locator('#branchButton')).toHaveText('Каширка, Куркино');
+  await expect(page.locator('.col')).toHaveCount(2);
+});
+
+test('waitlist scrolls inside the page and keeps its place', async ({ page }) => {
+  const items = Array.from({ length: 50 }, (_, i) => row({ id: i + 1, patient_name: `Пациент ${i + 1}` }));
+  await openBoard(page, { role: 'registrar', branches: [{ id: 106, name: 'Каширка' }], items });
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList tbody tr')).toHaveCount(50);
+  const pageFits = await page.evaluate(() => document.documentElement.scrollHeight <= document.documentElement.clientHeight + 2);
+  expect(pageFits).toBe(true);
+  const pager = await page.locator('#wlPager').boundingBox();
+  expect(pager.y + pager.height).toBeLessThanOrEqual(768);
+  await page.locator('#waitlistList').evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect(page.locator('#waitlistList tbody tr').last()).toBeVisible();
+  await page.screenshot({ path: join(shots, 'waitlist-scroll.png') });
+  const top = await page.locator('#waitlistList').evaluate(el => el.scrollTop);
+  expect(top).toBeGreaterThan(0);
+  await page.clock.fastForward(11000);
+  const after = await page.locator('#waitlistList').evaluate(el => el.scrollTop);
+  expect(after).toBe(top);
+});
+
+test('waitlist search keeps the query and the scroll position', async ({ page }) => {
+  const items = [
+    row({ patient_name: 'Иванов Иван' }),
+    ...Array.from({ length: 30 }, (_, i) => row({ id: 100 + i, patient_name: `Сидорова ${i + 1}` })),
+  ];
+  await openBoard(page, { items });
+  await page.locator('#tabWaitlist').click();
+  await page.locator('#wlQuery').fill('сидор');
+  await expect(page.locator('#waitlistList')).toContainText('Сидорова');
+  await expect(page.locator('#waitlistList')).not.toContainText('Иванов');
+  await page.locator('#waitlistList').evaluate(el => { el.scrollTop = 80; });
+  await page.screenshot({ path: join(shots, 'waitlist-search.png') });
+  await page.clock.fastForward(11000);
+  await expect(page.locator('#wlQuery')).toHaveValue('сидор');
+  expect(await page.locator('#waitlistList').evaluate(el => el.scrollTop)).toBe(80);
+  await page.locator('#wlClear').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов');
+  await expect(page.locator('#waitlistList')).toContainText('Сидорова');
+});
+
+test('a temporary password can be hidden and leaves the staff tab', async ({ page }) => {
+  await openBoard(page, { role: 'admin', tempPassword: 'Temp-pass-1', items: [] });
+  await page.locator('#tabStaff').click();
+  await page.locator('#staffLogin').fill('reg106');
+  await page.locator('#staffName').fill('Регистратор');
+  await page.locator('#staffForm button[type="submit"]').click();
+  await expect(page.locator('#staffTemp')).toContainText('Temp-pass-1');
+  await expect(page.locator('#staffTemp')).toContainText('Передайте сотруднику лично');
+  await page.locator('#tabSchedule').click();
+  await expect(page.locator('#staffTemp')).toBeHidden();
+});
+
+test('logout asks the server and opens the login page', async ({ page }) => {
+  await openBoard(page, { role: 'admin', fullName: 'Мартынов Д. Н.', items: [] });
+  await expect(page.locator('#whoami')).toHaveText('Мартынов Д. Н. · ИТ · все филиалы');
+  await page.locator('#accountMenu summary').click();
+  const gone = page.waitForRequest(r => r.url().includes('/dashboard/logout') && r.method() === 'POST');
+  await page.locator('#logoutBtn').click();
+  await gone;
+  await expect(page).toHaveURL(/\/dashboard\/login$/);
 });

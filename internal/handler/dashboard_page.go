@@ -135,7 +135,12 @@ func (h DashboardPageHandler) PasswordPost(w http.ResponseWriter, r *http.Reques
 		h.writePassword(w, http.StatusOK, "Не удалось сменить пароль")
 		return
 	}
-	err := h.Users.ChangePassword(r.Context(), p.ID, r.FormValue("current_password"), r.FormValue("new_password"))
+	next := r.FormValue("new_password")
+	if next != r.FormValue("new_password_again") {
+		h.writePassword(w, http.StatusOK, "Новый пароль и повтор не совпадают")
+		return
+	}
+	err := h.Users.ChangePassword(r.Context(), p.ID, r.FormValue("current_password"), next)
 	if err != nil {
 		if errors.Is(err, staff.ErrShortPassword) {
 			h.writePassword(w, http.StatusOK, "Пароль не короче 10 символов")
@@ -180,6 +185,9 @@ func (h DashboardPageHandler) setStaffCookie(w http.ResponseWriter, userID int64
 }
 
 func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	if p, ok := staff.PrincipalFrom(r.Context()); ok && h.Users != nil {
+		_ = h.Users.EndSession(r.Context(), p.ID)
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     staffsession.CookieName,
 		Value:    "",
@@ -251,6 +259,8 @@ func (h DashboardPageHandler) writePassword(w http.ResponseWriter, status int, e
 	b.WriteString(`<input id="current_password" name="current_password" type="password" autocomplete="current-password" required>`)
 	b.WriteString(`<label for="new_password">Новый пароль</label>`)
 	b.WriteString(`<input id="new_password" name="new_password" type="password" autocomplete="new-password" required minlength="10">`)
+	b.WriteString(`<label for="new_password_again">Новый пароль ещё раз</label>`)
+	b.WriteString(`<input id="new_password_again" name="new_password_again" type="password" autocomplete="new-password" required minlength="10">`)
 	b.WriteString(`<button type="submit">Сохранить</button></form></body></html>`)
 	_, _ = w.Write([]byte(b.String()))
 }

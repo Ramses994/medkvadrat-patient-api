@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/singleflight"
 
@@ -520,13 +521,6 @@ func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.W
 		tagged = append(tagged, s.registryItems(ctx, filter, snap, work, restricted, scope)...)
 	}
 	sortWait(tagged)
-	total := len(tagged)
-	pageItems := []confirmations.DashboardItem{}
-	if start, end, ok := pageWindow(total, pageN, per); ok {
-		for _, t := range tagged[start:end] {
-			pageItems = append(pageItems, t.item)
-		}
-	}
 	openTotal := 0
 	if filter.Source != "registry" {
 		openSeen := openBranchFilter(filter)
@@ -547,8 +541,15 @@ func (s *Services) DashboardWaitlist(ctx context.Context, filter confirmations.W
 			}
 		}
 	}
-	if pageItems == nil {
-		pageItems = []confirmations.DashboardItem{}
+	if utf8.RuneCountInString(strings.TrimSpace(filter.Query)) >= 2 {
+		tagged = filterWaitQuery(tagged, filter.Query)
+	}
+	total := len(tagged)
+	pageItems := []confirmations.DashboardItem{}
+	if start, end, ok := pageWindow(total, pageN, per); ok {
+		for _, t := range tagged[start:end] {
+			pageItems = append(pageItems, t.item)
+		}
 	}
 	return confirmations.DashboardPage{
 		Items: pageItems, Total: total, OpenTotal: openTotal,
@@ -599,7 +600,12 @@ func (s *Services) maxItem(ctx context.Context, row confirmations.WaitlistRow, s
 	if !branchAllowed(ctx, filter, it.BranchID) {
 		return confirmations.DashboardItem{}, false
 	}
-	return decorateFromState(it, st, pii, restricted, scope), true
+	it = decorateFromState(it, st, pii, restricted, scope)
+	if !pii {
+		it.PatientName = strings.TrimSpace(row.PatientName)
+		it.PatientPhone = strings.TrimSpace(row.PatientPhone)
+	}
+	return it, true
 }
 
 func (s *Services) dashboardWork(ctx context.Context, wl *confirmations.Repo, snap *Snapshot) (map[int64]confirmations.MisWork, error) {
@@ -712,6 +718,45 @@ func decorateFromState(it confirmations.DashboardItem, st *RowState, pii bool, r
 		}
 	}
 	return it
+}
+
+func filterWaitQuery(all []waitTagged, query string) []waitTagged {
+	out := make([]waitTagged, 0, len(all))
+	for _, t := range all {
+		if waitQueryMatch(t.item.PatientName, t.item.PatientPhone, query) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func waitQueryMatch(name, phone, query string) bool {
+	folded := foldSearch(query)
+	if folded != "" && strings.Contains(foldSearch(name), folded) {
+		return true
+	}
+	want := lastPhoneDigits(query)
+	got := lastPhoneDigits(phone)
+	return len(want) >= 10 && len(got) >= 10 && want == got
+}
+
+func foldSearch(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.ReplaceAll(s, "ё", "е")
+}
+
+func lastPhoneDigits(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	d := b.String()
+	if len(d) > 10 {
+		return d[len(d)-10:]
+	}
+	return d
 }
 
 func sortWait(all []waitTagged) {

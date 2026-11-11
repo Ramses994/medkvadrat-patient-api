@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/confirmations"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
@@ -97,19 +98,32 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 			filter.IncludeOtherBranches = true
 		}
 	}
-	if raw := strings.TrimSpace(q.Get("branch")); raw != "" {
-		b, err := strconv.Atoi(raw)
-		if err != nil || (b != 106 && b != 3 && b != 496) {
-			response.Error(w, http.StatusBadRequest, "VALIDATION", "branch: 106, 3 или 496")
-			return
+	ids, code, msg := dashboardBranches(r)
+	if code != 0 {
+		kind := "VALIDATION"
+		if code == http.StatusForbidden {
+			kind = "FORBIDDEN"
 		}
-		if p, ok := staff.PrincipalFrom(r.Context()); ok && !p.Allows(b) {
-			response.Error(w, http.StatusForbidden, "FORBIDDEN", "Нет доступа к этому филиалу")
-			return
-		}
+		response.Error(w, code, kind, msg)
+		return
+	}
+	if len(ids) == 1 {
+		b := ids[0]
 		filter.BranchID = &b
 		filter.BranchIDs = nil
 		filter.IncludeOtherBranches = false
+	} else if len(ids) > 1 {
+		filter.BranchID = nil
+		filter.BranchIDs = ids
+		filter.IncludeOtherBranches = false
+	}
+	query := strings.TrimSpace(q.Get("q"))
+	if utf8.RuneCountInString(query) > 64 {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "q: не длиннее 64 символов")
+		return
+	}
+	if utf8.RuneCountInString(query) >= 2 {
+		filter.Query = query
 	}
 	page, ok := parseDashboardPage(q.Get("page"), 1, 10000)
 	if !ok {
