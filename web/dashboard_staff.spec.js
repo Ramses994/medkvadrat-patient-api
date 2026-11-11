@@ -1688,3 +1688,189 @@ test('an unauthorized response clears the screen before login', async ({ page })
   await expect(page.locator('body')).not.toContainText('Иванов');
   await expect(page.locator('body')).not.toContainText('79990001122');
 });
+
+function gate() {
+  let release;
+  const promise = new Promise(resolve => { release = resolve; });
+  return { promise, release };
+}
+
+function listBody(item) {
+  return {
+    success: true,
+    data: { open_total: 1, page: 1, total: 1, per_page: 50, items: [item], banner: '' },
+  };
+}
+
+test('a late waitlist read after an access refusal does not restore the phone', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  const stale = gate();
+  const fresh = gate();
+  let staleEntered;
+  let freshEntered;
+  const staleReady = new Promise(resolve => { staleEntered = resolve; });
+  const freshReady = new Promise(resolve => { freshEntered = resolve; });
+  let n = 0;
+  await page.route('**/dashboard/waitlist**', async route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('per_page') !== '50') return route.fallback();
+    const i = n++;
+    if (i === 0) {
+      staleEntered();
+      await stale.promise;
+      await route.fulfill({ json: listBody(row({ patient_name: 'Поздний Ответ', patient_phone: '+79991110000' })) });
+      return;
+    }
+    if (i === 1) {
+      freshEntered();
+      await fresh.promise;
+    }
+    return route.fallback();
+  });
+  await page.evaluate(() => { loadWaitlist(); });
+  await staleReady;
+  state.reply = denied(403, 'BLOCKED');
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await freshReady;
+  const line = page.locator('#waitlistList');
+  await expect(line).not.toContainText('79990001122');
+  await expect(line).not.toContainText('79991110000');
+  const late = page.waitForResponse(res => res.url().includes('/dashboard/waitlist') && res.url().includes('per_page=50') && res.status() === 200);
+  stale.release();
+  await late;
+  await expect(line).not.toContainText('79991110000');
+  await expect(line).not.toContainText('79990001122');
+  fresh.release();
+  await expect(line).toContainText('Иванов Иван');
+  await expect(line).toContainText('+79990001122');
+  await expect(line).not.toContainText('79991110000');
+});
+
+test('a late schedule read after an access refusal does not restore the card', async ({ page }) => {
+  const booked = schedule();
+  booked.data.branches[0].appointments = [{
+    planning_id: 1,
+    time: '10:00',
+    patient_name: 'Сидорова Анна',
+    doctor_name: 'Врач',
+    confirmation: 'confirmed',
+    confirmation_hint: '',
+    is_waitlist: false,
+    on_waitlist: false,
+  }];
+  const lateCard = schedule();
+  lateCard.data.branches[0].appointments = [{
+    planning_id: 2,
+    time: '11:00',
+    patient_name: 'Поздняя Карта',
+    doctor_name: 'Врач',
+    confirmation: 'confirmed',
+    confirmation_hint: '',
+    is_waitlist: false,
+    on_waitlist: false,
+  }];
+  await openBoard(page, { schedule: booked, items: [] });
+  await expect(page.locator('#board')).toContainText('Сидорова Анна');
+  const stale = gate();
+  const fresh = gate();
+  let staleEntered;
+  let freshEntered;
+  const staleReady = new Promise(resolve => { staleEntered = resolve; });
+  const freshReady = new Promise(resolve => { freshEntered = resolve; });
+  let n = 0;
+  await page.route('**/dashboard/data**', async route => {
+    const i = n++;
+    if (i === 0) {
+      staleEntered();
+      await stale.promise;
+      await route.fulfill({ json: lateCard });
+      return;
+    }
+    if (i === 1) {
+      freshEntered();
+      await fresh.promise;
+    }
+    return route.fallback();
+  });
+  await page.route('**/dashboard/staff**', route => route.fulfill(denied(403, 'BLOCKED')));
+  await page.evaluate(() => { load(); });
+  await staleReady;
+  const second = page.waitForRequest(req => req.url().includes('/dashboard/data'));
+  await page.evaluate(() => { api('/dashboard/staff', { credentials: 'same-origin' }); });
+  await second;
+  await freshReady;
+  const board = page.locator('#board');
+  await expect(board).not.toContainText('Сидорова');
+  await expect(board).not.toContainText('Поздняя');
+  const late = page.waitForResponse(res => res.url().includes('/dashboard/data') && res.status() === 200);
+  stale.release();
+  await late;
+  await expect(board).not.toContainText('Поздняя');
+  await expect(board).not.toContainText('Сидорова');
+  await expect(board.locator('.row')).toHaveCount(0);
+  fresh.release();
+  await expect(board).toContainText('Сидорова Анна');
+  await expect(board).not.toContainText('Поздняя');
+});
+
+test('a late read during a hung password change does not restore the phone', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  const stale = gate();
+  let staleEntered;
+  const staleReady = new Promise(resolve => { staleEntered = resolve; });
+  await page.route('**/dashboard/waitlist**', async route => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('per_page') !== '50') return route.fallback();
+    staleEntered();
+    await stale.promise;
+    await route.fulfill({ json: listBody(row({ patient_name: 'Поздний Ответ', patient_phone: '+79991110000' })) });
+  });
+  let passwordRoute;
+  let passwordHit;
+  const passwordReady = new Promise(resolve => { passwordHit = resolve; });
+  await page.route('**/dashboard/password**', route => {
+    passwordRoute = route;
+    passwordHit();
+  });
+  let paints = 0;
+  page.on('console', msg => {
+    if (msg.text() === 'PAINT') paints++;
+  });
+  const seen = page.waitForEvent('console', msg => msg.text().startsWith('SCREEN:'));
+  await page.evaluate(() => {
+    const origStop = authStop;
+    window.authStop = res => {
+      const text = document.body.innerText;
+      console.log('SCREEN:' + (text.includes('7999') || text.includes('Иванов') || text.includes('Поздний') ? 'dirty' : 'clear'));
+      return origStop(res);
+    };
+    const orig = paintWaitlist;
+    const origSel = paintWaitlistSelection;
+    window.paintWaitlist = function () {
+      console.log('PAINT');
+      return orig.apply(this, arguments);
+    };
+    window.paintWaitlistSelection = function () {
+      console.log('PAINT');
+      return origSel.apply(this, arguments);
+    };
+  });
+  await page.evaluate(() => { loadWaitlist(); });
+  await staleReady;
+  state.reply = denied(403, 'PASSWORD_CHANGE_REQUIRED');
+  await page.locator('.wl-outcome').selectOption('call_back');
+  expect((await seen).text()).toBe('SCREEN:clear');
+  await passwordReady;
+  const late = page.waitForResponse(res => res.url().includes('per_page=50') && res.status() === 200);
+  stale.release();
+  await late;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(paints).toBe(0);
+  await passwordRoute.abort();
+});

@@ -369,6 +369,9 @@ function rowKey(it) {
   return (it.source || 'max') + ':' + it.id;
 }
 let viewEpoch = 0;
+let accessEpoch = 0;
+let scheduleFlight = 0;
+let waitlistFlight = 0;
 let scheduleBusy = false;
 let waitlistBusy = false;
 let scheduleQueued = false;
@@ -457,6 +460,14 @@ function singleRowRefusal(url, opts, status, code) {
 }
 
 function purgeScreen() {
+  viewEpoch++;
+  accessEpoch++;
+  scheduleFlight++;
+  waitlistFlight++;
+  scheduleBusy = false;
+  waitlistBusy = false;
+  scheduleQueued = false;
+  waitlistQueued = false;
   const tbody = document.querySelector('#waitlistList tbody');
   if (tbody) {
     [...tbody.querySelectorAll('tr')].forEach(tr => cancelClose(tr));
@@ -481,12 +492,13 @@ function recoverAccess() {
 }
 
 async function recoverAccessNow() {
+  const epoch = accessEpoch;
   try {
     const res = await api(`${CONFIG.API_BASE}/dashboard/me`, {credentials: 'same-origin'});
     if (!res || loggingOut || authStop(res) || !res.ok) return;
     const body = res.body;
-    if (!body || !body.success || !body.data) return;
-    applyMe(body.data);
+    if (epoch !== accessEpoch || !body || !body.success || !body.data) return;
+    applyMe(body.data, epoch);
     await load();
   } catch (e) {
   } finally {
@@ -525,6 +537,7 @@ function load() {
 async function loadSchedule() {
   if (scheduleBusy) { scheduleQueued = true; return; }
   scheduleBusy = true;
+  const flight = scheduleFlight;
   const epoch = viewEpoch;
   const date = $('date').value || todayISO();
   const branch = branchParam();
@@ -532,9 +545,9 @@ async function loadSchedule() {
   try {
     const res = await api(url, {credentials: 'same-origin'});
     if (!res || loggingOut) return;
-    if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || branch !== branchParam() || activeTab !== 'schedule') return;
     if (authStop(res)) return;
     if (res.status === 401 || res.status === 403) return;
+    if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || branch !== branchParam() || activeTab !== 'schedule') return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = res.body;
     if (!body || !body.success) throw new Error((body && body.error) || 'сервер вернул ошибку');
@@ -542,11 +555,12 @@ async function loadSchedule() {
     lastOkAt = Date.now();
     hideBanner();
     renderStaleness();
-    paintSchedule(body.data);
+    paintSchedule(body.data, epoch);
     await refreshWaitlistCount();
   } catch (err) {
     if (epoch === viewEpoch) showBanner(`Не удалось обновить расписание: ${err.message}. Показаны последние полученные данные.`);
   } finally {
+    if (flight !== scheduleFlight) return;
     scheduleBusy = false;
     if (loggingOut) return;
     if (scheduleQueued || epoch !== viewEpoch) {
@@ -557,7 +571,8 @@ async function loadSchedule() {
   }
 }
 
-function paintSchedule(data) {
+function paintSchedule(data, epoch) {
+  if (epoch !== viewEpoch) return;
   const branches = data.branches || [];
   board.style.setProperty('--cols', String(Math.min(Math.max(branches.length, 1), 3)));
   const date = data.date || $('date').value;
@@ -888,15 +903,18 @@ function setTab(name) {
 async function refreshWaitlistCount() {
   if (waitlistBusy) return;
   waitlistBusy = true;
+  const flight = waitlistFlight;
+  const epoch = viewEpoch;
   try {
     const branch = branchParam();
     const res = await api(`${CONFIG.API_BASE}${CONFIG.WAITLIST}?status=open&page=1&per_page=1${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`, {credentials:'same-origin'});
-    if (!res || loggingOut || !res.ok) return;
+    if (flight !== waitlistFlight || epoch !== viewEpoch || !res || loggingOut || !res.ok) return;
     const body = res.body;
-    if (loggingOut || !body) return;
+    if (flight !== waitlistFlight || epoch !== viewEpoch || loggingOut || !body) return;
     if (body.success && body.data) $('waitlistCount').textContent = String(body.data.open_total || 0);
   } catch (e) {
   } finally {
+    if (flight !== waitlistFlight) return;
     waitlistBusy = false;
     if (loggingOut) return;
     if (waitlistQueued) {
@@ -925,15 +943,16 @@ async function loadWaitlist(keepPoll) {
   waitlistStale = false;
   if (waitlistBusy) { waitlistQueued = true; return; }
   waitlistBusy = true;
+  const flight = waitlistFlight;
   const epoch = viewEpoch;
   const q = waitlistURL();
   const seq = ++requestSeq;
   try {
     const res = await api(q.url, {credentials:'same-origin'});
     if (!res || loggingOut) return;
-    if (epoch !== viewEpoch || q.key !== waitlistURL().key || activeTab !== 'waitlist') return;
     if (authStop(res)) return;
     if (res.status === 401 || res.status === 403) return;
+    if (epoch !== viewEpoch || q.key !== waitlistURL().key || activeTab !== 'waitlist') return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = res.body;
     if (!body || !body.success) throw new Error((body && body.error) || 'сервер вернул ошибку');
@@ -941,11 +960,12 @@ async function loadWaitlist(keepPoll) {
     lastOkAt = Date.now();
     if (body.data && body.data.banner) showBanner(body.data.banner);
     else hideBanner();
-    if (selectingText()) paintWaitlistSelection(body.data, seq);
-    else paintWaitlist(body.data, q.key, seq);
+    if (selectingText()) paintWaitlistSelection(body.data, seq, epoch);
+    else paintWaitlist(body.data, q.key, seq, epoch);
   } catch (err) {
     if (epoch === viewEpoch) showBanner(`Не удалось обновить лист ожидания: ${err.message}.`);
   } finally {
+    if (flight !== waitlistFlight) return;
     waitlistBusy = false;
     if (loggingOut) return;
     if (keepPoll && timer) return;
@@ -990,7 +1010,8 @@ function syncListedRow(tr, it, seq) {
   return true;
 }
 
-function paintWaitlist(data, key, seq) {
+function paintWaitlist(data, key, seq, epoch) {
+  if (epoch !== viewEpoch) return;
   getSeqGlobal++;
   const items = data.items || [];
   $('waitlistCount').textContent = String(data.open_total || 0);
@@ -1065,7 +1086,8 @@ function paintWaitlist(data, key, seq) {
   wrap.scrollTop = keepScroll;
 }
 
-function paintWaitlistSelection(data, seq) {
+function paintWaitlistSelection(data, seq, epoch) {
+  if (epoch !== viewEpoch) return;
   const items = data.items || [];
   $('waitlistCount').textContent = String(data.open_total || 0);
   const tbody = $('waitlistList').querySelector('tbody');
@@ -1453,6 +1475,7 @@ async function saveWaitlist(tr, outcome, action, shownVersion, blockIfNewer) {
   }
   markRow(tr, 'Сохраняется…');
   const payload = action === 'reopen' ? {action: 'reopen', version: seen} : {outcome, version: seen};
+  const epoch = accessEpoch;
   try {
     const res = await api(`${CONFIG.API_BASE}${CONFIG.WAITLIST}/${source}/${id}`, {
       method: 'PATCH',
@@ -1466,6 +1489,7 @@ async function saveWaitlist(tr, outcome, action, shownVersion, blockIfNewer) {
     if (!res || loggingOut) return;
     if (authStop(res)) return;
     if (loggingOut) return;
+    if (epoch !== accessEpoch && res.status !== 403 && res.status !== 404) return;
     const body = res.body || {};
     if (res.status === 409) {
       let msg = 'Строку уже изменил другой сотрудник';
@@ -1714,7 +1738,8 @@ function hideStaffSecret() {
   $('staffTemp').hidden = true;
 }
 
-function applyMe(me) {
+function applyMe(me, epoch) {
+  if (epoch !== accessEpoch) return;
   dashMe = me;
   dashUser = me.full_name || me.login || '';
   renderBranchPicker(me);
@@ -1727,14 +1752,15 @@ async function loadMe() {
   restoreChoice('wlStatus', 'mk_dash_wl_scope');
   restoreChoice('wlWork', 'mk_dash_wl_status');
   restoreChoice('wlSource', 'mk_dash_wl_source');
+  const epoch = accessEpoch;
   try {
     const res = await api(`${CONFIG.API_BASE}/dashboard/me`, {credentials: 'same-origin'});
     if (!res || loggingOut) return;
     if (authStop(res)) return;
-    if (!res.ok) return;
+    if (epoch !== accessEpoch || !res.ok) return;
     const body = res.body;
-    if (loggingOut || !body || !body.success || !body.data) return;
-    applyMe(body.data);
+    if (epoch !== accessEpoch || loggingOut || !body || !body.success || !body.data) return;
+    applyMe(body.data, epoch);
   } catch (e) {}
 }
 
