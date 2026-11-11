@@ -1343,7 +1343,7 @@ function restoreUnsavedChoice(row, sentVersion, prev) {
   if (liveOc) liveOc.value = row.dataset.outcome || prev;
 }
 
-function concealRow(tr) {
+function concealRow(tr, message) {
   applyMedialogFields(tr, { source: tr.dataset.source });
   paintMedialogAlert(tr);
   const oc = tr.querySelector('.wl-outcome');
@@ -1355,7 +1355,7 @@ function concealRow(tr) {
   const note = tr.querySelector('.wl-conflict');
   if (note) note.remove();
   tr.dataset.access = 'checking';
-  markRow(tr, 'Доступ к строке проверяется…');
+  markRow(tr, message || 'Доступ к строке проверяется…');
   wlDenied.set(tr.dataset.key, ++requestSeq);
 }
 
@@ -1429,9 +1429,10 @@ async function saveWaitlist(tr, outcome, action, shownVersion, blockIfNewer) {
       if (body.error_details && body.error_details.message) msg = body.error_details.message;
       else if (body.error) msg = body.error;
       if (loggingOut) return;
-      if (res.status === 403 && code === 'WAITLIST_MOVED') {
+      if ((res.status === 403 && code === 'WAITLIST_MOVED') || res.status === 404) {
         const gone = waitlistRow(key);
-        if (gone) concealRow(gone);
+        const note = res.status === 404 ? 'Строка больше не доступна — список обновляется…' : '';
+        if (gone) concealRow(gone, note);
         else wlDenied.set(key, ++requestSeq);
         loadWaitlist();
         return;
