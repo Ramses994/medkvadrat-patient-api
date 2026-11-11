@@ -964,6 +964,16 @@ function paintWaitlistSelection(data) {
   });
 }
 
+function workOf(it) {
+  return {
+    status: it.status || '',
+    outcome: it.outcome || '',
+    version: it.version,
+    updated_by: it.updated_by || '',
+    updated_at: it.updated_at || ''
+  };
+}
+
 function applyHeldRow(tr, it) {
   applyMedialogFields(tr, it);
   const key = tr.dataset.key;
@@ -971,10 +981,11 @@ function applyHeldRow(tr, it) {
   const known = wlVersion.has(key) ? Number(wlVersion.get(key)) : Number(tr.dataset.version || 0);
   if (rowBusy(tr) || unsavedWork(tr)) {
     if (next > known && ((it.status || '') !== (tr.dataset.status || '') || (it.outcome || '') !== (tr.dataset.outcome || ''))) showConflict(tr);
-    pendingWl.set(key, it);
+    pendingWl.set(key, workOf(it));
     paintMedialogAlert(tr);
     return;
   }
+  pendingWl.delete(key);
   applyWaitlistItem(tr, it);
 }
 
@@ -1122,13 +1133,7 @@ function applyWorkIfNewer(key, work, row) {
 
 function applyWaitlistItem(tr, it) {
   applyMedialogFields(tr, it);
-  applyWorkIfNewer(tr.dataset.key, {
-    status: it.status,
-    outcome: it.outcome,
-    version: it.version,
-    updated_by: it.updated_by,
-    updated_at: it.updated_at
-  }, tr);
+  applyWorkIfNewer(tr.dataset.key, workOf(it), tr);
   paintMedialogAlert(tr);
   const shown = tr.dataset.status || it.status;
   if (wlSeen.size && wlSeen.get(rowKey(it)) !== shown) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
@@ -1145,8 +1150,11 @@ function showConflict(tr) {
   btn.className = 'btn';
   btn.textContent = 'Обновить строку';
   btn.addEventListener('click', () => {
-    const item = pendingWl.get(tr.dataset.key);
-    if (item) applyWaitlistItem(tr, item);
+    const key = tr.dataset.key;
+    const work = pendingWl.get(key);
+    if (work) applyWorkIfNewer(key, work, tr);
+    pendingWl.delete(key);
+    paintMedialogAlert(tr);
   });
   box.appendChild(btn);
   work.appendChild(box);
@@ -1170,8 +1178,11 @@ function scheduleRelease(tr) {
 }
 function releaseRow(tr) {
   if (rowBusy(tr) || unsavedWork(tr)) return;
-  const item = pendingWl.get(tr.dataset.key);
-  if (item) applyWaitlistItem(tr, item);
+  const key = tr.dataset.key;
+  const work = pendingWl.get(key);
+  if (work) applyWorkIfNewer(key, work, tr);
+  pendingWl.delete(key);
+  paintMedialogAlert(tr);
 }
 
 function markRow(tr, text) {

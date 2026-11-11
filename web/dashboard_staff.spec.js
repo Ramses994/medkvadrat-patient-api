@@ -979,3 +979,77 @@ test('logout blocks dashboard requests and polling resumes after failure', async
   await page.clock.fastForward(11000);
   await polled;
 });
+
+function listResponse(page) {
+  return page.waitForResponse(r => r.request().method() === 'GET' && r.url().includes('/dashboard/waitlist') && r.url().includes('per_page=50'));
+}
+
+test('a deferred row does not bring the phone back', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.clock.fastForward(6000);
+  await page.locator('.wl-outcome').focus();
+  const first = listResponse(page);
+  await page.clock.fastForward(5000);
+  await first;
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.locator('.wl-outcome').evaluate(el => el.blur());
+  await page.clock.fastForward(6000);
+  state.banner = 'Медиалог недоступен';
+  state.list = [row({
+    patient_name: '',
+    patient_phone: '',
+    patient_birth: '',
+    orig_doctor: '',
+    orig_service: '',
+    medialog_state: '',
+    version: 1,
+  })];
+  const second = listResponse(page);
+  await page.clock.fastForward(10000);
+  await second;
+  await expect(page.locator('#banner')).toContainText('Медиалог недоступен');
+  await expect(page.locator('#waitlistList')).not.toContainText('79990001122');
+  await page.locator('.wl-outcome').focus();
+  await page.locator('.wl-outcome').evaluate(el => el.blur());
+  await page.clock.fastForward(6000);
+  await expect(page.locator('#banner')).toContainText('Медиалог недоступен');
+  expect(await page.locator('#waitlistList').evaluate(el => el.innerHTML)).not.toContain('79990001122');
+});
+
+test('update row applies newer work without restoring the phone', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.clock.fastForward(6000);
+  await page.locator('.wl-outcome').focus();
+  state.list = [row({ version: 2, status: 'contacted', outcome: 'call_back', patient_phone: '+79990001122' })];
+  const first = listResponse(page);
+  await page.clock.fastForward(5000);
+  await first;
+  await expect(page.getByRole('button', { name: 'Обновить строку' })).toBeVisible();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.clock.fastForward(6000);
+  await page.locator('#waitlistList tr[data-key="max:7"]').dispatchEvent('pointerdown');
+  state.banner = 'Медиалог недоступен';
+  state.list = [row({
+    version: 2,
+    status: 'contacted',
+    outcome: 'call_back',
+    patient_name: '',
+    patient_phone: '',
+    patient_birth: '',
+    medialog_state: '',
+  })];
+  const second = listResponse(page);
+  await page.clock.fastForward(5000);
+  await second;
+  await expect(page.locator('#banner')).toContainText('Медиалог недоступен');
+  await expect(page.locator('#waitlistList')).not.toContainText('79990001122');
+  await page.getByRole('button', { name: 'Обновить строку' }).click();
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(line).toHaveAttribute('data-version', '2');
+  expect(await page.locator('#waitlistList').evaluate(el => el.innerHTML)).not.toContain('79990001122');
+});
