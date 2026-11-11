@@ -205,8 +205,8 @@ func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 		}
 		return pageEnrichment{live: live}, nil
 	}
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	setMisNow(t, func() time.Time { return clock })
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	var fail atomic.Bool
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		if fail.Load() {
@@ -228,7 +228,7 @@ func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 		t.Fatalf("total=%d cached=%v", first.Total, misCacheHoldsName("СекретРеестра"))
 	}
 	fail.Store(true)
-	clock = clock.Add(31 * time.Second)
+	clock.Advance(31 * time.Second)
 	second, err := svc.DashboardWaitlist(ctx, confirmations.WaitlistListFilter{OpenOnly: true, Page: 1, PerPage: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -256,8 +256,8 @@ func TestEnrichCache_MissingOriginalOneReadThenGone(t *testing.T) {
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
 	}
-	clock := time.Date(2026, 11, 6, 15, 0, 0, 0, time.UTC)
-	setMisNow(t, func() time.Time { return clock })
+	clock := newFakeClock(time.Date(2026, 11, 6, 15, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	var calls atomic.Int32
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		calls.Add(1)
@@ -277,8 +277,8 @@ func TestEnrichCache_MissingOriginalOneReadThenGone(t *testing.T) {
 	if calls.Load() != 1 || enrichCacheLen() != 1 {
 		t.Fatalf("calls=%d keys=%d", calls.Load(), enrichCacheLen())
 	}
-	clock = clock.Add(31 * time.Second)
-	sweepDashboardCaches(clock)
+	clock.Advance(31 * time.Second)
+	sweepDashboardCaches(clock.Now())
 	if enrichCacheLen() != 0 {
 		t.Fatal("expired enrichment key remains")
 	}

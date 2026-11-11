@@ -90,8 +90,8 @@ func TestMisCache_NewKeyAfterMoscowMidnight(t *testing.T) {
 		calls.Add(1)
 		return nil, nil
 	}
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	setMisNow(t, func() time.Time { return clock })
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	db := openWaitlistDB(t, "wl_mis_day")
 	svc := &Services{SQLite: db, MSSQL: db}
 	ctx := context.Background()
@@ -105,7 +105,7 @@ func TestMisCache_NewKeyAfterMoscowMidnight(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("same day calls=%d", calls.Load())
 	}
-	clock = time.Date(2026, 11, 6, 21, 30, 0, 0, time.UTC)
+	clock.Set(time.Date(2026, 11, 6, 21, 30, 0, 0, time.UTC))
 	if _, err := svc.DashboardWaitlist(ctx, filter); err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +134,8 @@ func TestMaxPage_OneMedialogQueryPerTick(t *testing.T) {
 			planningIDs[0]: {PlanningID: planningIDs[0], PatientName: "Секрет"},
 		}}, nil
 	}
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	setMisNow(t, func() time.Time { return clock })
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	db := openWaitlistDB(t, "wl_page_enrich")
 	ctx := context.Background()
 	for i := 0; i < 25; i++ {
@@ -163,8 +163,8 @@ VALUES(?,?, 'v', '2026-11-06 10:00:00', 'declined', 'max', 'new', ?, ?, '2026-11
 	if !enrichHoldsName("Секрет") {
 		t.Fatal("enrichment cache missed the page")
 	}
-	clock = clock.Add(31 * time.Second)
-	sweepDashboardCaches(clock)
+	clock.Advance(31 * time.Second)
+	sweepDashboardCaches(clock.Now())
 	if enrichHoldsName("Секрет") {
 		t.Fatal("expired enrichment still holds a name")
 	}

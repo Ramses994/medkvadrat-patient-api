@@ -194,6 +194,12 @@ async function openBoard(page, opts) {
         return;
       }
       if (state.holdPatch) await state.holdPatch;
+      if (state.reply) {
+        const reply = state.reply;
+        state.reply = null;
+        await route.fulfill(reply);
+        return;
+      }
       const saved = row({
         status: body.action === 'reopen' ? 'contacted' : (body.outcome === 'no_answer' || body.outcome === 'call_back' ? 'contacted' : 'closed'),
         outcome: body.action === 'reopen' ? '' : body.outcome,
@@ -826,4 +832,150 @@ test('a search keeps the saved row and the same node', async ({ page }) => {
   const kept = page.locator('#waitlistList tr[data-pin="kept"]');
   await expect(kept).toHaveAttribute('data-version', '2');
   await expect(kept.locator('.wl-outcome')).toHaveValue('call_back');
+});
+
+test('a late patch does not put the phone back', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.locator('.wl-outcome').selectOption('call_back');
+  state.banner = 'Медиалог недоступен';
+  state.list = [row({
+    patient_name: '',
+    patient_phone: '',
+    patient_birth: '',
+    orig_doctor: '',
+    orig_service: '',
+    medialog_state: '',
+    version: 1,
+  })];
+  await page.clock.fastForward(11000);
+  await expect(page.locator('#banner')).toContainText('Медиалог недоступен');
+  await expect(page.locator('#waitlistList')).not.toContainText('79990001122');
+  state.reply = {
+    json: {
+      success: true,
+      data: {
+        row: { status: 'contacted', outcome: 'call_back', version: 2, updated_by: 'kash', updated_at: '06.11 12:20' },
+        enriched: true,
+        full: row({ patient_name: 'Иванов Иван', patient_phone: '+70001112233', version: 2, outcome: 'call_back' }),
+      },
+    },
+  };
+  release();
+  await expect(page.locator('#waitlistList tr[data-key="max:7"]')).toHaveAttribute('data-version', '2');
+  await expect(page.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(page.locator('#waitlistList')).not.toContainText('70001112233');
+  await expect(page.locator('#waitlistList')).not.toContainText('79990001122');
+});
+
+test('a late conflict does not lower the row version', async ({ page }) => {
+  const state = await openBoard(page, { items: [row({ version: 3, outcome: 'call_back', status: 'contacted' })] });
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toHaveAttribute('data-version', '3');
+  await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
+  await line.locator('.wl-outcome').selectOption('no_answer');
+  state.reply = {
+    status: 409,
+    json: {
+      success: false,
+      error: 'WAITLIST_CHANGED',
+      error_details: { message: 'Строку уже изменил другой сотрудник' },
+      data: {
+        row: { status: 'contacted', outcome: 'refused', version: 2, updated_by: 'other', updated_at: '06.11 11:00' },
+        enriched: true,
+        full: row({ patient_name: 'Чужой', patient_phone: '+70001112233', version: 2, outcome: 'refused', medialog_state: 'запись отменена' }),
+      },
+    },
+  };
+  release();
+  await expect(line).toHaveAttribute('data-version', '3');
+  await expect(line.locator('.wl-outcome')).toHaveValue('call_back');
+  await expect(page.locator('#waitlistList')).not.toContainText('70001112233');
+  await expect(page.locator('#waitlistList')).not.toContainText('Чужой');
+});
+
+test('a late save does not replace a newer row that came back', async ({ page }) => {
+  const state = await openBoard(page, { items: [row({ patient_name: 'Иванов Иван', version: 1 })] });
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await page.locator('.wl-outcome').selectOption('call_back');
+  const gone = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('q='));
+  await page.locator('#wlQuery').fill('неттакого');
+  await page.clock.fastForward(400);
+  await gone;
+  await expect(page.locator('#waitlistList tr')).toHaveCount(0);
+  state.list = [row({ patient_name: 'Иванов Иван', version: 4, outcome: 'no_answer', status: 'contacted' })];
+  const back = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('per_page=50') && !r.url().includes('q='));
+  await page.locator('#wlClear').click();
+  await back;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toHaveAttribute('data-version', '4');
+  await expect(line.locator('.wl-outcome')).toHaveValue('no_answer');
+  state.reply = {
+    json: {
+      success: true,
+      data: {
+        row: { status: 'contacted', outcome: 'call_back', version: 3, updated_by: 'kash', updated_at: '06.11 12:20' },
+        enriched: true,
+        full: row({ patient_phone: '+70001112233', version: 3, outcome: 'call_back' }),
+      },
+    },
+  };
+  release();
+  await expect(line).toHaveAttribute('data-version', '4');
+  await expect(line.locator('.wl-outcome')).toHaveValue('no_answer');
+  await expect(page.locator('#waitlistList')).not.toContainText('70001112233');
+});
+
+test('logout blocks dashboard requests and polling resumes after failure', async ({ page }) => {
+  await openBoard(page, { role: 'admin', items: [row()] });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/dashboard/logout', async route => {
+    await held;
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: false, code: 'LOGOUT_FAILED' }),
+    });
+  });
+  let hits = 0;
+  await page.route('**/dashboard/**', async route => {
+    if (!route.request().url().includes('/dashboard/logout')) hits++;
+    await route.fallback();
+  });
+  await page.locator('#accountMenu summary').click();
+  const gone = page.waitForRequest(r => r.url().includes('/dashboard/logout') && r.method() === 'POST');
+  await page.locator('#logoutBtn').click();
+  await gone;
+  hits = 0;
+  await page.locator('#tabWaitlist').click();
+  await page.locator('#wlQuery').evaluate(el => {
+    el.value = 'иван';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.locator('#tabSchedule').click();
+  await page.locator('#tabStaff').click();
+  await page.locator('#date').evaluate(el => {
+    el.value = '2026-11-05';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.locator('#branchButton').click();
+  await page.locator('#branchChecks input').first().click();
+  await page.locator('#wlNext').evaluate(el => el.click());
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.clock.fastForward(500);
+  expect(hits).toBe(0);
+  release();
+  await expect(page.locator('#banner')).toContainText('Не удалось выйти — повторите');
+  const polled = page.waitForRequest(r => r.url().includes('/dashboard/data'));
+  await page.clock.fastForward(11000);
+  await polled;
 });

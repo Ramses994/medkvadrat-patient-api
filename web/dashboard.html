@@ -368,9 +368,6 @@ let wlFresh = new Map();
 function rowKey(it) {
   return (it.source || 'max') + ':' + it.id;
 }
-function fullWaitlistRow(it) {
-  return !!(it && it.id && Object.prototype.hasOwnProperty.call(it, 'medialog_state'));
-}
 let viewEpoch = 0;
 let scheduleBusy = false;
 let waitlistBusy = false;
@@ -382,7 +379,7 @@ let followedDay = '';
 let scheduleKey = '';
 let waitlistKey = '';
 const pendingWl = new Map();
-const savedWork = new Map();
+const wlVersion = new Map();
 const BUSY_MS = 5000;
 const BRANCH_NAME = {106:'Каширка', 3:'Куркино', 496:'Куркино 2'};
 const REASON_LABEL = {declined:'не придёт', reschedule:'перенос'};
@@ -407,7 +404,7 @@ setInterval(() => {
   $('clock').textContent = d.toTimeString().slice(0,8);
   renderStaleness();
   const day = todayISO();
-  if ($('date').value === followedDay && day !== followedDay) {
+  if (!loggingOut && $('date').value === followedDay && day !== followedDay) {
     followedDay = day;
     $('date').value = day;
     viewEpoch++;
@@ -441,6 +438,14 @@ setInterval(() => {
   }
 }, 1000);
 
+const dashboardFetch = window.fetch.bind(window);
+async function api(url, opts) {
+  if (loggingOut) return null;
+  const res = await dashboardFetch(url, opts);
+  if (loggingOut) return null;
+  return res;
+}
+
 function load() {
   if (loggingOut) return;
   if (activeTab === 'waitlist') return loadWaitlist();
@@ -455,13 +460,14 @@ async function loadSchedule() {
   const branch = branchParam();
   const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINT}?date=${encodeURIComponent(date)}${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`;
   try {
-    const res = await fetch(url, {credentials: 'same-origin'});
+    const res = await api(url, {credentials: 'same-origin'});
+    if (!res || loggingOut) return;
     if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || branch !== branchParam() || activeTab !== 'schedule') return;
     if (await authStop(res)) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
-    if (epoch !== viewEpoch || selectingText()) return;
+    if (epoch !== viewEpoch || selectingText() || loggingOut) return;
     lastOkAt = Date.now();
     hideBanner();
     renderStaleness();
@@ -777,7 +783,7 @@ function showBanner(msg){ banner.textContent = msg; banner.classList.add('show')
 function hideBanner(){ banner.classList.remove('show'); }
 
 function setTab(name) {
-  if (activeTab === name) return;
+  if (loggingOut || activeTab === name) return;
   if (activeTab === 'staff' || name === 'staff') staffVisit++;
   activeTab = name;
   viewEpoch++;
@@ -813,9 +819,10 @@ async function refreshWaitlistCount() {
   waitlistBusy = true;
   try {
     const branch = branchParam();
-    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}?status=open&page=1&per_page=1${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`, {credentials:'same-origin'});
-    if (!res.ok) return;
+    const res = await api(`${CONFIG.API_BASE}${CONFIG.WAITLIST}?status=open&page=1&per_page=1${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`, {credentials:'same-origin'});
+    if (!res || loggingOut || !res.ok) return;
     const body = await res.json();
+    if (loggingOut) return;
     if (body.success && body.data) $('waitlistCount').textContent = String(body.data.open_total || 0);
   } catch (e) {
   } finally {
@@ -841,19 +848,21 @@ function waitlistURL() {
   return {key: `${status}|${branch}|${wlPage}|${source}|${[...q].length >= 2 ? q : ''}`, url: `${CONFIG.API_BASE}${CONFIG.WAITLIST}?${params}`};
 }
 
-async function loadWaitlist() {
+async function loadWaitlist(keepPoll) {
+  if (loggingOut) return;
   if (waitlistBusy) { waitlistQueued = true; return; }
   waitlistBusy = true;
   const epoch = viewEpoch;
   const q = waitlistURL();
   try {
-    const res = await fetch(q.url, {credentials:'same-origin'});
+    const res = await api(q.url, {credentials:'same-origin'});
+    if (!res || loggingOut) return;
     if (epoch !== viewEpoch || q.key !== waitlistURL().key) return;
     if (await authStop(res)) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
-    if (epoch !== viewEpoch) return;
+    if (epoch !== viewEpoch || loggingOut) return;
     lastOkAt = Date.now();
     if (body.data && body.data.banner) showBanner(body.data.banner);
     else hideBanner();
@@ -864,6 +873,7 @@ async function loadWaitlist() {
   } finally {
     waitlistBusy = false;
     if (loggingOut) return;
+    if (keepPoll && timer) return;
     if (waitlistQueued || epoch !== viewEpoch) {
       waitlistQueued = false;
       if (activeTab === 'waitlist') loadWaitlist();
@@ -909,8 +919,7 @@ function paintWaitlist(data, key) {
   }
   const tbody = table.querySelector('tbody');
   const ids = items.map(it => (it.source || 'max') + ':' + it.id);
-  items.forEach(raw => {
-    const it = withSavedWork(raw);
+  items.forEach(it => {
     let tr = tbody.querySelector(`tr[data-key="${(it.source || 'max') + ':' + it.id}"]`);
     if (!tr) {
       tr = renderWaitlistRow(it);
@@ -957,20 +966,16 @@ function paintWaitlistSelection(data) {
 
 function applyHeldRow(tr, it) {
   applyMedialogFields(tr, it);
+  const key = tr.dataset.key;
+  const next = Number(it.version || 0);
+  const known = wlVersion.has(key) ? Number(wlVersion.get(key)) : Number(tr.dataset.version || 0);
   if (rowBusy(tr) || unsavedWork(tr)) {
-    if (incomingWorkDiffers(tr, it)) showConflict(tr);
-    pendingWl.set(tr.dataset.key, it);
+    if (next > known && ((it.status || '') !== (tr.dataset.status || '') || (it.outcome || '') !== (tr.dataset.outcome || ''))) showConflict(tr);
+    pendingWl.set(key, it);
+    paintMedialogAlert(tr);
     return;
   }
   applyWaitlistItem(tr, it);
-}
-
-function incomingWorkDiffers(tr, it) {
-  const incoming = Number(it.version || 0);
-  const saved = Number(tr.dataset.version || 0);
-  if (!(incoming > saved)) return false;
-  if ((it.status || '') !== (tr.dataset.status || '')) return true;
-  return (it.outcome || '') !== (tr.dataset.outcome || '');
 }
 
 function renderWaitlistRow(it) {
@@ -1017,19 +1022,6 @@ function renderWaitlistRow(it) {
   return tr;
 }
 
-function applyWorkingFields(tr, row) {
-  if (!row) return;
-  const oc = tr.querySelector('.wl-outcome');
-  if (row.status) tr.dataset.status = row.status;
-  if (row.outcome != null) tr.dataset.outcome = row.outcome;
-  if (row.version) tr.dataset.version = String(row.version);
-  if (oc && row.outcome && [...oc.options].some(o => o.value === row.outcome)) oc.value = row.outcome;
-  const meta = tr.querySelector('.wl-meta');
-  if (meta && (row.updated_by || row.updated_at)) {
-    meta.textContent = [row.updated_by, row.updated_at].filter(Boolean).join(' · ');
-  }
-}
-
 function unsavedWork(tr) {
   const oc = tr.querySelector('.wl-outcome');
   if (!oc) return false;
@@ -1067,10 +1059,7 @@ function applyMedialogFields(tr, it) {
 
   const med = cells[4];
   med.replaceChildren();
-  const active = it.medialog_state === 'запись действует';
-  const noFuture = !it.future_date_start;
-  if (active && (noFuture || it.outcome === 'refused')) med.appendChild(el('div', 'med-alert', 'действует — отменить в клиенте'));
-  else med.textContent = it.medialog_state || '';
+  med.textContent = it.medialog_state || '';
   tr.dataset.medialog = it.medialog_state || '';
   tr.dataset.future = it.future_date_start || '';
 
@@ -1082,32 +1071,68 @@ function applyMedialogFields(tr, it) {
   if (it.future_service) fut.appendChild(el('div', '', it.future_service));
 }
 
-function applyWaitlistItem(tr, it) {
-  applyMedialogFields(tr, it);
-  const cells = tr.children;
-  const work = cells[6];
-  const oc = work.querySelector('.wl-outcome');
-  const closed = it.status === 'closed' || it.status === 'rebooked';
-  if (it.outcome && [...oc.options].some(o => o.value === it.outcome)) oc.value = it.outcome;
-  else oc.value = '';
-  tr.dataset.status = it.status || '';
-  tr.dataset.outcome = it.outcome || '';
-  tr.dataset.version = String(it.version || 1);
-  oc.hidden = closed;
-  const text = work.querySelector('.wl-outcome-text');
+function paintMedialogAlert(tr) {
+  const med = tr.children[4];
+  if (!med) return;
+  const active = tr.dataset.medialog === 'запись действует';
+  const noFuture = !tr.dataset.future;
+  const outcome = tr.dataset.outcome || '';
+  if (active && (noFuture || outcome === 'refused')) {
+    med.replaceChildren();
+    med.appendChild(el('div', 'med-alert', 'действует — отменить в клиенте'));
+    return;
+  }
+  if (!med.querySelector('.med-alert')) return;
+  med.replaceChildren();
+  med.textContent = tr.dataset.medialog || '';
+}
+
+function applyWorkIfNewer(key, work, row) {
+  if (!work) return false;
+  const next = Number(work.version || 0);
+  if (wlVersion.has(key) && !(next > Number(wlVersion.get(key)))) return false;
+  wlVersion.set(key, next);
+  if (!row) row = waitlistRow(key);
+  if (!row) return true;
+  const oc = row.querySelector('.wl-outcome');
+  const outcome = work.outcome || '';
+  const closed = work.status === 'closed' || work.status === 'rebooked';
+  row.dataset.status = work.status || '';
+  row.dataset.outcome = outcome;
+  if (next) row.dataset.version = String(next);
+  if (oc) {
+    if (outcome && [...oc.options].some(o => o.value === outcome)) oc.value = outcome;
+    else oc.value = '';
+    oc.hidden = closed;
+  }
+  const text = row.querySelector('.wl-outcome-text');
   if (text) {
     text.hidden = !closed;
-    text.textContent = outcomeLabel(it.outcome);
+    text.textContent = outcomeLabel(outcome);
   }
-  const backBtn = work.querySelector('.wl-reopen');
+  const backBtn = row.querySelector('.wl-reopen');
   if (backBtn) backBtn.hidden = !closed;
-  const meta = work.querySelector('.wl-meta');
-  if (meta) meta.textContent = it.updated_by ? `${it.updated_by} · ${it.updated_at || ''}` : '';
-  const note = work.querySelector('.wl-conflict');
+  const meta = row.querySelector('.wl-meta');
+  if (meta) meta.textContent = work.updated_by ? [work.updated_by, work.updated_at].filter(Boolean).join(' · ') : '';
+  const note = row.querySelector('.wl-conflict');
   if (note) note.remove();
-  pendingWl.delete(tr.dataset.key);
-  if (wlSeen.size && wlSeen.get(rowKey(it)) !== it.status) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
-  wlSeen.set(rowKey(it), it.status);
+  pendingWl.delete(key);
+  return true;
+}
+
+function applyWaitlistItem(tr, it) {
+  applyMedialogFields(tr, it);
+  applyWorkIfNewer(tr.dataset.key, {
+    status: it.status,
+    outcome: it.outcome,
+    version: it.version,
+    updated_by: it.updated_by,
+    updated_at: it.updated_at
+  }, tr);
+  paintMedialogAlert(tr);
+  const shown = tr.dataset.status || it.status;
+  if (wlSeen.size && wlSeen.get(rowKey(it)) !== shown) wlFresh.set(rowKey(it), Date.now() + CONFIG.FRESH_MS);
+  wlSeen.set(rowKey(it), shown);
 }
 
 function showConflict(tr) {
@@ -1218,47 +1243,26 @@ async function authStop(res) {
   return false;
 }
 
-function withSavedWork(it) {
-  const key = (it.source || 'max') + ':' + it.id;
-  const saved = savedWork.get(key);
-  if (!saved || Number(saved.version || 0) < Number(it.version || 0)) return it;
-  return Object.assign({}, it, {
-    status: saved.status || it.status,
-    outcome: saved.outcome,
-    version: saved.version,
-    updated_by: saved.updated_by || it.updated_by,
-    updated_at: saved.updated_at || it.updated_at
-  });
-}
-
-function rememberWork(key, row) {
-  if (!row || !row.version) return;
-  const prev = savedWork.get(key);
-  if (prev && Number(prev.version || 0) > Number(row.version || 0)) return;
-  savedWork.set(key, {
-    status: row.status || '',
-    outcome: row.outcome || '',
-    version: row.version,
-    updated_by: row.updated_by || '',
-    updated_at: row.updated_at || ''
-  });
-}
-
 function waitlistRow(key) {
   return document.querySelector('#waitlistList tr[data-key="' + key + '"]');
+}
+
+function restoreUnsavedChoice(row, sentVersion, prev) {
+  if (!row || Number(row.dataset.version || 0) !== sentVersion) return;
+  const liveOc = row.querySelector('.wl-outcome');
+  if (liveOc) liveOc.value = row.dataset.outcome || prev;
 }
 
 async function saveWaitlist(tr, outcome, action) {
   const source = tr.dataset.source || 'max';
   const id = tr.dataset.id;
   const key = source + ':' + id;
-  const oc = tr.querySelector('.wl-outcome');
   const prev = tr.dataset.outcome || '';
   markRow(tr, 'Сохраняется…');
   const version = Number(tr.dataset.version || '1');
   const payload = action === 'reopen' ? {action: 'reopen', version} : {outcome, version};
   try {
-    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}/${source}/${id}`, {
+    const res = await api(`${CONFIG.API_BASE}${CONFIG.WAITLIST}/${source}/${id}`, {
       method: 'PATCH',
       credentials: 'same-origin',
       headers: {
@@ -1267,8 +1271,9 @@ async function saveWaitlist(tr, outcome, action) {
       },
       body: JSON.stringify(payload)
     });
+    if (!res || loggingOut) return;
     if (await authStop(res)) return;
-    const rowNow = () => waitlistRow(key);
+    if (loggingOut) return;
     if (res.status === 409) {
       let msg = 'Строку уже изменил другой сотрудник';
       let data = null;
@@ -1278,22 +1283,19 @@ async function saveWaitlist(tr, outcome, action) {
         else if (body.error) msg = body.error;
         data = body.data || null;
       } catch (e) {}
-      const row = rowNow();
-      if (!row) {
-        if (data && data.row) rememberWork(key, data.row);
+      if (loggingOut) return;
+      const work = data && data.row;
+      const applied = !!(work && applyWorkIfNewer(key, work));
+      const row = waitlistRow(key);
+      if (!row) return;
+      if (!applied) {
+        restoreUnsavedChoice(row, version, prev);
+        if (Number(row.dataset.version || 0) === version) showBanner(msg);
         return;
       }
-      if (data && data.row) {
-        rememberWork(key, data.row);
-        applyWorkingFields(row, data.row);
-        if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(row, data.full);
-        else await loadWaitlist();
-      } else if (data && data.enriched && fullWaitlistRow(data)) {
-        applyWaitlistItem(row, data);
-      } else if (oc && row.contains(oc) && !(data && data.row)) {
-        oc.value = prev;
-      }
+      paintMedialogAlert(row);
       showBanner(msg);
+      loadWaitlist(true);
       return;
     }
     if (!res.ok) {
@@ -1305,43 +1307,38 @@ async function saveWaitlist(tr, outcome, action) {
         if (body.error_details && body.error_details.message) msg = body.error_details.message;
         else if (body.error) msg = body.error;
       } catch (e) {}
-      const row = rowNow();
+      if (loggingOut) return;
+      const row = waitlistRow(key);
       if (!row) return;
       if (res.status === 403 && code === 'WAITLIST_MOVED') {
         row.remove();
         showBanner('Строка перенесена в другой филиал');
         return;
       }
-      const liveOc = row.querySelector('.wl-outcome');
-      if (liveOc) liveOc.value = prev;
+      restoreUnsavedChoice(row, version, prev);
       showBanner(msg);
       markRow(row, msg);
       return;
     }
     const body = await res.json();
+    if (loggingOut) return;
     const data = body.data || {};
     const saved = data.row || null;
-    if (saved) rememberWork(key, saved);
-    const row = rowNow();
-    if (!row) return;
-    const current = Number(row.dataset.version || '0');
-    const next = Number((saved && saved.version) || 0);
-    if (next && next < current) return;
-    if (saved) {
-      applyWorkingFields(row, saved);
-      if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(row, data.full);
-      else loadWaitlist();
-    } else if (fullWaitlistRow(data)) {
-      applyWaitlistItem(row, data);
+    const applied = !!(saved && applyWorkIfNewer(key, saved));
+    const row = waitlistRow(key);
+    if (applied && row) {
+      paintMedialogAlert(row);
+      const clock = msk(new Date()).toTimeString().slice(0, 5);
+      markRow(row, 'Сохранено ✓ ' + (dashUser || '') + ', ' + clock);
+      loadWaitlist(true);
+      return;
     }
-    pendingWl.delete(key);
-    const clock = msk(new Date()).toTimeString().slice(0, 5);
-    markRow(row, 'Сохранено ✓ ' + (dashUser || '') + ', ' + clock);
+    if (row && !saved) loadWaitlist(true);
   } catch (err) {
+    if (loggingOut) return;
     const row = waitlistRow(key);
     if (!row) return;
-    const liveOc = row.querySelector('.wl-outcome');
-    if (liveOc) liveOc.value = prev;
+    restoreUnsavedChoice(row, version, prev);
     showBanner(`Не удалось сохранить: ${err.message}`);
     markRow(row, err.message);
   }
@@ -1362,6 +1359,7 @@ function pinToday() {
 }
 
 $('date').addEventListener('change', () => {
+  if (loggingOut) return;
   viewEpoch++;
   userScrolled.clear();
   if ($('date').value === todayISO()) followedDay = todayISO();
@@ -1369,6 +1367,7 @@ $('date').addEventListener('change', () => {
   load();
 });
 $('today').addEventListener('click', () => {
+  if (loggingOut) return;
   $('date').value = todayISO();
   followedDay = todayISO();
   viewEpoch++;
@@ -1468,6 +1467,7 @@ function syncBranchChecks() {
 }
 
 function chooseBranches(ids) {
+  if (loggingOut) return;
   const branches = (dashMe && dashMe.branches) || [];
   const allowed = new Set(branches.map(b => String(b.id)));
   branchChoice = ids.filter(id => allowed.has(id));
@@ -1511,14 +1511,15 @@ async function loadMe() {
   restoreChoice('wlWork', 'mk_dash_wl_status');
   restoreChoice('wlSource', 'mk_dash_wl_source');
   try {
-    const res = await fetch(`${CONFIG.API_BASE}/dashboard/me`, {credentials: 'same-origin'});
+    const res = await api(`${CONFIG.API_BASE}/dashboard/me`, {credentials: 'same-origin'});
+    if (!res || loggingOut) return;
     if (res.status === 401) {
       window.location.href = '/dashboard/login';
       return;
     }
     if (!res.ok) return;
     const body = await res.json();
-    if (!body.success || !body.data) return;
+    if (loggingOut || !body.success || !body.data) return;
     const me = body.data;
     dashMe = me;
     dashUser = me.full_name || me.login || '';
@@ -1533,10 +1534,12 @@ async function loadStaff() {
   const box = $('staffTable');
   box.replaceChildren();
   try {
-    const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff`, {credentials: 'same-origin'});
+    const res = await api(`${CONFIG.API_BASE}/dashboard/staff`, {credentials: 'same-origin'});
+    if (!res || loggingOut) return;
     if (await authStop(res)) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = await res.json();
+    if (loggingOut) return;
     if (!body.success) throw new Error(body.error || 'сервер вернул ошибку');
     const users = (body.data && body.data.users) || [];
     const table = document.createElement('table');
@@ -1591,14 +1594,16 @@ async function loadStaff() {
 async function updateStaff(id, login, payload) {
   const visit = staffVisit;
   try {
-    const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff/${id}`, {
+    const res = await api(`${CONFIG.API_BASE}/dashboard/staff/${id}`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: {'Content-Type': 'application/json', 'X-Dashboard-Request': '1'},
       body: JSON.stringify(payload)
     });
+    if (!res || loggingOut) return;
     if (await authStop(res)) return;
     const body = await res.json();
+    if (loggingOut) return;
     if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
     if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password, visit, login);
     else if (visit === staffVisit) { hideStaffSecret(); $('staffStatus').textContent = 'Сохранено'; }
@@ -1624,13 +1629,16 @@ document.addEventListener('click', event => {
   }
 });
 $('wlQuery').addEventListener('input', () => {
+  if (loggingOut) return;
   $('wlClear').hidden = $('wlQuery').value === '';
   clearTimeout(queryTimer);
   queryTimer = setTimeout(() => {
+    if (loggingOut) return;
     wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
   }, 300);
 });
 $('wlClear').addEventListener('click', () => {
+  if (loggingOut) return;
   $('wlQuery').value = '';
   $('wlClear').hidden = true;
   wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
@@ -1703,25 +1711,28 @@ $('staffCopy').addEventListener('click', async () => {
 });
 $('staffHide').addEventListener('click', hideStaffSecret);
 $('wlStatus').addEventListener('change', () => {
+  if (loggingOut) return;
   storageSet('mk_dash_wl_scope', $('wlStatus').value);
   wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
 });
 $('wlWork').addEventListener('change', () => {
+  if (loggingOut) return;
   storageSet('mk_dash_wl_status', $('wlWork').value);
   wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
 });
 $('wlSource').addEventListener('change', () => {
+  if (loggingOut) return;
   storageSet('mk_dash_wl_source', $('wlSource').value);
   wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
 });
-$('wlPrev').addEventListener('click', () => { if (wlPage > 1) { wlPage--; viewEpoch++; waitlistKey = ''; loadWaitlist(); } });
-$('wlNext').addEventListener('click', () => { wlPage++; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
+$('wlPrev').addEventListener('click', () => { if (loggingOut || wlPage <= 1) return; wlPage--; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
+$('wlNext').addEventListener('click', () => { if (loggingOut) return; wlPage++; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
 $('staffForm').addEventListener('submit', async event => {
   event.preventDefault();
   const visit = staffVisit;
   const login = $('staffLogin').value.trim();
   try {
-    const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff`, {
+    const res = await api(`${CONFIG.API_BASE}/dashboard/staff`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: {'Content-Type': 'application/json', 'X-Dashboard-Request': '1'},
@@ -1732,8 +1743,10 @@ $('staffForm').addEventListener('submit', async event => {
         branches: $('staffBranches').value
       })
     });
+    if (!res || loggingOut) return;
     if (await authStop(res)) return;
     const body = await res.json();
+    if (loggingOut) return;
     if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
     if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password, visit, login);
     else if (visit === staffVisit) hideStaffSecret();
