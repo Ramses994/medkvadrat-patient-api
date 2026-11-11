@@ -175,7 +175,9 @@
   .branch-menu{position:absolute;z-index:6;top:calc(100% + 4px);left:0;min-width:200px;padding:8px 10px;background:#fff;color:#14302a;border:1px solid #D5DBD7;border-radius:8px;box-shadow:0 8px 24px rgba(15,30,28,.16)}
   .branch-menu label{display:flex;gap:8px;align-items:center;color:#14302a;background:#fff;font-size:13px;padding:4px 0}
   .branch-native{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
-  .who{font-size:12px;line-height:1.35;max-width:320px}
+  .signed-in{font-size:12px;line-height:1.35;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .live{white-space:nowrap;flex:none}
+  .top,.top-right{flex-wrap:nowrap}
   .account{position:relative}
   .account summary{cursor:pointer;font-size:13px}
   .account-menu{position:absolute;right:0;top:calc(100% + 4px);min-width:180px;background:#fff;color:#14302a;border:1px solid #D5DBD7;border-radius:8px;padding:6px;z-index:6}
@@ -197,6 +199,7 @@
   .staff-panel .btn{margin-right:6px}
 
   @media (max-width:900px){
+    .top,.top-right{flex-wrap:wrap}
     .board{grid-template-columns:1fr;gap:0}
     .col{border-bottom:1px solid var(--line)}
     .list{overflow:visible;padding-bottom:10px}
@@ -220,7 +223,7 @@
     <select id="branch" class="top-select branch-native" aria-hidden="true" tabindex="-1"><option value="">Все мои</option></select>
     <input type="date" id="date" autocomplete="off" aria-label="Дата расписания">
     <button class="btn" id="today">Сегодня</button>
-    <div class="who" id="whoami"></div>
+    <div class="signed-in" id="whoami"></div>
     <details class="account" id="accountMenu">
       <summary>Меню</summary>
       <div class="account-menu">
@@ -455,6 +458,7 @@ async function loadSchedule() {
     if (epoch !== viewEpoch || selectingText()) return;
     lastOkAt = Date.now();
     hideBanner();
+    renderStaleness();
     paintSchedule(body.data);
     await refreshWaitlistCount();
   } catch (err) {
