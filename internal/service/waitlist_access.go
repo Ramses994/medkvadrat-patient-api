@@ -601,10 +601,6 @@ func (s *Services) maxItem(ctx context.Context, row confirmations.WaitlistRow, s
 		return confirmations.DashboardItem{}, false
 	}
 	it = decorateFromState(it, st, pii, restricted, scope)
-	if !pii {
-		it.PatientName = strings.TrimSpace(row.PatientName)
-		it.PatientPhone = strings.TrimSpace(row.PatientPhone)
-	}
 	return it, true
 }
 
@@ -735,9 +731,18 @@ func waitQueryMatch(name, phone, query string) bool {
 	if folded != "" && strings.Contains(foldSearch(name), folded) {
 		return true
 	}
-	want := lastPhoneDigits(query)
+	want := phoneDigits(query)
+	if len(want) < 4 {
+		return false
+	}
 	got := lastPhoneDigits(phone)
-	return len(want) >= 10 && len(got) >= 10 && want == got
+	if len(want) >= 10 {
+		if len(want) > 10 {
+			want = want[len(want)-10:]
+		}
+		return len(got) >= 10 && want == got
+	}
+	return strings.Contains(got, want)
 }
 
 func foldSearch(s string) string {
@@ -745,14 +750,18 @@ func foldSearch(s string) string {
 	return strings.ReplaceAll(s, "ё", "е")
 }
 
-func lastPhoneDigits(s string) string {
+func phoneDigits(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if r >= '0' && r <= '9' {
 			b.WriteRune(r)
 		}
 	}
-	d := b.String()
+	return b.String()
+}
+
+func lastPhoneDigits(s string) string {
+	d := phoneDigits(s)
 	if len(d) > 10 {
 		return d[len(d)-10:]
 	}

@@ -23,16 +23,16 @@ func TestWaitlistSearch_HidesOtherBranchesAndMatchesPhone(t *testing.T) {
 	}
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
-			77:  {PlanningID: 77, PatientID: 77, BranchID: 106, PatientName: "Ёлкин Иван", Phone: "79161234567"},
+			77:  {PlanningID: 77, PatientID: 77, BranchID: 106, PatientName: "Ёлкин Иван", Phone: "79265906994"},
 			88:  {PlanningID: 88, PatientID: 88, BranchID: 3, PatientName: "Кузнецов", Phone: "79990000088"},
 			100: {PlanningID: 100, PatientID: 100, BranchID: 496, PatientName: "Петров", Phone: "79990000100"},
 		}}, nil
 	}
 	db := openWaitlistDB(t, "wl_search_ux")
-	insertNamed(t, db, 77, 106, "", "")
-	insertNamed(t, db, 88, 3, "", "")
-	insertNamed(t, db, 99, 106, "Сидоров Пётр", "79001112233")
-	insertNamed(t, db, 100, 496, "", "")
+	insertWait(t, db, 77, 106)
+	insertWait(t, db, 88, 3)
+	insertWait(t, db, 99, 106)
+	insertWait(t, db, 100, 496)
 	svc := &Services{SQLite: db, MSSQL: db}
 	kash := staff.WithPrincipal(context.Background(), staff.Principal{ID: 2, Login: "kash", Role: staff.RoleRegistrar, BranchIDs: []int{106}})
 	base := confirmations.WaitlistListFilter{BranchIDs: []int{106}, OpenOnly: true, Page: 1, PerPage: 50}
@@ -52,7 +52,7 @@ func TestWaitlistSearch_HidesOtherBranchesAndMatchesPhone(t *testing.T) {
 	if byName.Total != 1 || len(byName.Items) != 1 || byName.Items[0].PlanningID != 77 || byName.OpenTotal != 2 {
 		t.Fatalf("name total=%d open=%d %+v", byName.Total, byName.OpenTotal, byName.Items)
 	}
-	for _, q := range []string{"89161234567", "+7 916 123-45-67", "9161234567"} {
+	for _, q := range []string{"6994", "590-69-94", "+7 926 590 69 94", "89265906994"} {
 		got, err := svc.DashboardWaitlist(kash, withQuery(base, q))
 		if err != nil {
 			t.Fatal(err)
@@ -61,13 +61,20 @@ func TestWaitlistSearch_HidesOtherBranchesAndMatchesPhone(t *testing.T) {
 			t.Fatalf("phone %q total=%d %+v", q, got.Total, got.Items)
 		}
 	}
-
-	sqliteHit, err := svc.DashboardWaitlist(kash, withQuery(base, "сидоров"))
+	short, err := svc.DashboardWaitlist(kash, withQuery(base, "69"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sqliteHit.Total != 1 || len(sqliteHit.Items) != 1 || sqliteHit.Items[0].PlanningID != 99 || sqliteHit.Items[0].PatientName != "Сидоров Пётр" {
-		t.Fatalf("sqlite %+v total=%d", sqliteHit.Items, sqliteHit.Total)
+	if short.Total != 0 || len(short.Items) != 0 {
+		t.Fatalf("short phone total=%d %+v", short.Total, short.Items)
+	}
+
+	missing, err := svc.DashboardWaitlist(kash, withQuery(base, "сидоров"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Total != 0 || len(missing.Items) != 0 {
+		t.Fatalf("missing name total=%d %+v", missing.Total, missing.Items)
 	}
 
 	one, err := svc.DashboardWaitlist(kash, withQuery(base, "я"))
@@ -76,6 +83,15 @@ func TestWaitlistSearch_HidesOtherBranchesAndMatchesPhone(t *testing.T) {
 	}
 	if one.Total != 2 || one.OpenTotal != 2 {
 		t.Fatalf("one letter total=%d open=%d", one.Total, one.OpenTotal)
+	}
+	var bare *confirmations.DashboardItem
+	for i := range one.Items {
+		if one.Items[i].PlanningID == 99 {
+			bare = &one.Items[i]
+		}
+	}
+	if bare == nil || bare.PatientName != "" || bare.PatientPhone != "" {
+		t.Fatalf("missing row %+v", bare)
 	}
 
 	mgr := staff.WithPrincipal(context.Background(), staff.Principal{ID: 3, Login: "dir", Role: staff.RoleManager, All: true, BranchIDs: staff.DashboardBranchIDs})
@@ -98,12 +114,12 @@ func withQuery(f confirmations.WaitlistListFilter, q string) confirmations.Waitl
 	return f
 }
 
-func insertNamed(t *testing.T, db *sql.DB, planning int64, branch int, name, phone string) {
+func insertWait(t *testing.T, db *sql.DB, planning int64, branch int) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(), `
-INSERT INTO waitlist(planning_id,patient_id,appt_version,appt_start,reason,source,status,created_at,updated_at,created_at_msk,branch_id,patient_name,patient_phone)
-VALUES(?,?, 'v', '2026-11-06 10:00:00', 'declined', 'max', 'new', '2026-11-06T06:00:00Z', '2026-11-06T06:00:00Z', '2026-11-06 09:00:00', ?, ?, ?)`,
-		planning, planning, branch, name, phone); err != nil {
+INSERT INTO waitlist(planning_id,patient_id,appt_version,appt_start,reason,source,status,created_at,updated_at,created_at_msk,branch_id)
+VALUES(?,?, 'v', '2026-11-06 10:00:00', 'declined', 'max', 'new', '2026-11-06T06:00:00Z', '2026-11-06T06:00:00Z', '2026-11-06 09:00:00', ?)`,
+		planning, planning, branch); err != nil {
 		t.Fatal(err)
 	}
 }
