@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"html"
 	"log/slog"
 	"net/http"
@@ -135,7 +136,12 @@ func (h DashboardPageHandler) PasswordPost(w http.ResponseWriter, r *http.Reques
 		h.writePassword(w, http.StatusOK, "Не удалось сменить пароль")
 		return
 	}
-	err := h.Users.ChangePassword(r.Context(), p.ID, r.FormValue("current_password"), r.FormValue("new_password"))
+	next := r.FormValue("new_password")
+	if next != r.FormValue("new_password_again") {
+		h.writePassword(w, http.StatusOK, "Новый пароль и повтор не совпадают")
+		return
+	}
+	err := h.Users.ChangePassword(r.Context(), p.ID, r.FormValue("current_password"), next)
 	if err != nil {
 		if errors.Is(err, staff.ErrShortPassword) {
 			h.writePassword(w, http.StatusOK, "Пароль не короче 10 символов")
@@ -180,6 +186,15 @@ func (h DashboardPageHandler) setStaffCookie(w http.ResponseWriter, userID int64
 }
 
 func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	p, ok := staff.PrincipalFrom(r.Context())
+	if !ok || h.Users == nil {
+		h.logoutFailed(w, r, 0, errors.New("logout store unavailable"))
+		return
+	}
+	if err := h.Users.EndSession(r.Context(), p.ID); err != nil {
+		h.logoutFailed(w, r, p.ID, err)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     staffsession.CookieName,
 		Value:    "",
@@ -190,6 +205,33 @@ func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.CookieSecure,
 	})
 	http.Redirect(w, r, "/dashboard/login", http.StatusFound)
+}
+
+func (h DashboardPageHandler) logoutFailed(w http.ResponseWriter, r *http.Request, staffID int64, err error) {
+	if h.Logger != nil {
+		h.Logger.Error("dashboard logout failed", "staff_id", staffID, "err", err)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if logoutWantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error":   "Не удалось выйти, повторите",
+			"code":    "LOGOUT_FAILED",
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>Выход</title></head><body><p>Не удалось выйти, повторите</p></body></html>`))
+}
+
+func logoutWantsJSON(r *http.Request) bool {
+	if r.Header.Get("X-Dashboard-Request") != "" {
+		return true
+	}
+	return strings.Contains(r.Header.Get("Accept"), "application/json")
 }
 
 func (h DashboardPageHandler) writeLogin(w http.ResponseWriter, status int, errMsg string) {
@@ -251,6 +293,8 @@ func (h DashboardPageHandler) writePassword(w http.ResponseWriter, status int, e
 	b.WriteString(`<input id="current_password" name="current_password" type="password" autocomplete="current-password" required>`)
 	b.WriteString(`<label for="new_password">Новый пароль</label>`)
 	b.WriteString(`<input id="new_password" name="new_password" type="password" autocomplete="new-password" required minlength="10">`)
+	b.WriteString(`<label for="new_password_again">Новый пароль ещё раз</label>`)
+	b.WriteString(`<input id="new_password_again" name="new_password_again" type="password" autocomplete="new-password" required minlength="10">`)
 	b.WriteString(`<button type="submit">Сохранить</button></form></body></html>`)
 	_, _ = w.Write([]byte(b.String()))
 }

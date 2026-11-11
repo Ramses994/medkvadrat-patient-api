@@ -54,6 +54,31 @@ func TestSchedule_RegistrarSeesOnlyKashirka(t *testing.T) {
 	if len(ids) != 3 {
 		t.Fatalf("manager branches=%v", ids)
 	}
+
+	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/data?date=2026-06-26&branch=106,3", nil), managerAll())
+	w = httptest.NewRecorder()
+	h.Schedule(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("two branches: %d %s", w.Code, w.Body.String())
+	}
+	ids = scheduleBranchIDs(t, w.Body.Bytes())
+	if len(ids) != 2 || ids[0] != 106 || ids[1] != 3 {
+		t.Fatalf("filtered branches=%v", ids)
+	}
+
+	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/data?date=2026-06-26&branch=106,3", nil), registrarKashirka())
+	w = httptest.NewRecorder()
+	h.Schedule(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("registrar list: %d %s", w.Code, w.Body.String())
+	}
+
+	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/data?date=2026-06-26&branch=106,999", nil), managerAll())
+	w = httptest.NewRecorder()
+	h.Schedule(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown branch: %d %s", w.Code, w.Body.String())
+	}
 }
 
 func TestSchedule_NoPrincipalKeepsEveryBranch(t *testing.T) {
@@ -91,8 +116,8 @@ func TestWaitlist_BranchFilterAndStatusValidation(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
-	if len(svc.last.BranchIDs) != 1 || svc.last.BranchIDs[0] != 106 {
-		t.Fatalf("branch ids: %v", svc.last.BranchIDs)
+	if len(svc.last.BranchIDs) != 1 || svc.last.BranchIDs[0] != 106 || svc.last.ExplicitBranches {
+		t.Fatalf("branch ids: %v explicit=%v", svc.last.BranchIDs, svc.last.ExplicitBranches)
 	}
 
 	before := svc.last
@@ -119,8 +144,39 @@ func TestWaitlist_BranchFilterAndStatusValidation(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("manager: %d", w.Code)
 	}
-	if len(svc.last.BranchIDs) != 3 || svc.last.BranchIDs[0] != 106 || svc.last.BranchIDs[1] != 3 || svc.last.BranchIDs[2] != 496 {
-		t.Fatalf("manager branches: %v", svc.last.BranchIDs)
+	if len(svc.last.BranchIDs) != 3 || svc.last.BranchIDs[0] != 106 || svc.last.BranchIDs[1] != 3 || svc.last.BranchIDs[2] != 496 || svc.last.ExplicitBranches {
+		t.Fatalf("manager branches: %v explicit=%v", svc.last.BranchIDs, svc.last.ExplicitBranches)
+	}
+
+	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?branch=106,3", nil), registrarKashirka())
+	w = httptest.NewRecorder()
+	h.List(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("registrar pair: %d %s", w.Code, w.Body.String())
+	}
+
+	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?branch=106,3", nil), managerAll())
+	w = httptest.NewRecorder()
+	h.List(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("manager pair: %d %s", w.Code, w.Body.String())
+	}
+	if svc.last.BranchID != nil || len(svc.last.BranchIDs) != 2 || svc.last.BranchIDs[0] != 106 || svc.last.BranchIDs[1] != 3 || !svc.last.ExplicitBranches {
+		t.Fatalf("manager filter id=%v ids=%v explicit=%v", svc.last.BranchID, svc.last.BranchIDs, svc.last.ExplicitBranches)
+	}
+
+	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?branch=106,999", nil), managerAll())
+	w = httptest.NewRecorder()
+	h.List(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
+	}
+
+	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?q=И", nil), managerAll())
+	w = httptest.NewRecorder()
+	h.List(w, r)
+	if w.Code != http.StatusOK || svc.last.Query != "" {
+		t.Fatalf("one letter query=%q status=%d", svc.last.Query, w.Code)
 	}
 }
 

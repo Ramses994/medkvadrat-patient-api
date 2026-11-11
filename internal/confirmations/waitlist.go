@@ -76,7 +76,9 @@ type DashboardPage struct {
 	Banner    string
 }
 
-// WaitlistRow is a gateway.db waitlist record (no FIO/phone/doctor).
+// WaitlistRow is a gateway.db waitlist record.
+// A MAX row keeps ids, status, branch and time. The patient name and phone
+// come from the Medialog snapshot, not from this table.
 type WaitlistRow struct {
 	ID           int64
 	PlanningID   int64
@@ -146,6 +148,8 @@ type WaitlistListFilter struct {
 	Page                 int
 	PerPage              int
 	IncludeOtherBranches bool
+	ExplicitBranches     bool
+	Query                string
 }
 
 func (r *Repo) ListWaitlist(ctx context.Context, f WaitlistListFilter) (rows []WaitlistRow, total int, err error) {

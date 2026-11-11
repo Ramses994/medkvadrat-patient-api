@@ -67,7 +67,7 @@ func TestDashboard_OldCookieDiesAfterPasswordChangeAndForeignOriginIs403(t *test
 		t.Fatal("no cookie")
 	}
 
-	form := url.Values{"current_password": {"password123"}, "new_password": {"password1234"}}
+	form := url.Values{"current_password": {"password123"}, "new_password": {"password1234"}, "new_password_again": {"password1234"}}
 	change := httptest.NewRequest(http.MethodPost, "/dashboard/password", strings.NewReader(form.Encode()))
 	change.RemoteAddr = "127.0.0.1:9"
 	change.Host = "dash.local"

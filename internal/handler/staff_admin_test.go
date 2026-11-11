@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -57,5 +59,42 @@ func TestStaffPage_AdminListOmitsPasswordHash(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "admin") {
 		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+func TestStaffCreate_LogOmitsTemporaryPassword(t *testing.T) {
+	ctx := context.Background()
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	s := staff.New(db)
+	if _, _, err := s.Create(ctx, staff.CreateUser{
+		Login: "admin", FullName: "Администратор", Role: staff.RoleAdmin, Password: "password10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	h := StaffHandler{Store: s, Logger: slog.New(slog.NewTextHandler(&buf, nil))}
+	r := withPrincipal(httptest.NewRequest(http.MethodPost, "/dashboard/staff", strings.NewReader(`{"login":"reg106","full_name":"Регистратор","role":"registrar","branches":"106"}`)), staff.Principal{
+		ID: 1, Login: "admin", Role: staff.RoleAdmin, All: true,
+	})
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Create(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	temp := ""
+	if i := strings.Index(w.Body.String(), `"temporary_password":"`); i >= 0 {
+		rest := w.Body.String()[i+len(`"temporary_password":"`):]
+		temp = rest[:strings.Index(rest, `"`)]
+	}
+	if temp == "" || strings.Contains(buf.String(), temp) {
+		t.Fatalf("log leaked password: %s", buf.String())
 	}
 }

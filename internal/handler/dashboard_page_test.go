@@ -1,7 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/db"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 	"github.com/medkvadrat/medkvadrat-patient-api/web"
@@ -93,7 +98,7 @@ func TestPasswordPost_StaleIs409(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := DashboardPageHandler{Users: users, Secret: []byte("0123456789abcdef0123456789abcdef")}
-	r := httptest.NewRequest(http.MethodPost, "/dashboard/password", strings.NewReader("current_password=password123&new_password=new-password-1"))
+	r := httptest.NewRequest(http.MethodPost, "/dashboard/password", strings.NewReader("current_password=password123&new_password=new-password-1&new_password_again=new-password-1"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r = r.WithContext(staff.WithPrincipal(r.Context(), principal))
 	w := httptest.NewRecorder()
@@ -153,5 +158,182 @@ func TestDashboardPage_LoginSetsCookie(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected mk_staff cookie")
+	}
+}
+
+func TestLogout_OldCookieDoesNotOpenDashboard(t *testing.T) {
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	users := staff.New(db)
+	created, _, err := users.Create(context.Background(), staff.CreateUser{
+		Login: "reg106", FullName: "Регистратор", Role: staff.RoleRegistrar, Branches: "106", Password: "password123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	h := DashboardPageHandler{HTML: []byte("board"), Password: "secret", Secret: secret, Users: users}
+	login := httptest.NewRequest(http.MethodPost, "/dashboard/login", strings.NewReader("login=reg106&password=password123"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	login.Header.Set("Origin", "http://example.test")
+	login.RemoteAddr = "127.0.0.1:9"
+	lw := httptest.NewRecorder()
+	h.LoginPost(lw, login)
+	if lw.Code != http.StatusFound || lw.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("login %d %s", lw.Code, lw.Header().Get("Location"))
+	}
+	var cookie *http.Cookie
+	for _, c := range lw.Result().Cookies() {
+		if c.Name == "mk_staff" {
+			cookie = c
+		}
+	}
+	if cookie == nil || cookie.Value == "" {
+		t.Fatal("missing session")
+	}
+	staffMW := middleware.RequireStaff{Secret: secret, Lookup: users.ByID}
+	open := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	open.AddCookie(cookie)
+	ow := httptest.NewRecorder()
+	staffMW.Wrap(http.HandlerFunc(h.Page)).ServeHTTP(ow, open)
+	if ow.Code != http.StatusOK {
+		t.Fatalf("open %d", ow.Code)
+	}
+	out := httptest.NewRequest(http.MethodPost, "http://example.test/dashboard/logout", nil)
+	out.Host = "example.test"
+	out.Header.Set("Origin", "http://example.test")
+	out.AddCookie(cookie)
+	outw := httptest.NewRecorder()
+	staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(h.Logout))).ServeHTTP(outw, out)
+	if outw.Code != http.StatusFound || outw.Header().Get("Location") != "/dashboard/login" {
+		t.Fatalf("logout %d %s", outw.Code, outw.Header().Get("Location"))
+	}
+	again := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	again.AddCookie(cookie)
+	aw := httptest.NewRecorder()
+	staffMW.Wrap(http.HandlerFunc(h.Page)).ServeHTTP(aw, again)
+	if aw.Code != http.StatusFound || aw.Header().Get("Location") != "/dashboard/login" {
+		t.Fatalf("old cookie %d %s", aw.Code, aw.Header().Get("Location"))
+	}
+	if created.ID == 0 {
+		t.Fatal("user")
+	}
+}
+
+func TestLogout_FailedEndSessionKeepsBothCookies(t *testing.T) {
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	users := staff.New(db)
+	if _, _, err := users.Create(context.Background(), staff.CreateUser{
+		Login: "reg106", FullName: "Регистратор", Role: staff.RoleRegistrar, Branches: "106", Password: "password123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	var logBuf bytes.Buffer
+	h := DashboardPageHandler{
+		HTML: []byte("board"), Password: "secret", Secret: secret, Users: users,
+		Logger: slog.New(slog.NewTextHandler(&logBuf, nil)),
+	}
+	staffMW := middleware.RequireStaff{Secret: secret, Lookup: users.ByID}
+	login := func() *http.Cookie {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/dashboard/login", strings.NewReader("login=reg106&password=password123"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "http://example.test")
+		req.RemoteAddr = "127.0.0.1:9"
+		w := httptest.NewRecorder()
+		h.LoginPost(w, req)
+		for _, c := range w.Result().Cookies() {
+			if c.Name == "mk_staff" && c.Value != "" {
+				return c
+			}
+		}
+		t.Fatal("missing session")
+		return nil
+	}
+	first, second := login(), login()
+	open := func(c *http.Cookie) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+		req.AddCookie(c)
+		w := httptest.NewRecorder()
+		staffMW.Wrap(http.HandlerFunc(h.Page)).ServeHTTP(w, req)
+		return w.Code
+	}
+	if open(first) != http.StatusOK || open(second) != http.StatusOK {
+		t.Fatal("both cookies should open the dashboard")
+	}
+	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.Users = staff.New(closed)
+	out := httptest.NewRequest(http.MethodPost, "http://example.test/dashboard/logout", nil)
+	out.Host = "example.test"
+	out.Header.Set("Origin", "http://example.test")
+	out.Header.Set("Accept", "application/json")
+	out.AddCookie(first)
+	outw := httptest.NewRecorder()
+	staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(h.Logout))).ServeHTTP(outw, out)
+	if outw.Code != http.StatusServiceUnavailable {
+		t.Fatalf("logout %d %s", outw.Code, outw.Body.String())
+	}
+	if cookies := outw.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("cookie cleared: %+v", cookies)
+	}
+	var body struct {
+		Success bool   `json:"success"`
+		Code    string `json:"code"`
+	}
+	if err := json.Unmarshal(outw.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Success || body.Code != "LOGOUT_FAILED" {
+		t.Fatalf("body %+v", body)
+	}
+	if logBuf.Len() == 0 || strings.Contains(logBuf.String(), "password123") || strings.Contains(logBuf.String(), "Регистратор") {
+		t.Fatalf("log %q", logBuf.String())
+	}
+	if open(first) != http.StatusOK || open(second) != http.StatusOK {
+		t.Fatal("failed logout revoked a session")
+	}
+	form := httptest.NewRequest(http.MethodPost, "http://example.test/dashboard/logout", nil)
+	form.Host = "example.test"
+	form.Header.Set("Origin", "http://example.test")
+	form.AddCookie(first)
+	formw := httptest.NewRecorder()
+	staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(h.Logout))).ServeHTTP(formw, form)
+	if formw.Code != http.StatusServiceUnavailable || !strings.Contains(formw.Body.String(), "Не удалось выйти, повторите") {
+		t.Fatalf("form %d %s", formw.Code, formw.Body.String())
+	}
+	h.Users = users
+	ok := httptest.NewRequest(http.MethodPost, "http://example.test/dashboard/logout", nil)
+	ok.Host = "example.test"
+	ok.Header.Set("Origin", "http://example.test")
+	ok.Header.Set("Accept", "application/json")
+	ok.AddCookie(first)
+	okw := httptest.NewRecorder()
+	staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(h.Logout))).ServeHTTP(okw, ok)
+	if okw.Code != http.StatusFound {
+		t.Fatalf("recovered logout %d %s", okw.Code, okw.Body.String())
+	}
+	if open(first) != http.StatusFound || open(second) != http.StatusFound {
+		t.Fatal("logout did not revoke both cookies")
 	}
 }

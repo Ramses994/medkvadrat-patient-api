@@ -14,7 +14,7 @@ On the dev stand (with a test phone and dev OTP), run:
 ./scripts/dev-smoke.sh http://localhost:8082 79935950695
 ```
 
-The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OTP auth, `/api/me` and catalog reads, including booking options and slots. It does not book or cancel.
+The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OTP auth, `/api/me` and catalog reads, including booking options and slots. It does not book or cancel. The process health check is `GET /api/health`.
 
 `GET /api/me/profile` exposes `birth_date` (`YYYY-MM-DD`) from Medialog `PATIENTS.NE_LE` when set, otherwise `birth_year` from `GOD_ROGDENIQ`. Clients should show one or the other, not both.
 

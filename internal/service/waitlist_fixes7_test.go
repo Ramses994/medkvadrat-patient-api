@@ -15,13 +15,13 @@ import (
 
 func TestSnapshot_SQLiteWaitExpiresBeforeServe(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, duringLastDashboardRead
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, duringLastDashboardRead
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, duringLastDashboardRead = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, duringLastDashboardRead = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	const phone = "79990000050"
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return []repo.WaitlistMisRow{{
@@ -34,7 +34,7 @@ func TestSnapshot_SQLiteWaitExpiresBeforeServe(t *testing.T) {
 			50: {PlanningID: 50, PatientID: 1, BranchID: 106, PatientName: "Реестр", Phone: phone, IsWaitlist: true},
 		}}, nil
 	}
-	duringLastDashboardRead = func() { clock = clock.Add(31 * time.Second) }
+	duringLastDashboardRead = func() { clock.Advance(31 * time.Second) }
 	db := openWaitlistDB(t, "wl_sqlite_wait")
 	svc := &Services{SQLite: db, MSSQL: db}
 	page, err := svc.DashboardWaitlist(context.Background(), confirmations.WaitlistListFilter{Source: "registry", OpenOnly: true, Page: 1, PerPage: 50})
@@ -53,13 +53,13 @@ func TestSnapshot_SQLiteWaitExpiresBeforeServe(t *testing.T) {
 
 func TestSnapshot_RegistryLockAfterTTLDoesNotWrite(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, afterWriteLock
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, afterWriteLock
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, afterWriteLock = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, afterWriteLock = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return []repo.WaitlistMisRow{{
 			PlanningID: 50, PatientID: 1, BranchID: 106, CreatedAt: "2026-11-06 12:00:00",
@@ -76,8 +76,8 @@ func TestSnapshot_RegistryLockAfterTTLDoesNotWrite(t *testing.T) {
 	if _, err := svc.DashboardWaitlist(ctx, confirmations.WaitlistListFilter{Source: "registry", OpenOnly: true, Page: 1, PerPage: 10}); err != nil {
 		t.Fatal(err)
 	}
-	clock = clock.Add(29 * time.Second)
-	afterWriteLock = func() { clock = clock.Add(2 * time.Second) }
+	clock.Advance(29 * time.Second)
+	afterWriteLock = func() { clock.Advance(2 * time.Second) }
 	_, err := svc.PatchRegistryWaitlist(ctx, 50, 1, "call_back", "", "admin")
 	if !errors.Is(err, confirmations.ErrWaitlistNotFound) {
 		t.Fatalf("patch: %v", err)
@@ -93,13 +93,13 @@ func TestSnapshot_RegistryLockAfterTTLDoesNotWrite(t *testing.T) {
 
 func TestSnapshot_ExpiredMaxPatchKeepsSavedBranchWithoutPhone(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, afterWriteLock
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, afterWriteLock
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, afterWriteLock = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, afterWriteLock = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	const phone = "79990000077"
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
@@ -120,8 +120,8 @@ func TestSnapshot_ExpiredMaxPatchKeepsSavedBranchWithoutPhone(t *testing.T) {
 	if _, err := svc.DashboardWaitlist(kash, confirmations.WaitlistListFilter{Source: "max", OpenOnly: true, Page: 1, PerPage: 10}); err != nil {
 		t.Fatal(err)
 	}
-	clock = clock.Add(29 * time.Second)
-	afterWriteLock = func() { clock = clock.Add(2 * time.Second) }
+	clock.Advance(29 * time.Second)
+	afterWriteLock = func() { clock.Advance(2 * time.Second) }
 	item, err := svc.PatchWaitlist(kash, id, 1, "call_back", "", "kash")
 	if err != nil {
 		t.Fatal(err)
@@ -141,13 +141,13 @@ func TestSnapshot_ExpiredMaxPatchKeepsSavedBranchWithoutPhone(t *testing.T) {
 
 func TestSnapshot_LockWaitOutlivesSnapshot(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow := loadMis, loadPageEnrich, misNow
+	prevMis, prevEnrich := loadMis, loadPageEnrich
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow = prevMis, prevEnrich, prevNow
+		loadMis, loadPageEnrich = prevMis, prevEnrich
 		resetSnapStore()
 	})
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
 	}
@@ -167,7 +167,7 @@ func TestSnapshot_LockWaitOutlivesSnapshot(t *testing.T) {
 	if _, err := svc.DashboardWaitlist(ctx, confirmations.WaitlistListFilter{Source: "max", OpenOnly: true, Page: 1, PerPage: 10}); err != nil {
 		t.Fatal(err)
 	}
-	clock = clock.Add(29500 * time.Millisecond)
+	clock.Advance(29500 * time.Millisecond)
 	hold, err := db.Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -202,13 +202,13 @@ func TestSnapshot_LockWaitOutlivesSnapshot(t *testing.T) {
 
 func TestSnapshot_BranchLockAfterTTLWritesNothing(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, afterBranchLock
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, afterBranchLock
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, afterBranchLock = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, afterBranchLock = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
-	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	clock := newFakeClock(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	setMisNow(t, clock.Now)
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
 	}
@@ -218,7 +218,7 @@ func TestSnapshot_BranchLockAfterTTLWritesNothing(t *testing.T) {
 			78: {PlanningID: 78, PatientID: 78, BranchID: 496, PatientName: "Второй", Phone: "79990000002"},
 		}}, nil
 	}
-	afterBranchLock = func() { clock = clock.Add(31 * time.Second) }
+	afterBranchLock = func() { clock.Advance(31 * time.Second) }
 	db := openWaitlistDB(t, "wl_branch_lock")
 	insertOpen(t, db, 77, 106, "new")
 	insertOpen(t, db, 78, 106, "new")

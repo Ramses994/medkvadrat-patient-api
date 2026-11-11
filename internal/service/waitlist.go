@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/confirmations"
@@ -13,7 +14,22 @@ import (
 
 var loadMis = repo.ListWaitlistMis
 
-var misNow = time.Now
+// misNowPtr is the dashboard clock. Tests replace it with setMisNow so the
+// background snapshot sweep does not race a plain assignment.
+var misNowPtr atomic.Pointer[func() time.Time]
+
+func init() {
+	fn := time.Now
+	misNowPtr.Store(&fn)
+}
+
+func misNow() time.Time {
+	fn := misNowPtr.Load()
+	if fn == nil || *fn == nil {
+		return time.Now()
+	}
+	return (*fn)()
+}
 
 type pageEnrichment struct {
 	live     map[int64]repo.WaitlistPlanningLive
