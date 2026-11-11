@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 )
 
@@ -19,8 +20,16 @@ func StaffUpdatedBy(r *http.Request) string {
 	return "staff"
 }
 
-func isDashboardJSON(path string) bool {
-	return strings.HasPrefix(path, "/dashboard/data") || strings.HasPrefix(path, "/dashboard/waitlist")
+func wantsDashboardJSON(r *http.Request) bool {
+	p := r.URL.Path
+	if strings.HasPrefix(p, "/dashboard/data") || strings.HasPrefix(p, "/dashboard/waitlist") || strings.HasPrefix(p, "/dashboard/staff") || p == "/dashboard/me" {
+		return true
+	}
+	return r.Method == http.MethodPost && p == "/dashboard/password"
+}
+
+func passwordChangeExempt(path string) bool {
+	return path == "/dashboard/password" || path == "/dashboard/logout"
 }
 
 func staffNoStore(w http.ResponseWriter) {
@@ -61,6 +70,7 @@ func (d RequireDashboardConfig) Wrap(next http.Handler) http.Handler {
 type RequireStaff struct {
 	Secret []byte
 	Now    func() time.Time
+	Lookup func(ctx context.Context, userID int64) (staff.Principal, error)
 }
 
 func (s RequireStaff) now() time.Time {
@@ -77,12 +87,14 @@ func (s RequireStaff) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		c, err := r.Cookie(staffsession.CookieName)
+		var userID int64
+		var version int
 		ok := false
 		if err == nil && c != nil {
-			ok, _ = staffsession.Valid(s.Secret, c.Value, s.now())
+			userID, version, ok, _ = staffsession.Open(s.Secret, c.Value, s.now())
 		}
 		if !ok {
-			if isDashboardJSON(r.URL.Path) {
+			if wantsDashboardJSON(r) {
 				staffError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
 				return
 			}
@@ -90,7 +102,30 @@ func (s RequireStaff) Wrap(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/dashboard/login", http.StatusFound)
 			return
 		}
-		ctx := context.WithValue(r.Context(), staffCtxKey{}, staffsession.UpdatedBy(c.Value))
+		principal := staff.Principal{ID: userID, Login: "staff", All: true, BranchIDs: append([]int(nil), staff.DashboardBranchIDs...), SessionVersion: version}
+		if s.Lookup != nil {
+			principal, err = s.Lookup(r.Context(), userID)
+			if err != nil || principal.SessionVersion != version {
+				if wantsDashboardJSON(r) {
+					staffError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
+					return
+				}
+				staffNoStore(w)
+				http.Redirect(w, r, "/dashboard/login", http.StatusFound)
+				return
+			}
+		}
+		if principal.MustChangePassword && !passwordChangeExempt(r.URL.Path) {
+			if wantsDashboardJSON(r) {
+				staffError(w, http.StatusForbidden, "PASSWORD_CHANGE_REQUIRED", "Смените пароль")
+				return
+			}
+			staffNoStore(w)
+			http.Redirect(w, r, "/dashboard/password", http.StatusFound)
+			return
+		}
+		ctx := staff.WithPrincipal(r.Context(), principal)
+		ctx = context.WithValue(ctx, staffCtxKey{}, principal.Login)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

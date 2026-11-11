@@ -1,11 +1,14 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 )
 
@@ -58,7 +61,7 @@ func TestRequireStaff_RedirectAndJSON(t *testing.T) {
 	{
 		exp := now.Add(time.Hour)
 		r := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
-		val, err := staffsession.Sign(secret, exp)
+		val, err := staffsession.Sign(secret, 7, 1, exp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,5 +136,65 @@ func TestRequireStaff_401JSON_NoStore(t *testing.T) {
 	}
 	if w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("cache-control=%q", w.Header().Get("Cache-Control"))
+	}
+}
+
+func TestRequireStaff_DisabledUserIsUnauthorizedOnNextRequest(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	mw := RequireStaff{
+		Secret: secret,
+		Now:    func() time.Time { return now },
+		Lookup: func(ctx context.Context, userID int64) (staff.Principal, error) {
+			return staff.Principal{}, staff.ErrInactive
+		},
+	}
+	h := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("disabled user must not reach the handler")
+	}))
+	val, err := staffsession.Sign(secret, 7, 1, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/dashboard/data", nil)
+	r.AddCookie(&http.Cookie{Name: staffsession.CookieName, Value: val})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRequireStaff_MustChangePasswordBlocksData(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	mw := RequireStaff{
+		Secret: secret,
+		Now:    func() time.Time { return now },
+		Lookup: func(ctx context.Context, userID int64) (staff.Principal, error) {
+			return staff.Principal{ID: userID, Login: "admin", All: true, MustChangePassword: true, SessionVersion: 1}, nil
+		},
+	}
+	h := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	val, err := staffsession.Sign(secret, 1, 1, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/dashboard/data", nil)
+	r.AddCookie(&http.Cookie{Name: staffsession.CookieName, Value: val})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "PASSWORD_CHANGE_REQUIRED") {
+		t.Fatalf("data: %d %s", w.Code, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/dashboard/password", nil)
+	r.AddCookie(&http.Cookie{Name: staffsession.CookieName, Value: val})
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("password form: %d location=%s", w.Code, w.Header().Get("Location"))
 	}
 }

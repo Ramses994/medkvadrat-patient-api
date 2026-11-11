@@ -17,6 +17,7 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/poll"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staffsession"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 )
@@ -35,6 +36,9 @@ func main() {
 	}
 	if strings.TrimSpace(cfg.Dashboard.Password) == "" || staffsession.WeakSecret([]byte(cfg.Dashboard.Secret)) {
 		logger.Warn("WARNING: dashboard disabled — DASHBOARD_PASSWORD empty or DASHBOARD_SECRET shorter than 32 bytes")
+	}
+	if msg := staff.BootstrapPasswordWarning(cfg.Dashboard.Password); msg != "" {
+		logger.Warn(msg)
 	}
 
 	mssql, err := db.OpenMSSQL(cfg.MSSQL)
@@ -56,6 +60,10 @@ func main() {
 
 	if err := store.Migrate(ctxBackground(), sqlite); err != nil {
 		logger.Error("sqlite migrate failed", "err", err)
+		os.Exit(1)
+	}
+	if _, err := staff.EnsureFirstAdmin(ctxBackground(), sqlite, cfg.Dashboard.AdminLogin, cfg.Dashboard.Password); err != nil {
+		logger.Error("staff admin bootstrap failed", "err", err)
 		os.Exit(1)
 	}
 	if n, err := store.PurgeClosedWaitlist(ctxBackground(), sqlite, time.Now().UTC()); err != nil {

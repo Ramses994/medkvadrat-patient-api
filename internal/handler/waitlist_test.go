@@ -29,15 +29,35 @@ func (f *fakeWaitlistSvc) DashboardWaitlist(ctx context.Context, filter confirma
 	return f.page, nil
 }
 
-func (f *fakeWaitlistSvc) UpdateWaitlist(ctx context.Context, id int64, status, outcome, updatedBy string) (confirmations.WaitlistRow, error) {
-	if f.err != nil {
-		return confirmations.WaitlistRow{}, f.err
+func (f *fakeWaitlistSvc) PatchRegistryWaitlist(ctx context.Context, planningID int64, version int, outcome, action, updatedBy string) (confirmations.DashboardItem, error) {
+	item := confirmations.DashboardItem{
+		ID: planningID, PlanningID: planningID, Source: "registry", Version: version,
+		MedialogState: "запись действует",
 	}
-	return confirmations.WaitlistRow{
+	if f.err != nil {
+		return item, f.err
+	}
+	item.Status = "contacted"
+	item.Outcome = outcome
+	item.UpdatedBy = updatedBy
+	item.Version = version + 1
+	return item, nil
+}
+
+func (f *fakeWaitlistSvc) PatchWaitlist(ctx context.Context, id int64, version int, outcome, action, updatedBy string) (confirmations.DashboardItem, error) {
+	item := confirmations.DashboardItem{
 		ID: id, PlanningID: 10, PatientID: 20, Reason: "declined",
-		Status: status, Outcome: outcome, CreatedAt: "2026-10-22T00:00:00Z",
-		CreatedAtMSK: "2026-10-22 03:00:00", BranchID: 106, UpdatedBy: updatedBy,
-	}, nil
+		CreatedAt: "2026-10-22T00:00:00Z", CreatedAtMSK: "2026-10-22 03:00:00",
+		BranchID: 106, Source: "max", MedialogState: "запись действует", Version: version, Enriched: true,
+	}
+	if f.err != nil {
+		return item, f.err
+	}
+	item.Status = "contacted"
+	item.Outcome = outcome
+	item.UpdatedBy = updatedBy
+	item.Version = version + 1
+	return item, nil
 }
 
 func TestGolden_Waitlist_List_OK(t *testing.T) {
@@ -47,7 +67,7 @@ func TestGolden_Waitlist_List_OK(t *testing.T) {
 			CreatedAt: "2026-10-21T23:30:00Z", CreatedAtMSK: "2026-10-22 02:30:00", BranchID: 106,
 			PatientName: "Иванов И.", PatientPhone: "79001234567", PatientBirth: "1980-01-01",
 			OrigDateStart: "2026-10-22 10:00:00", OrigDoctor: "Петров П.", OrigService: "Терапевт",
-			MedialogState: "запись действует",
+			MedialogState: "запись действует", Version: 1,
 		}},
 		Total: 1, OpenTotal: 1, Page: 1, PerPage: 50,
 	}}}
@@ -62,15 +82,16 @@ func TestGolden_Waitlist_List_OK(t *testing.T) {
 
 func TestWaitlist_Update_409Changed(t *testing.T) {
 	h := WaitlistHandler{Svc: &fakeWaitlistSvc{err: confirmations.ErrWaitlistChanged}}
-	body := `{"status":"closed","outcome":"refused"}`
-	r := httptest.NewRequest(http.MethodPost, "/dashboard/waitlist/1", bytes.NewBufferString(body))
+	body := `{"outcome":"refused","version":1}`
+	r := httptest.NewRequest(http.MethodPatch, "/dashboard/waitlist/max/1", bytes.NewBufferString(body))
+	r.SetPathValue("source", "max")
 	r.SetPathValue("id", "1")
 	w := httptest.NewRecorder()
-	h.Update(w, r)
+	h.Patch(w, r)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "WAITLIST_CHANGED") {
+	if !strings.Contains(w.Body.String(), "Строку уже изменил другой сотрудник") || !strings.Contains(w.Body.String(), `"medialog_state":"запись действует"`) {
 		t.Fatalf("body=%s", w.Body.String())
 	}
 	if w.Header().Get("Cache-Control") != "no-store" {
@@ -78,13 +99,56 @@ func TestWaitlist_Update_409Changed(t *testing.T) {
 	}
 }
 
-func TestWaitlist_Update_422(t *testing.T) {
-	h := WaitlistHandler{Svc: &fakeWaitlistSvc{err: confirmations.ErrInvalidWaitlistTransition}}
-	body := `{"status":"new","outcome":"other"}`
-	r := httptest.NewRequest(http.MethodPost, "/dashboard/waitlist/1", bytes.NewBufferString(body))
+func TestWaitlist_HugePageIs400(t *testing.T) {
+	h := WaitlistHandler{Svc: refuseWaitlist{}}
+	r := httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?page=9223372036854775807&per_page=100", nil)
+	w := httptest.NewRecorder()
+	h.List(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "VALIDATION") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+func TestWaitlist_MovedIs403(t *testing.T) {
+	h := WaitlistHandler{Svc: &fakeWaitlistSvc{err: confirmations.ErrWaitlistMoved}}
+	r := httptest.NewRequest(http.MethodPatch, "/dashboard/waitlist/max/1", bytes.NewBufferString(`{"outcome":"call_back","version":1}`))
+	r.SetPathValue("source", "max")
 	r.SetPathValue("id", "1")
 	w := httptest.NewRecorder()
-	h.Update(w, r)
+	h.Patch(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "WAITLIST_MOVED") || !strings.Contains(w.Body.String(), "Строка перенесена в другой филиал") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+type refuseWaitlist struct{}
+
+func (refuseWaitlist) DashboardWaitlist(context.Context, confirmations.WaitlistListFilter) (confirmations.DashboardPage, error) {
+	panic("page must be rejected before the service")
+}
+
+func (refuseWaitlist) PatchWaitlist(context.Context, int64, int, string, string, string) (confirmations.DashboardItem, error) {
+	return confirmations.DashboardItem{}, nil
+}
+
+func (refuseWaitlist) PatchRegistryWaitlist(context.Context, int64, int, string, string, string) (confirmations.DashboardItem, error) {
+	return confirmations.DashboardItem{}, nil
+}
+
+func TestWaitlist_Update_422(t *testing.T) {
+	h := WaitlistHandler{Svc: &fakeWaitlistSvc{err: confirmations.ErrUnknownWaitlistOutcome}}
+	body := `{"outcome":"nope","version":1}`
+	r := httptest.NewRequest(http.MethodPatch, "/dashboard/waitlist/max/1", bytes.NewBufferString(body))
+	r.SetPathValue("source", "max")
+	r.SetPathValue("id", "1")
+	w := httptest.NewRecorder()
+	h.Patch(w, r)
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -107,7 +171,7 @@ func TestWaitlist_Router_AuthAndOrigin(t *testing.T) {
 		t.Fatalf("no cookie: %d", w.Code)
 	}
 
-	val, err := staffsession.Sign(secret, dashboardNow().Add(time.Hour))
+	val, err := staffsession.Sign(secret, 7, 1, dashboardNow().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,7 +56,7 @@ func TestExamSelectSQLWaitlistRule(t *testing.T) {
 	if !strings.Contains(sql, `LIKE N'%ожидан%'`) {
 		t.Fatalf("sql missing NAME LIKE: %s", sql)
 	}
-	if !strings.Contains(sql, "PL_EXAM_ID IN") {
+	if !strings.Contains(sql, "ISNULL(ex.PL_EXAM_ID,0) IN") {
 		t.Fatalf("sql missing exam id list: %s", sql)
 	}
 	if !strings.Contains(sql, "EXAM_WEB_NAME") || !strings.Contains(sql, "EXAM_NAME") {

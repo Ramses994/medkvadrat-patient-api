@@ -4,10 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/response"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 )
 
 const dashboardDateLayout = "2006-01-02"
@@ -72,6 +75,19 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "date: формат YYYY-MM-DD")
 		return
 	}
+	if p, ok := staff.PrincipalFrom(r.Context()); ok {
+		if raw := strings.TrimSpace(r.URL.Query().Get("branch")); raw != "" {
+			b, convErr := strconv.Atoi(raw)
+			if convErr != nil || (b != 106 && b != 3 && b != 496) {
+				response.Error(w, http.StatusBadRequest, "VALIDATION", "branch: 106, 3 или 496")
+				return
+			}
+			if !p.Allows(b) {
+				response.Error(w, http.StatusForbidden, "FORBIDDEN", "Нет доступа к этому филиалу")
+				return
+			}
+		}
+	}
 
 	sched, err := h.Svc.DashboardSchedule(r.Context(), date)
 	if err != nil {
@@ -82,6 +98,9 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 
 	branches := make([]dashboardBranchDTO, 0, len(sched.Branches))
 	for _, b := range sched.Branches {
+		if !scheduleBranchVisible(r, b.BranchID) {
+			continue
+		}
 		appts := make([]dashboardAppointmentDTO, 0, len(b.Appointments))
 		for _, a := range b.Appointments {
 			appts = append(appts, dashboardAppointmentDTO{
@@ -109,4 +128,16 @@ func (h DashboardHandler) Schedule(w http.ResponseWriter, r *http.Request) {
 		Date:     sched.Date,
 		Branches: branches,
 	})
+}
+
+func scheduleBranchVisible(r *http.Request, branch int) bool {
+	p, ok := staff.PrincipalFrom(r.Context())
+	if !ok {
+		return true
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("branch")); raw != "" {
+		b, err := strconv.Atoi(raw)
+		return err == nil && b == branch && p.Allows(branch)
+	}
+	return p.Allows(branch)
 }

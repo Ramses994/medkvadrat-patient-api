@@ -34,6 +34,9 @@ type Config struct {
 	LKAuthorMedecinsID         int64
 	LKAuthorMeddepID           int64
 	MedialogRWTimeout          time.Duration
+	DashboardMedialogTimeout   time.Duration
+	WaitlistMisDaysBack        int
+	WaitlistMisDaysAhead       int
 
 	HTTP      HTTPConfig
 	MSSQL     MSSQLConfig
@@ -53,6 +56,7 @@ type BookingPair struct {
 
 type DashboardConfig struct {
 	Password     string
+	AdminLogin   string
 	Secret       string
 	SessionTTL   time.Duration
 	CookieSecure bool
@@ -135,6 +139,9 @@ func Load() (Config, error) {
 		LKAuthorMedecinsID:         authorMedecinsID(),
 		LKAuthorMeddepID:           authorMeddepID(),
 		MedialogRWTimeout:          time.Duration(positiveOr(mustInt(getEnv("MEDIALOG_RW_TIMEOUT_SECONDS", "30"), 30), 30)) * time.Second,
+		DashboardMedialogTimeout:   time.Duration(positiveOr(mustInt(getEnv("DASHBOARD_MEDIALOG_TIMEOUT_SECONDS", "15"), 15), 15)) * time.Second,
+		WaitlistMisDaysBack:        mustInt(getEnv("WAITLIST_MIS_DAYS_BACK", "7"), 7),
+		WaitlistMisDaysAhead:       mustInt(getEnv("WAITLIST_MIS_DAYS_AHEAD", "60"), 60),
 		HTTP: HTTPConfig{
 			ListenAddr: strings.TrimSpace(getEnv("API_PORT", ":8080")),
 		},
@@ -186,6 +193,7 @@ func Load() (Config, error) {
 		},
 		Dashboard: DashboardConfig{
 			Password:     os.Getenv("DASHBOARD_PASSWORD"),
+			AdminLogin:   strings.TrimSpace(getEnv("DASHBOARD_ADMIN_LOGIN", "admin")),
 			Secret:       strings.TrimSpace(os.Getenv("DASHBOARD_SECRET")),
 			SessionTTL:   mustDuration(getEnv("DASHBOARD_SESSION_TTL", "12h")),
 			CookieSecure: mustBool(getEnv("DASHBOARD_COOKIE_SECURE", "false")),
