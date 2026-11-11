@@ -442,6 +442,58 @@ setInterval(() => {
 }, 1000);
 
 const dashboardFetch = window.fetch.bind(window);
+let recoveringAccess = false;
+
+function denialCode(body) {
+  const details = body && body.error_details;
+  return (details && details.code) || '';
+}
+
+function singleRowRefusal(url, opts, status, code) {
+  const method = ((opts && opts.method) || 'GET').toUpperCase();
+  if (method !== 'PATCH' || status !== 403) return false;
+  if (!String(url).includes('/dashboard/waitlist/')) return false;
+  return code === 'WAITLIST_MOVED' || code === 'FORBIDDEN';
+}
+
+function purgeScreen() {
+  const tbody = document.querySelector('#waitlistList tbody');
+  if (tbody) {
+    [...tbody.querySelectorAll('tr')].forEach(tr => cancelClose(tr));
+    tbody.replaceChildren();
+  }
+  if (closeAsk) closeAsk.done(false);
+  wlWork.clear();
+  wlDenied.clear();
+  wlSeen = new Map();
+  wlFresh = new Map();
+  const active = document.activeElement;
+  if (active && active !== document.body && active.blur) active.blur();
+  document.querySelectorAll('#board .list .row').forEach(node => node.remove());
+  hideStaffSecret();
+  showBanner('Проверка доступа…');
+}
+
+function recoverAccess() {
+  if (recoveringAccess || loggingOut) return;
+  recoveringAccess = true;
+  recoverAccessNow();
+}
+
+async function recoverAccessNow() {
+  try {
+    const res = await api(`${CONFIG.API_BASE}/dashboard/me`, {credentials: 'same-origin'});
+    if (!res || loggingOut || authStop(res) || !res.ok) return;
+    const body = res.body;
+    if (!body || !body.success || !body.data) return;
+    applyMe(body.data);
+    await load();
+  } catch (e) {
+  } finally {
+    recoveringAccess = false;
+  }
+}
+
 async function api(url, opts) {
   if (loggingOut) return null;
   try {
@@ -449,6 +501,14 @@ async function api(url, opts) {
     let body = null;
     try { body = await res.json(); } catch (e) { body = null; }
     if (loggingOut) return null;
+    const code = denialCode(body);
+    const method = ((opts && opts.method) || 'GET').toUpperCase();
+    if ((res.status === 401 || res.status === 403) && !singleRowRefusal(url, opts, res.status, code)) {
+      purgeScreen();
+      if (res.status === 403 && code !== 'PASSWORD_CHANGE_REQUIRED' && method === 'GET' && !String(url).includes('/dashboard/me')) {
+        recoverAccess();
+      }
+    }
     return { ok: res.ok, status: res.status, body };
   } catch (err) {
     if (loggingOut) return null;
@@ -474,6 +534,7 @@ async function loadSchedule() {
     if (!res || loggingOut) return;
     if (epoch !== viewEpoch || date !== ($('date').value || todayISO()) || branch !== branchParam() || activeTab !== 'schedule') return;
     if (authStop(res)) return;
+    if (res.status === 401 || res.status === 403) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = res.body;
     if (!body || !body.success) throw new Error((body && body.error) || 'сервер вернул ошибку');
@@ -872,6 +933,7 @@ async function loadWaitlist(keepPoll) {
     if (!res || loggingOut) return;
     if (epoch !== viewEpoch || q.key !== waitlistURL().key || activeTab !== 'waitlist') return;
     if (authStop(res)) return;
+    if (res.status === 401 || res.status === 403) return;
     if (!res.ok) throw new Error(`сервер ответил ${res.status}`);
     const body = res.body;
     if (!body || !body.success) throw new Error((body && body.error) || 'сервер вернул ошибку');
@@ -1593,6 +1655,8 @@ function renderBranchPicker(me) {
   if (one && branches[0]) branchChoice = [String(branches[0].id)];
   else branchChoice = saved.split(',').filter(id => allowed.has(id));
   if (!one && branchChoice.length === branches.length) branchChoice = [];
+  const stored = branchChoice.join(',');
+  if (stored !== saved) storageSet(branchStorageKey(), stored);
   syncBranchChecks();
 }
 
@@ -1650,6 +1714,15 @@ function hideStaffSecret() {
   $('staffTemp').hidden = true;
 }
 
+function applyMe(me) {
+  dashMe = me;
+  dashUser = me.full_name || me.login || '';
+  renderBranchPicker(me);
+  const who = me.full_name || me.login || '';
+  $('whoami').textContent = [who, roleLabel(me.role), branchCaption(me)].filter(Boolean).join(' · ');
+  if (me.role === 'admin') $('tabStaff').hidden = false;
+}
+
 async function loadMe() {
   restoreChoice('wlStatus', 'mk_dash_wl_scope');
   restoreChoice('wlWork', 'mk_dash_wl_status');
@@ -1661,13 +1734,7 @@ async function loadMe() {
     if (!res.ok) return;
     const body = res.body;
     if (loggingOut || !body || !body.success || !body.data) return;
-    const me = body.data;
-    dashMe = me;
-    dashUser = me.full_name || me.login || '';
-    renderBranchPicker(me);
-    const who = me.full_name || me.login || '';
-    $('whoami').textContent = [who, roleLabel(me.role), branchCaption(me)].filter(Boolean).join(' · ');
-    if (me.role === 'admin') $('tabStaff').hidden = false;
+    applyMe(body.data);
   } catch (e) {}
 }
 

@@ -96,6 +96,11 @@ async function openBoard(page, opts) {
   };
   await page.clock.install({ time: new Date(opts.time || '2026-11-06T10:39:00.000Z') });
   await page.route('**/dashboard/me', async route => {
+    if (state.holdMe) {
+      const gate = state.holdMe;
+      state.holdMe = null;
+      await gate;
+    }
     await route.fulfill({
       json: {
         success: true,
@@ -103,7 +108,7 @@ async function openBoard(page, opts) {
           login: opts.login || 'kash',
           full_name: opts.fullName === undefined ? 'Каширка Регистратор' : opts.fullName,
           role: state.role,
-          branches: opts.branches || [
+          branches: state.branches || opts.branches || [
             { id: 106, name: 'Каширка' },
             { id: 3, name: 'Куркино' },
             { id: 496, name: 'Куркино 2' },
@@ -243,6 +248,12 @@ async function openBoard(page, opts) {
     if (state.abortList) {
       state.abortList = false;
       await route.abort('failed');
+      return;
+    }
+    if (state.listReply) {
+      const reply = state.listReply;
+      state.listReply = null;
+      await route.fulfill(reply);
       return;
     }
     const url = new URL(route.request().url());
@@ -1567,4 +1578,113 @@ test('a forbidden save closes the close dialog and does not send it', async ({ p
   await expect(page.locator('#confirmModal')).toBeHidden();
   expect(state.posts).toHaveLength(1);
   expect(state.posts[0]).toMatchObject({ outcome: 'call_back', version: 1 });
+});
+
+function denied(status, code) {
+  return {
+    status,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: false, error: code, error_details: { code } }),
+  };
+}
+
+test('a forbidden list clears the screen and then shows the narrowed branch', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.locator('.wl-outcome').selectOption('refused');
+  await expect(page.locator('#confirmModal')).toBeVisible();
+  await page.evaluate(() => localStorage.setItem('mk_dash_branches:kash', '106,3,496'));
+  let releaseMe;
+  state.holdMe = new Promise(resolve => { releaseMe = resolve; });
+  state.listReply = denied(403, 'FORBIDDEN');
+  await page.evaluate(() => { loadWaitlist(); });
+  const line = page.locator('#waitlistList');
+  await expect(line).not.toContainText('Иванов');
+  await expect(line).not.toContainText('79990001122');
+  await expect(line.locator('.wl-outcome')).toHaveCount(0);
+  await expect(line.getByRole('button')).toHaveCount(0);
+  await expect(page.locator('#confirmModal')).toBeHidden();
+  await expect(page.locator('#banner')).toContainText('Проверка доступа');
+  state.branches = [{ id: 106, name: 'Каширка' }];
+  const back = listResponse(page);
+  releaseMe();
+  await back;
+  await expect(line).toContainText('Иванов Иван');
+  await expect(line).toContainText('+79990001122');
+  await expect(line.locator('.wl-outcome')).toBeVisible();
+  await expect(page.locator('#branchLabel')).toHaveText('Каширка');
+  const saved = await page.evaluate(() => localStorage.getItem('mk_dash_branches:kash'));
+  expect(saved).toBe('106');
+});
+
+test('a password change clears the patient before the password page', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.route('**/dashboard/password**', route => route.abort());
+  state.listReply = denied(403, 'PASSWORD_CHANGE_REQUIRED');
+  const seen = page.waitForEvent('console', msg => msg.text().startsWith('SCREEN:'));
+  await page.evaluate(() => {
+    const orig = authStop;
+    window.authStop = res => {
+      const text = document.body.innerText;
+      console.log('SCREEN:' + (text.includes('Иванов') || text.includes('79990001122') ? 'dirty' : 'clear'));
+      return orig(res);
+    };
+    loadWaitlist();
+  });
+  expect((await seen).text()).toBe('SCREEN:clear');
+  await expect(page.locator('body')).not.toContainText('Иванов');
+  await expect(page.locator('body')).not.toContainText('79990001122');
+});
+
+test('a forbidden schedule clears the appointment cards', async ({ page }) => {
+  const booked = schedule();
+  booked.data.branches[0].appointments = [{
+    planning_id: 1,
+    time: '10:00',
+    patient_name: 'Сидорова Анна',
+    doctor_name: 'Врач',
+    confirmation: 'confirmed',
+    confirmation_hint: '',
+    is_waitlist: false,
+    on_waitlist: false,
+  }];
+  const state = await openBoard(page, { schedule: booked, items: [] });
+  await expect(page.locator('#board')).toContainText('Сидорова Анна');
+  let releaseMe;
+  state.holdMe = new Promise(resolve => { releaseMe = resolve; });
+  await page.route('**/dashboard/data**', route => route.fulfill(denied(403, 'FORBIDDEN')));
+  const refused = page.waitForResponse(res => res.url().includes('/dashboard/data') && res.status() === 403);
+  await page.evaluate(() => { load(); });
+  await refused;
+  await expect(page.locator('#board')).not.toContainText('Сидорова');
+  await expect(page.locator('#board .row')).toHaveCount(0);
+  await expect(page.locator('#banner')).toContainText('Проверка доступа');
+  releaseMe();
+});
+
+test('an unauthorized response clears the screen before login', async ({ page }) => {
+  const state = await openBoard(page, {});
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.route('**/dashboard/login**', route => route.abort());
+  state.listReply = denied(401, 'UNAUTHORIZED');
+  const seen = page.waitForEvent('console', msg => msg.text().startsWith('SCREEN:'));
+  await page.evaluate(() => {
+    const orig = authStop;
+    window.authStop = res => {
+      const text = document.body.innerText;
+      console.log('SCREEN:' + (text.includes('Иванов') || text.includes('79990001122') ? 'dirty' : 'clear'));
+      return orig(res);
+    };
+    loadWaitlist();
+  });
+  expect((await seen).text()).toBe('SCREEN:clear');
+  await expect(page.locator('body')).not.toContainText('Иванов');
+  await expect(page.locator('body')).not.toContainText('79990001122');
 });
