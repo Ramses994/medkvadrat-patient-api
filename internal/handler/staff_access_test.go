@@ -116,8 +116,8 @@ func TestWaitlist_BranchFilterAndStatusValidation(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
-	if len(svc.last.BranchIDs) != 1 || svc.last.BranchIDs[0] != 106 {
-		t.Fatalf("branch ids: %v", svc.last.BranchIDs)
+	if len(svc.last.BranchIDs) != 1 || svc.last.BranchIDs[0] != 106 || svc.last.ExplicitBranches {
+		t.Fatalf("branch ids: %v explicit=%v", svc.last.BranchIDs, svc.last.ExplicitBranches)
 	}
 
 	before := svc.last
@@ -144,8 +144,8 @@ func TestWaitlist_BranchFilterAndStatusValidation(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("manager: %d", w.Code)
 	}
-	if len(svc.last.BranchIDs) != 3 || svc.last.BranchIDs[0] != 106 || svc.last.BranchIDs[1] != 3 || svc.last.BranchIDs[2] != 496 {
-		t.Fatalf("manager branches: %v", svc.last.BranchIDs)
+	if len(svc.last.BranchIDs) != 3 || svc.last.BranchIDs[0] != 106 || svc.last.BranchIDs[1] != 3 || svc.last.BranchIDs[2] != 496 || svc.last.ExplicitBranches {
+		t.Fatalf("manager branches: %v explicit=%v", svc.last.BranchIDs, svc.last.ExplicitBranches)
 	}
 
 	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?branch=106,3", nil), registrarKashirka())
@@ -161,8 +161,8 @@ func TestWaitlist_BranchFilterAndStatusValidation(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("manager pair: %d %s", w.Code, w.Body.String())
 	}
-	if svc.last.BranchID != nil || len(svc.last.BranchIDs) != 2 || svc.last.BranchIDs[0] != 106 || svc.last.BranchIDs[1] != 3 {
-		t.Fatalf("manager filter id=%v ids=%v", svc.last.BranchID, svc.last.BranchIDs)
+	if svc.last.BranchID != nil || len(svc.last.BranchIDs) != 2 || svc.last.BranchIDs[0] != 106 || svc.last.BranchIDs[1] != 3 || !svc.last.ExplicitBranches {
+		t.Fatalf("manager filter id=%v ids=%v explicit=%v", svc.last.BranchID, svc.last.BranchIDs, svc.last.ExplicitBranches)
 	}
 
 	r = withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/waitlist?branch=106,999", nil), managerAll())

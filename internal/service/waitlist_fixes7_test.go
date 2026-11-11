@@ -15,13 +15,13 @@ import (
 
 func TestSnapshot_SQLiteWaitExpiresBeforeServe(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, duringLastDashboardRead
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, duringLastDashboardRead
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, duringLastDashboardRead = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, duringLastDashboardRead = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	const phone = "79990000050"
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return []repo.WaitlistMisRow{{
@@ -53,13 +53,13 @@ func TestSnapshot_SQLiteWaitExpiresBeforeServe(t *testing.T) {
 
 func TestSnapshot_RegistryLockAfterTTLDoesNotWrite(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, afterWriteLock
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, afterWriteLock
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, afterWriteLock = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, afterWriteLock = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return []repo.WaitlistMisRow{{
 			PlanningID: 50, PatientID: 1, BranchID: 106, CreatedAt: "2026-11-06 12:00:00",
@@ -93,13 +93,13 @@ func TestSnapshot_RegistryLockAfterTTLDoesNotWrite(t *testing.T) {
 
 func TestSnapshot_ExpiredMaxPatchKeepsSavedBranchWithoutPhone(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, afterWriteLock
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, afterWriteLock
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, afterWriteLock = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, afterWriteLock = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	const phone = "79990000077"
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
@@ -141,13 +141,13 @@ func TestSnapshot_ExpiredMaxPatchKeepsSavedBranchWithoutPhone(t *testing.T) {
 
 func TestSnapshot_LockWaitOutlivesSnapshot(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow := loadMis, loadPageEnrich, misNow
+	prevMis, prevEnrich := loadMis, loadPageEnrich
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow = prevMis, prevEnrich, prevNow
+		loadMis, loadPageEnrich = prevMis, prevEnrich
 		resetSnapStore()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
 	}
@@ -202,13 +202,13 @@ func TestSnapshot_LockWaitOutlivesSnapshot(t *testing.T) {
 
 func TestSnapshot_BranchLockAfterTTLWritesNothing(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevHook := loadMis, loadPageEnrich, misNow, afterBranchLock
+	prevMis, prevEnrich, prevHook := loadMis, loadPageEnrich, afterBranchLock
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, afterBranchLock = prevMis, prevEnrich, prevNow, prevHook
+		loadMis, loadPageEnrich, afterBranchLock = prevMis, prevEnrich, prevHook
 		resetSnapStore()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
 	}

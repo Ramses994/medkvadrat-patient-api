@@ -1,7 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -219,5 +223,117 @@ func TestLogout_OldCookieDoesNotOpenDashboard(t *testing.T) {
 	}
 	if created.ID == 0 {
 		t.Fatal("user")
+	}
+}
+
+func TestLogout_FailedEndSessionKeepsBothCookies(t *testing.T) {
+	db, err := db.OpenSQLite(filepath.Join(t.TempDir(), "staff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	users := staff.New(db)
+	if _, _, err := users.Create(context.Background(), staff.CreateUser{
+		Login: "reg106", FullName: "Регистратор", Role: staff.RoleRegistrar, Branches: "106", Password: "password123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	var logBuf bytes.Buffer
+	h := DashboardPageHandler{
+		HTML: []byte("board"), Password: "secret", Secret: secret, Users: users,
+		Logger: slog.New(slog.NewTextHandler(&logBuf, nil)),
+	}
+	staffMW := middleware.RequireStaff{Secret: secret, Lookup: users.ByID}
+	login := func() *http.Cookie {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/dashboard/login", strings.NewReader("login=reg106&password=password123"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "http://example.test")
+		req.RemoteAddr = "127.0.0.1:9"
+		w := httptest.NewRecorder()
+		h.LoginPost(w, req)
+		for _, c := range w.Result().Cookies() {
+			if c.Name == "mk_staff" && c.Value != "" {
+				return c
+			}
+		}
+		t.Fatal("missing session")
+		return nil
+	}
+	first, second := login(), login()
+	open := func(c *http.Cookie) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+		req.AddCookie(c)
+		w := httptest.NewRecorder()
+		staffMW.Wrap(http.HandlerFunc(h.Page)).ServeHTTP(w, req)
+		return w.Code
+	}
+	if open(first) != http.StatusOK || open(second) != http.StatusOK {
+		t.Fatal("both cookies should open the dashboard")
+	}
+	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.Users = staff.New(closed)
+	out := httptest.NewRequest(http.MethodPost, "http://example.test/dashboard/logout", nil)
+	out.Host = "example.test"
+	out.Header.Set("Origin", "http://example.test")
+	out.Header.Set("Accept", "application/json")
+	out.AddCookie(first)
+	outw := httptest.NewRecorder()
+	staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(h.Logout))).ServeHTTP(outw, out)
+	if outw.Code != http.StatusServiceUnavailable {
+		t.Fatalf("logout %d %s", outw.Code, outw.Body.String())
+	}
+	if cookies := outw.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("cookie cleared: %+v", cookies)
+	}
+	var body struct {
+		Success bool   `json:"success"`
+		Code    string `json:"code"`
+	}
+	if err := json.Unmarshal(outw.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Success || body.Code != "LOGOUT_FAILED" {
+		t.Fatalf("body %+v", body)
+	}
+	if logBuf.Len() == 0 || strings.Contains(logBuf.String(), "password123") || strings.Contains(logBuf.String(), "Регистратор") {
+		t.Fatalf("log %q", logBuf.String())
+	}
+	if open(first) != http.StatusOK || open(second) != http.StatusOK {
+		t.Fatal("failed logout revoked a session")
+	}
+	form := httptest.NewRequest(http.MethodPost, "http://example.test/dashboard/logout", nil)
+	form.Host = "example.test"
+	form.Header.Set("Origin", "http://example.test")
+	form.AddCookie(first)
+	formw := httptest.NewRecorder()
+	staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(h.Logout))).ServeHTTP(formw, form)
+	if formw.Code != http.StatusServiceUnavailable || !strings.Contains(formw.Body.String(), "Не удалось выйти, повторите") {
+		t.Fatalf("form %d %s", formw.Code, formw.Body.String())
+	}
+	h.Users = users
+	ok := httptest.NewRequest(http.MethodPost, "http://example.test/dashboard/logout", nil)
+	ok.Host = "example.test"
+	ok.Header.Set("Origin", "http://example.test")
+	ok.Header.Set("Accept", "application/json")
+	ok.AddCookie(first)
+	okw := httptest.NewRecorder()
+	staffMW.Wrap(middleware.RequireSameOrigin(http.HandlerFunc(h.Logout))).ServeHTTP(okw, ok)
+	if okw.Code != http.StatusFound {
+		t.Fatalf("recovered logout %d %s", okw.Code, okw.Body.String())
+	}
+	if open(first) != http.StatusFound || open(second) != http.StatusFound {
+		t.Fatal("logout did not revoke both cookies")
 	}
 }

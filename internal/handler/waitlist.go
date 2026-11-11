@@ -112,10 +112,12 @@ func (h WaitlistHandler) List(w http.ResponseWriter, r *http.Request) {
 		filter.BranchID = &b
 		filter.BranchIDs = nil
 		filter.IncludeOtherBranches = false
+		filter.ExplicitBranches = true
 	} else if len(ids) > 1 {
 		filter.BranchID = nil
 		filter.BranchIDs = ids
 		filter.IncludeOtherBranches = false
+		filter.ExplicitBranches = true
 	}
 	query := strings.TrimSpace(q.Get("q"))
 	if utf8.RuneCountInString(query) > 64 {

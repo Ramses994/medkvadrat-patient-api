@@ -773,6 +773,17 @@ func sortWait(all []waitTagged) {
 }
 
 func branchAllowed(ctx context.Context, f confirmations.WaitlistListFilter, branch int) bool {
+	if f.ExplicitBranches {
+		if f.BranchID != nil {
+			return branch == *f.BranchID
+		}
+		for _, id := range f.BranchIDs {
+			if id == branch {
+				return true
+			}
+		}
+		return false
+	}
 	if f.BranchID != nil {
 		return branch == *f.BranchID
 	}

@@ -76,14 +76,14 @@ func TestSnapshot_MoveBothSources(t *testing.T) {
 func TestSnapshot_ReadFailureAfterTTL(t *testing.T) {
 	resetMisCache()
 	resetEnrichCache()
-	prevMis, prevEnrich, prevNow := loadMis, loadPageEnrich, misNow
+	prevMis, prevEnrich := loadMis, loadPageEnrich
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow = prevMis, prevEnrich, prevNow
+		loadMis, loadPageEnrich = prevMis, prevEnrich
 		resetMisCache()
 		resetEnrichCache()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	fail := false
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		if fail {
@@ -289,14 +289,14 @@ func TestSnapshot_RegistrySameDayFuture(t *testing.T) {
 func TestSnapshot_IdleHourDropsNames(t *testing.T) {
 	resetMisCache()
 	resetEnrichCache()
-	prevMis, prevEnrich, prevNow := loadMis, loadPageEnrich, misNow
+	prevMis, prevEnrich := loadMis, loadPageEnrich
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow = prevMis, prevEnrich, prevNow
+		loadMis, loadPageEnrich = prevMis, prevEnrich
 		resetMisCache()
 		resetEnrichCache()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return []repo.WaitlistMisRow{{
 			PlanningID: 70, PatientID: 1, CreatedAt: "2026-11-06 12:00:00", BranchID: 106, PatientName: "СекретЧас",
@@ -326,14 +326,14 @@ func TestSnapshot_IdleHourDropsNames(t *testing.T) {
 func TestSnapshot_OpenSetReloadsTogether(t *testing.T) {
 	resetMisCache()
 	resetEnrichCache()
-	prevMis, prevEnrich, prevNow := loadMis, loadPageEnrich, misNow
+	prevMis, prevEnrich := loadMis, loadPageEnrich
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow = prevMis, prevEnrich, prevNow
+		loadMis, loadPageEnrich = prevMis, prevEnrich
 		resetMisCache()
 		resetEnrichCache()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	var misCalls, enrichCalls int
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		misCalls++

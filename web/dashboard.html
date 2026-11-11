@@ -303,6 +303,7 @@
     <p>Передайте сотруднику лично; при первом входе он задаст свой пароль.</p>
     <button type="button" class="btn" id="staffCopy">Скопировать</button>
     <button type="button" class="btn" id="staffHide">Скрыть</button>
+    <p id="staffCopyNote" class="wl-saved"></p>
   </div>
   <div id="staffStatus" class="wl-saved"></div>
   <div id="staffTable"></div>
@@ -355,6 +356,9 @@ let timer = null;
 let queryTimer = null;
 let staffSecretTimer = null;
 let pollsStopped = false;
+let loggingOut = false;
+let staffVisit = 0;
+let staffNotice = '';
 let dashMe = null;
 let branchChoice = [];
 let activeTab = 'schedule';
@@ -378,6 +382,7 @@ let followedDay = '';
 let scheduleKey = '';
 let waitlistKey = '';
 const pendingWl = new Map();
+const savedWork = new Map();
 const BUSY_MS = 5000;
 const BRANCH_NAME = {106:'Каширка', 3:'Куркино', 496:'Куркино 2'};
 const REASON_LABEL = {declined:'не придёт', reschedule:'перенос'};
@@ -437,6 +442,7 @@ setInterval(() => {
 }, 1000);
 
 function load() {
+  if (loggingOut) return;
   if (activeTab === 'waitlist') return loadWaitlist();
   return loadSchedule();
 }
@@ -465,6 +471,7 @@ async function loadSchedule() {
     if (epoch === viewEpoch) showBanner(`Не удалось обновить расписание: ${err.message}. Показаны последние полученные данные.`);
   } finally {
     scheduleBusy = false;
+    if (loggingOut) return;
     if (scheduleQueued || epoch !== viewEpoch) {
       scheduleQueued = false;
       if (activeTab === 'schedule') loadSchedule();
@@ -771,6 +778,7 @@ function hideBanner(){ banner.classList.remove('show'); }
 
 function setTab(name) {
   if (activeTab === name) return;
+  if (activeTab === 'staff' || name === 'staff') staffVisit++;
   activeTab = name;
   viewEpoch++;
   $('tabSchedule').classList.toggle('active', name === 'schedule');
@@ -789,7 +797,14 @@ function setTab(name) {
   }
   if (name !== 'staff') hideStaffSecret();
   if (name === 'waitlist') waitlistKey = '';
-  if (name === 'staff') { loadStaff(); return; }
+  if (name === 'staff') {
+    if (staffNotice) {
+      $('staffStatus').textContent = staffNotice;
+      staffNotice = '';
+    }
+    loadStaff();
+    return;
+  }
   load();
 }
 
@@ -805,6 +820,7 @@ async function refreshWaitlistCount() {
   } catch (e) {
   } finally {
     waitlistBusy = false;
+    if (loggingOut) return;
     if (waitlistQueued) {
       waitlistQueued = false;
       if (activeTab === 'waitlist') loadWaitlist();
@@ -847,6 +863,7 @@ async function loadWaitlist() {
     if (epoch === viewEpoch) showBanner(`Не удалось обновить лист ожидания: ${err.message}.`);
   } finally {
     waitlistBusy = false;
+    if (loggingOut) return;
     if (waitlistQueued || epoch !== viewEpoch) {
       waitlistQueued = false;
       if (activeTab === 'waitlist') loadWaitlist();
@@ -865,15 +882,9 @@ function paintWaitlist(data, key) {
   $('wlNext').disabled = (data.page || 1) >= pages;
   const wrap = $('waitlistList');
   const keepScroll = wrap.scrollTop;
-  const rebuild = key !== waitlistKey;
-  if (rebuild) {
-    waitlistKey = key;
-    pendingWl.clear();
-    wrap.innerHTML = '';
-  }
+  waitlistKey = key;
   if (!items.length) {
-    if (rebuild || !wrap.querySelector('.empty')) {
-      if (rebuild) wrap.innerHTML = '';
+    if (!wrap.querySelector('.empty')) {
       wrap.querySelectorAll('table,.empty').forEach(n => n.remove());
       wrap.appendChild(el('div', 'empty', 'Открытых строк нет.'));
     }
@@ -898,7 +909,8 @@ function paintWaitlist(data, key) {
   }
   const tbody = table.querySelector('tbody');
   const ids = items.map(it => (it.source || 'max') + ':' + it.id);
-  items.forEach(it => {
+  items.forEach(raw => {
+    const it = withSavedWork(raw);
     let tr = tbody.querySelector(`tr[data-key="${(it.source || 'max') + ':' + it.id}"]`);
     if (!tr) {
       tr = renderWaitlistRow(it);
@@ -1206,16 +1218,47 @@ async function authStop(res) {
   return false;
 }
 
+function withSavedWork(it) {
+  const key = (it.source || 'max') + ':' + it.id;
+  const saved = savedWork.get(key);
+  if (!saved || Number(saved.version || 0) < Number(it.version || 0)) return it;
+  return Object.assign({}, it, {
+    status: saved.status || it.status,
+    outcome: saved.outcome,
+    version: saved.version,
+    updated_by: saved.updated_by || it.updated_by,
+    updated_at: saved.updated_at || it.updated_at
+  });
+}
+
+function rememberWork(key, row) {
+  if (!row || !row.version) return;
+  const prev = savedWork.get(key);
+  if (prev && Number(prev.version || 0) > Number(row.version || 0)) return;
+  savedWork.set(key, {
+    status: row.status || '',
+    outcome: row.outcome || '',
+    version: row.version,
+    updated_by: row.updated_by || '',
+    updated_at: row.updated_at || ''
+  });
+}
+
+function waitlistRow(key) {
+  return document.querySelector('#waitlistList tr[data-key="' + key + '"]');
+}
+
 async function saveWaitlist(tr, outcome, action) {
-  const epoch = viewEpoch;
-  const filterKey = waitlistKey;
+  const source = tr.dataset.source || 'max';
+  const id = tr.dataset.id;
+  const key = source + ':' + id;
   const oc = tr.querySelector('.wl-outcome');
   const prev = tr.dataset.outcome || '';
   markRow(tr, 'Сохраняется…');
   const version = Number(tr.dataset.version || '1');
   const payload = action === 'reopen' ? {action: 'reopen', version} : {outcome, version};
   try {
-    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}/${tr.dataset.source}/${tr.dataset.id}`, {
+    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.WAITLIST}/${source}/${id}`, {
       method: 'PATCH',
       credentials: 'same-origin',
       headers: {
@@ -1224,8 +1267,8 @@ async function saveWaitlist(tr, outcome, action) {
       },
       body: JSON.stringify(payload)
     });
-    if (epoch !== viewEpoch || filterKey !== waitlistKey) return;
     if (await authStop(res)) return;
+    const rowNow = () => waitlistRow(key);
     if (res.status === 409) {
       let msg = 'Строку уже изменил другой сотрудник';
       let data = null;
@@ -1235,13 +1278,19 @@ async function saveWaitlist(tr, outcome, action) {
         else if (body.error) msg = body.error;
         data = body.data || null;
       } catch (e) {}
+      const row = rowNow();
+      if (!row) {
+        if (data && data.row) rememberWork(key, data.row);
+        return;
+      }
       if (data && data.row) {
-        applyWorkingFields(tr, data.row);
-        if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(tr, data.full);
+        rememberWork(key, data.row);
+        applyWorkingFields(row, data.row);
+        if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(row, data.full);
         else await loadWaitlist();
       } else if (data && data.enriched && fullWaitlistRow(data)) {
-        applyWaitlistItem(tr, data);
-      } else if (oc && !(data && data.row)) {
+        applyWaitlistItem(row, data);
+      } else if (oc && row.contains(oc) && !(data && data.row)) {
         oc.value = prev;
       }
       showBanner(msg);
@@ -1256,41 +1305,52 @@ async function saveWaitlist(tr, outcome, action) {
         if (body.error_details && body.error_details.message) msg = body.error_details.message;
         else if (body.error) msg = body.error;
       } catch (e) {}
+      const row = rowNow();
+      if (!row) return;
       if (res.status === 403 && code === 'WAITLIST_MOVED') {
-        tr.remove();
+        row.remove();
         showBanner('Строка перенесена в другой филиал');
         return;
       }
-      if (oc) oc.value = prev;
+      const liveOc = row.querySelector('.wl-outcome');
+      if (liveOc) liveOc.value = prev;
       showBanner(msg);
-      markRow(tr, msg);
+      markRow(row, msg);
       return;
     }
     const body = await res.json();
-    if (epoch !== viewEpoch || filterKey !== waitlistKey) return;
     const data = body.data || {};
-    if (data.row) {
-      applyWorkingFields(tr, data.row);
-      if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(tr, data.full);
+    const saved = data.row || null;
+    if (saved) rememberWork(key, saved);
+    const row = rowNow();
+    if (!row) return;
+    const current = Number(row.dataset.version || '0');
+    const next = Number((saved && saved.version) || 0);
+    if (next && next < current) return;
+    if (saved) {
+      applyWorkingFields(row, saved);
+      if (data.enriched && fullWaitlistRow(data.full)) applyWaitlistItem(row, data.full);
       else loadWaitlist();
     } else if (fullWaitlistRow(data)) {
-      applyWaitlistItem(tr, data);
+      applyWaitlistItem(row, data);
     }
-    pendingWl.delete(tr.dataset.key);
+    pendingWl.delete(key);
     const clock = msk(new Date()).toTimeString().slice(0, 5);
-    markRow(tr, 'Сохранено ✓ ' + (dashUser || '') + ', ' + clock);
+    markRow(row, 'Сохранено ✓ ' + (dashUser || '') + ', ' + clock);
   } catch (err) {
-    if (epoch !== viewEpoch || filterKey !== waitlistKey) return;
-    if (oc) oc.value = prev;
+    const row = waitlistRow(key);
+    if (!row) return;
+    const liveOc = row.querySelector('.wl-outcome');
+    if (liveOc) liveOc.value = prev;
     showBanner(`Не удалось сохранить: ${err.message}`);
-    markRow(tr, err.message);
+    markRow(row, err.message);
   }
 }
 
 function arm() {
   clearTimeout(timer);
-  if (pollsStopped || document.hidden) return;
-  timer = setTimeout(() => { load(); }, CONFIG.POLL_MS);
+  if (loggingOut || pollsStopped || document.hidden) return;
+  timer = setTimeout(() => { if (!loggingOut) load(); }, CONFIG.POLL_MS);
 }
 
 function pinToday() {
@@ -1317,10 +1377,11 @@ $('today').addEventListener('click', () => {
   load();
 });
 window.addEventListener('pageshow', event => {
+  if (loggingOut) return;
   pinToday();
   if (event.persisted || document.readyState === 'complete') load();
 });
-document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+document.addEventListener('visibilitychange', () => { if (!loggingOut && !document.hidden) load(); });
 function storageGet(key) {
   try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
 }
@@ -1421,8 +1482,15 @@ function chooseBranches(ids) {
   load();
 }
 
-function showStaffSecret(password) {
+function showStaffSecret(password, visit, login) {
+  if (visit !== staffVisit) {
+    const msg = 'Пароль для ' + (login || 'сотрудника') + ' создан; чтобы увидеть его, сбросьте пароль ещё раз';
+    if (activeTab === 'staff') $('staffStatus').textContent = msg;
+    else staffNotice = msg;
+    return;
+  }
   clearTimeout(staffSecretTimer);
+  $('staffCopyNote').textContent = '';
   $('staffStatus').textContent = '';
   $('staffTempText').textContent = password;
   $('staffTemp').hidden = false;
@@ -1433,6 +1501,8 @@ function hideStaffSecret() {
   clearTimeout(staffSecretTimer);
   staffSecretTimer = null;
   $('staffTempText').textContent = '';
+  $('staffTempText').removeAttribute('data-password');
+  $('staffCopyNote').textContent = '';
   $('staffTemp').hidden = true;
 }
 
@@ -1496,12 +1566,12 @@ async function loadStaff() {
       save.type = 'button';
       save.className = 'btn';
       save.textContent = 'Сохранить';
-      save.addEventListener('click', () => updateStaff(u.id, {role: role.value, branches: branches.value, active: active.checked}));
+      save.addEventListener('click', () => updateStaff(u.id, u.login, {role: role.value, branches: branches.value, active: active.checked}));
       const reset = document.createElement('button');
       reset.type = 'button';
       reset.className = 'btn';
       reset.textContent = 'Сбросить пароль';
-      reset.addEventListener('click', () => updateStaff(u.id, {role: role.value, branches: branches.value, active: active.checked, reset_password: true}));
+      reset.addEventListener('click', () => updateStaff(u.id, u.login, {role: role.value, branches: branches.value, active: active.checked, reset_password: true}));
       tr.appendChild(el('td')).appendChild(role);
       tr.appendChild(el('td')).appendChild(branches);
       tr.appendChild(el('td')).appendChild(active);
@@ -1518,7 +1588,8 @@ async function loadStaff() {
   }
 }
 
-async function updateStaff(id, payload) {
+async function updateStaff(id, login, payload) {
+  const visit = staffVisit;
   try {
     const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff/${id}`, {
       method: 'POST',
@@ -1529,8 +1600,8 @@ async function updateStaff(id, payload) {
     if (await authStop(res)) return;
     const body = await res.json();
     if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
-    if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password);
-    else { hideStaffSecret(); $('staffStatus').textContent = 'Сохранено'; }
+    if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password, visit, login);
+    else if (visit === staffVisit) { hideStaffSecret(); $('staffStatus').textContent = 'Сохранено'; }
     loadStaff();
   } catch (err) {
     $('staffStatus').textContent = err.message;
@@ -1565,16 +1636,70 @@ $('wlClear').addEventListener('click', () => {
   wlPage = 1; viewEpoch++; waitlistKey = ''; loadWaitlist();
 });
 $('logoutBtn').addEventListener('click', async () => {
-  pollsStopped = true;
+  if (loggingOut) return;
+  loggingOut = true;
   clearTimeout(timer);
   clearTimeout(queryTimer);
-  await fetch('/dashboard/logout', {method: 'POST', credentials: 'same-origin'});
+  let ok = false;
+  try {
+    const res = await fetch('/dashboard/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      redirect: 'manual',
+      headers: {'Accept': 'application/json', 'X-Dashboard-Request': '1'}
+    });
+    ok = res.type === 'opaqueredirect' || res.status === 302 || res.status === 303 || (res.ok && res.status !== 503);
+  } catch (e) {
+    ok = false;
+  }
+  if (!ok) {
+    loggingOut = false;
+    showBanner('Не удалось выйти — повторите');
+    arm();
+    return;
+  }
   location.href = '/dashboard/login';
 });
+function copyFallback(text) {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.readOnly = true;
+  area.style.position = 'fixed';
+  area.style.left = '-10000px';
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  let copied = false;
+  try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+  area.remove();
+  return copied;
+}
+function selectStaffPassword() {
+  const node = $('staffTempText');
+  if (!node) return;
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const sel = window.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
 $('staffCopy').addEventListener('click', async () => {
   const text = $('staffTempText').textContent;
   if (!text) return;
-  try { await navigator.clipboard.writeText(text); } catch (e) {}
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); copied = true; } catch (e) { copied = false; }
+  }
+  if (!copied) copied = copyFallback(text);
+  const note = $('staffCopyNote');
+  if (copied) {
+    note.textContent = 'Скопировано';
+    setTimeout(() => { if (note.textContent === 'Скопировано') note.textContent = ''; }, 2000);
+    return;
+  }
+  note.textContent = 'Не удалось скопировать — выделите пароль и нажмите Ctrl+C';
+  selectStaffPassword();
 });
 $('staffHide').addEventListener('click', hideStaffSecret);
 $('wlStatus').addEventListener('change', () => {
@@ -1593,6 +1718,8 @@ $('wlPrev').addEventListener('click', () => { if (wlPage > 1) { wlPage--; viewEp
 $('wlNext').addEventListener('click', () => { wlPage++; viewEpoch++; waitlistKey = ''; loadWaitlist(); });
 $('staffForm').addEventListener('submit', async event => {
   event.preventDefault();
+  const visit = staffVisit;
+  const login = $('staffLogin').value.trim();
   try {
     const res = await fetch(`${CONFIG.API_BASE}/dashboard/staff`, {
       method: 'POST',
@@ -1608,8 +1735,8 @@ $('staffForm').addEventListener('submit', async event => {
     if (await authStop(res)) return;
     const body = await res.json();
     if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
-    if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password);
-    else hideStaffSecret();
+    if (body.data && body.data.temporary_password) showStaffSecret(body.data.temporary_password, visit, login);
+    else if (visit === staffVisit) hideStaffSecret();
     $('staffForm').reset();
     $('staffBranches').value = '106';
     loadStaff();

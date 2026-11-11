@@ -148,6 +148,7 @@ type WaitlistListFilter struct {
 	Page                 int
 	PerPage              int
 	IncludeOtherBranches bool
+	ExplicitBranches     bool
 	Query                string
 }
 

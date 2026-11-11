@@ -188,10 +188,9 @@ func TestWaitlistSort_MoscowEqualAndEmptyPage(t *testing.T) {
 
 func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 	resetMisCache()
-	prevMis, prevNow, prevEnrich := loadMis, misNow, loadPageEnrich
+	prevMis, prevEnrich := loadMis, loadPageEnrich
 	t.Cleanup(func() {
 		loadMis = prevMis
-		misNow = prevNow
 		loadPageEnrich = prevEnrich
 		resetMisCache()
 	})
@@ -207,7 +206,7 @@ func TestRegistryReadError_OmitsRowsAndExpiredNames(t *testing.T) {
 		return pageEnrichment{live: live}, nil
 	}
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	var fail atomic.Bool
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		if fail.Load() {
@@ -249,18 +248,16 @@ func TestEnrichCache_MissingOriginalOneReadThenGone(t *testing.T) {
 	resetEnrichCache()
 	prev := loadPageEnrich
 	prevMis := loadMis
-	prevNow := misNow
 	t.Cleanup(func() {
 		loadPageEnrich = prev
 		loadMis = prevMis
-		misNow = prevNow
 		resetEnrichCache()
 	})
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
 	}
 	clock := time.Date(2026, 11, 6, 15, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	var calls atomic.Int32
 	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
 		calls.Add(1)

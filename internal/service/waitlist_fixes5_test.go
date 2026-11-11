@@ -79,13 +79,13 @@ func TestSnapshot_OneReadForParallelTabs(t *testing.T) {
 
 func TestSnapshot_WriteFailureDoesNotRestoreOldBranch(t *testing.T) {
 	resetSnapStore()
-	prevMis, prevEnrich, prevNow, prevStore := loadMis, loadPageEnrich, misNow, storeWaitlistBranch
+	prevMis, prevEnrich, prevStore := loadMis, loadPageEnrich, storeWaitlistBranch
 	t.Cleanup(func() {
-		loadMis, loadPageEnrich, misNow, storeWaitlistBranch = prevMis, prevEnrich, prevNow, prevStore
+		loadMis, loadPageEnrich, storeWaitlistBranch = prevMis, prevEnrich, prevStore
 		resetSnapStore()
 	})
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	phone := "79990000001"
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil

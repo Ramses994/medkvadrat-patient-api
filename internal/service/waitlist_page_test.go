@@ -80,10 +80,9 @@ VALUES(77,66,'v','2026-11-06 10:00:00','declined','max','new','2026-11-06T06:00:
 
 func TestMisCache_NewKeyAfterMoscowMidnight(t *testing.T) {
 	resetMisCache()
-	prevLoad, prevNow := loadMis, misNow
+	prevLoad := loadMis
 	t.Cleanup(func() {
 		loadMis = prevLoad
-		misNow = prevNow
 		resetMisCache()
 	})
 	var calls atomic.Int32
@@ -92,7 +91,7 @@ func TestMisCache_NewKeyAfterMoscowMidnight(t *testing.T) {
 		return nil, nil
 	}
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	db := openWaitlistDB(t, "wl_mis_day")
 	svc := &Services{SQLite: db, MSSQL: db}
 	ctx := context.Background()
@@ -118,10 +117,8 @@ func TestMisCache_NewKeyAfterMoscowMidnight(t *testing.T) {
 func TestMaxPage_OneMedialogQueryPerTick(t *testing.T) {
 	resetEnrichCache()
 	prev, prevMis := loadPageEnrich, loadMis
-	prevNow := misNow
 	t.Cleanup(func() {
 		loadPageEnrich, loadMis = prev, prevMis
-		misNow = prevNow
 		resetEnrichCache()
 	})
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
@@ -138,7 +135,7 @@ func TestMaxPage_OneMedialogQueryPerTick(t *testing.T) {
 		}}, nil
 	}
 	clock := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	misNow = func() time.Time { return clock }
+	setMisNow(t, func() time.Time { return clock })
 	db := openWaitlistDB(t, "wl_page_enrich")
 	ctx := context.Background()
 	for i := 0; i < 25; i++ {

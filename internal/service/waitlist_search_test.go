@@ -13,10 +13,10 @@ import (
 
 func TestWaitlistSearch_HidesOtherBranchesAndMatchesPhone(t *testing.T) {
 	resetSnapStore()
-	prevEnrich, prevMis, prevNow := loadPageEnrich, loadMis, misNow
+	prevEnrich, prevMis := loadPageEnrich, loadMis
 	t.Cleanup(func() {
 		resetSnapStore()
-		loadPageEnrich, loadMis, misNow = prevEnrich, prevMis, prevNow
+		loadPageEnrich, loadMis = prevEnrich, prevMis
 	})
 	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
 		return nil, nil
@@ -106,6 +106,66 @@ func TestWaitlistSearch_HidesOtherBranchesAndMatchesPhone(t *testing.T) {
 		if it.BranchID != 106 && it.BranchID != 3 {
 			t.Fatalf("branch %d leaked", it.BranchID)
 		}
+	}
+}
+
+func TestExplicitBranches_DropsUnknownBranch(t *testing.T) {
+	resetSnapStore()
+	prevEnrich, prevMis := loadPageEnrich, loadMis
+	t.Cleanup(func() {
+		resetSnapStore()
+		loadPageEnrich, loadMis = prevEnrich, prevMis
+	})
+	loadMis = func(ctx context.Context, db *sql.DB, now time.Time, back, ahead int, examIDs []int64) ([]repo.WaitlistMisRow, error) {
+		return nil, nil
+	}
+	loadPageEnrich = func(ctx context.Context, db *sql.DB, planningIDs, patientIDs, exams []int64, now time.Time, answered map[int64]string) (pageEnrichment, error) {
+		return pageEnrichment{live: map[int64]repo.WaitlistPlanningLive{
+			1: {PlanningID: 1, PatientID: 1, BranchID: 106, PatientName: "Каширка"},
+			2: {PlanningID: 2, PatientID: 2, BranchID: 3, PatientName: "Куркино"},
+			3: {PlanningID: 3, PatientID: 3, BranchID: 496, PatientName: "Куркино 2"},
+			4: {PlanningID: 4, PatientID: 4, BranchID: 0, PatientName: "Без филиала"},
+		}}, nil
+	}
+	sqlite := openWaitlistDB(t, "wl_explicit_branch")
+	insertWait(t, sqlite, 1, 106)
+	insertWait(t, sqlite, 2, 3)
+	insertWait(t, sqlite, 3, 496)
+	insertWait(t, sqlite, 4, 0)
+	svc := &Services{SQLite: sqlite, MSSQL: sqlite}
+	mgr := staff.WithPrincipal(context.Background(), staff.Principal{ID: 3, Login: "dir", Role: staff.RoleManager, All: true, BranchIDs: staff.DashboardBranchIDs})
+	pair, err := svc.DashboardWaitlist(mgr, confirmations.WaitlistListFilter{
+		BranchIDs: []int{106, 3}, ExplicitBranches: true, OpenOnly: true, Page: 1, PerPage: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pair.Total != 2 || pair.OpenTotal != 2 || len(pair.Items) != 2 {
+		t.Fatalf("explicit total=%d open=%d items=%d", pair.Total, pair.OpenTotal, len(pair.Items))
+	}
+	for _, it := range pair.Items {
+		if it.BranchID != 106 && it.BranchID != 3 {
+			t.Fatalf("branch %d", it.BranchID)
+		}
+	}
+	all, err := svc.DashboardWaitlist(mgr, confirmations.WaitlistListFilter{
+		BranchIDs: staff.DashboardBranchIDs, IncludeOtherBranches: true, OpenOnly: true, Page: 1, PerPage: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Total != 4 || all.OpenTotal != 4 || len(all.Items) != 4 {
+		t.Fatalf("all total=%d open=%d items=%d", all.Total, all.OpenTotal, len(all.Items))
+	}
+	kash := staff.WithPrincipal(context.Background(), staff.Principal{ID: 2, Login: "kash", Role: staff.RoleRegistrar, BranchIDs: []int{106}})
+	only, err := svc.DashboardWaitlist(kash, confirmations.WaitlistListFilter{
+		BranchIDs: []int{106}, OpenOnly: true, Page: 1, PerPage: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if only.Total != 1 || only.OpenTotal != 1 || len(only.Items) != 1 || only.Items[0].BranchID != 106 {
+		t.Fatalf("registrar %+v total=%d open=%d", only.Items, only.Total, only.OpenTotal)
 	}
 }
 

@@ -89,6 +89,7 @@ async function openBoard(page, opts) {
   const state = {
     posts: [],
     role: opts.role || 'registrar',
+    tempPassword: opts.tempPassword || '',
     closedHidden: !!opts.closedHidden,
     banner: opts.banner || '',
     list: (opts.items || [row()]).map(it => ({ ...it })),
@@ -245,11 +246,12 @@ async function openBoard(page, opts) {
   });
   await page.route('**/dashboard/staff**', async route => {
     if (route.request().method() !== 'GET') {
+      if (state.holdStaff) await state.holdStaff;
       await route.fulfill({
         json: {
           success: true,
           data: {
-            temporary_password: opts.tempPassword || '',
+            temporary_password: state.tempPassword || '',
             user: { id: 2, login: 'new', full_name: 'Новый', role: 'registrar', branches: '106', active: true, must_change_password: true },
           },
         },
@@ -705,4 +707,123 @@ test('logout asks the server and opens the login page', async ({ page }) => {
   await page.locator('#logoutBtn').click();
   await gone;
   await expect(page).toHaveURL(/\/dashboard\/login$/);
+});
+
+test('logout does not poll while the request is in flight', async ({ page }) => {
+  await openBoard(page, { role: 'admin', items: [] });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/dashboard/logout', async route => {
+    await held;
+    await route.fulfill({ status: 200, contentType: 'text/html', body: 'ok' });
+  });
+  const polls = [];
+  page.on('request', req => {
+    if (req.url().includes('/dashboard/data') || req.url().includes('/dashboard/waitlist')) polls.push(req.url());
+  });
+  await page.locator('#accountMenu summary').click();
+  const gone = page.waitForRequest(r => r.url().includes('/dashboard/logout') && r.method() === 'POST');
+  await page.locator('#logoutBtn').click();
+  await gone;
+  polls.length = 0;
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+  await page.clock.fastForward(15000);
+  expect(polls).toEqual([]);
+  release();
+  await expect(page).toHaveURL(/\/dashboard\/login$/);
+});
+
+test('a failed logout stays on the dashboard', async ({ page }) => {
+  await openBoard(page, { role: 'admin', items: [] });
+  await page.route('**/dashboard/logout', route => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: false, error: 'Не удалось выйти, повторите', code: 'LOGOUT_FAILED' }),
+  }));
+  await page.locator('#accountMenu summary').click();
+  await page.locator('#logoutBtn').click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.locator('#banner')).toContainText('Не удалось выйти — повторите');
+  await expect(page.locator('#board')).toBeVisible();
+});
+
+test('a late staff password is not put back on screen', async ({ page }) => {
+  const state = await openBoard(page, { role: 'admin', items: [] });
+  const absent = async (secret) => {
+    const found = await page.evaluate(pw => {
+      if ((document.body.textContent || '').includes(pw)) return 'text';
+      const nodes = document.body.querySelectorAll('*');
+      for (const node of nodes) {
+        for (const attr of node.attributes) {
+          if ((attr.value || '').includes(pw)) return attr.name;
+        }
+      }
+      return '';
+    }, secret);
+    expect(found).toBe('');
+  };
+  let release;
+  state.holdStaff = new Promise(resolve => { release = resolve; });
+  state.tempPassword = 'Create-secret-91';
+  await page.locator('#tabStaff').click();
+  await page.locator('#staffLogin').fill('reg106');
+  await page.locator('#staffName').fill('Регистратор');
+  await page.locator('#staffForm button[type="submit"]').click();
+  await page.locator('#tabSchedule').click();
+  await page.locator('#tabStaff').click();
+  release();
+  await expect(page.locator('#staffStatus')).toContainText('Пароль для reg106 создан');
+  await absent('Create-secret-91');
+
+  state.tempPassword = 'Reset-secret-92';
+  state.holdStaff = new Promise(resolve => { release = resolve; });
+  await page.getByRole('button', { name: 'Сбросить пароль' }).click();
+  await page.locator('#tabSchedule').click();
+  await page.locator('#tabStaff').click();
+  release();
+  await expect(page.locator('#staffStatus')).toContainText('Пароль для admin создан');
+  await absent('Reset-secret-92');
+  await absent('Create-secret-91');
+});
+
+test('copy uses the plain HTTP fallback', async ({ page }) => {
+  await page.addInitScript(() => {
+    const hide = { configurable: true, get: () => undefined };
+    try { Object.defineProperty(navigator, 'clipboard', hide); } catch (e) {}
+    try { Object.defineProperty(Object.getPrototypeOf(navigator), 'clipboard', hide); } catch (e) {}
+    window.__copyCalls = [];
+    document.execCommand = cmd => { window.__copyCalls.push(cmd); return true; };
+  });
+  await openBoard(page, { role: 'admin', tempPassword: 'Copy-secret-7', items: [] });
+  await page.locator('#tabStaff').click();
+  await page.locator('#staffLogin').fill('reg106');
+  await page.locator('#staffName').fill('Регистратор');
+  await page.locator('#staffForm button[type="submit"]').click();
+  await expect(page.locator('#staffTempText')).toHaveText('Copy-secret-7');
+  await page.locator('#staffCopy').click();
+  await expect(page.locator('#staffCopyNote')).toHaveText('Скопировано');
+  expect(await page.evaluate(() => window.__copyCalls)).toContain('copy');
+});
+
+test('a search keeps the saved row and the same node', async ({ page }) => {
+  const state = await openBoard(page, { items: [row({ patient_name: 'Иванов Иван' })] });
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await line.evaluate(el => { el.dataset.pin = 'kept'; });
+  await line.locator('.wl-outcome').selectOption('call_back');
+  const searched = page.waitForRequest(r => r.method() === 'GET' && r.url().includes('/dashboard/waitlist') && r.url().includes('q='));
+  await page.locator('#wlQuery').fill('иван');
+  await page.clock.fastForward(400);
+  await searched;
+  await expect(page.locator('#waitlistList tr[data-pin="kept"]')).toBeVisible();
+  release();
+  const kept = page.locator('#waitlistList tr[data-pin="kept"]');
+  await expect(kept).toHaveAttribute('data-version', '2');
+  await expect(kept.locator('.wl-outcome')).toHaveValue('call_back');
 });

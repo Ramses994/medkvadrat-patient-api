@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"html"
 	"log/slog"
 	"net/http"
@@ -185,8 +186,14 @@ func (h DashboardPageHandler) setStaffCookie(w http.ResponseWriter, userID int64
 }
 
 func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	if p, ok := staff.PrincipalFrom(r.Context()); ok && h.Users != nil {
-		_ = h.Users.EndSession(r.Context(), p.ID)
+	p, ok := staff.PrincipalFrom(r.Context())
+	if !ok || h.Users == nil {
+		h.logoutFailed(w, r, 0, errors.New("logout store unavailable"))
+		return
+	}
+	if err := h.Users.EndSession(r.Context(), p.ID); err != nil {
+		h.logoutFailed(w, r, p.ID, err)
+		return
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     staffsession.CookieName,
@@ -198,6 +205,33 @@ func (h DashboardPageHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.CookieSecure,
 	})
 	http.Redirect(w, r, "/dashboard/login", http.StatusFound)
+}
+
+func (h DashboardPageHandler) logoutFailed(w http.ResponseWriter, r *http.Request, staffID int64, err error) {
+	if h.Logger != nil {
+		h.Logger.Error("dashboard logout failed", "staff_id", staffID, "err", err)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if logoutWantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error":   "Не удалось выйти, повторите",
+			"code":    "LOGOUT_FAILED",
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>Выход</title></head><body><p>Не удалось выйти, повторите</p></body></html>`))
+}
+
+func logoutWantsJSON(r *http.Request) bool {
+	if r.Header.Get("X-Dashboard-Request") != "" {
+		return true
+	}
+	return strings.Contains(r.Header.Get("Accept"), "application/json")
 }
 
 func (h DashboardPageHandler) writeLogin(w http.ResponseWriter, status int, errMsg string) {
