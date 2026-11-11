@@ -1506,3 +1506,65 @@ test('a not-found save brings the row back when the reread has it', async ({ pag
   await expect(line.locator('.wl-outcome')).toBeVisible();
   await expect(line.locator('.wl-saved')).not.toContainText('Строка больше не доступна');
 });
+
+const forbidden = {
+  status: 403,
+  json: {
+    success: false,
+    error: 'Нет доступа',
+    error_details: { code: 'FORBIDDEN', message: 'Филиал строки недоступен' },
+  },
+};
+
+test('a forbidden save hides the patient when the reread fails', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await expect(page.locator('#waitlistList')).toContainText('Иванов Иван');
+  await expect(page.locator('#waitlistList')).toContainText('+79990001122');
+  await page.locator('.wl-outcome').selectOption('call_back');
+  state.abortList = true;
+  state.reply = forbidden;
+  const failed = page.waitForEvent('requestfailed', r => r.url().includes('/dashboard/waitlist') && r.url().includes('per_page=50'));
+  release();
+  await failed;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toContainText('Нет доступа к строке — список обновляется');
+  await expect(line).not.toContainText('Иванов');
+  await expect(line).not.toContainText('79990001122');
+  await expect(line.locator('.wl-outcome')).toBeHidden();
+  await expect(line.getByRole('button')).toHaveCount(0);
+});
+
+test('a forbidden save brings the row back when the reread has it', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await page.locator('.wl-outcome').selectOption('call_back');
+  state.reply = forbidden;
+  const reread = listResponse(page);
+  release();
+  await reread;
+  const line = page.locator('#waitlistList tr[data-key="max:7"]');
+  await expect(line).toContainText('Иванов Иван');
+  await expect(line).toContainText('+79990001122');
+  await expect(line.locator('.wl-outcome')).toBeVisible();
+  await expect(line.locator('.wl-saved')).not.toContainText('Нет доступа к строке');
+});
+
+test('a forbidden save closes the close dialog and does not send it', async ({ page }) => {
+  const state = await openBoard(page, {});
+  let release;
+  state.holdPatch = new Promise(resolve => { release = resolve; });
+  await page.locator('#tabWaitlist').click();
+  await page.locator('.wl-outcome').selectOption('call_back');
+  await page.locator('.wl-outcome').selectOption('refused');
+  await expect(page.locator('#confirmModal')).toBeVisible();
+  state.reply = forbidden;
+  release();
+  await expect(page.locator('#confirmModal')).toBeHidden();
+  expect(state.posts).toHaveLength(1);
+  expect(state.posts[0]).toMatchObject({ outcome: 'call_back', version: 1 });
+});

@@ -904,6 +904,7 @@ function deniedGate(key, seq) {
 
 function dropListedRow(tr, seq) {
   if (deniedGate(tr.dataset.key, seq) === 'stale') return false;
+  cancelClose(tr);
   wlDenied.delete(tr.dataset.key);
   tr.remove();
   return true;
@@ -1279,12 +1280,13 @@ async function onOutcome(tr) {
   let waited = false;
   if (CLOSING.has(outcome) && tr.dataset.medialog === 'запись действует') {
     waited = true;
-    const ok = await askClose(outcome);
+    const ok = await askClose(outcome, tr);
     if (!ok) {
-      oc.value = prev;
+      if (oc.isConnected) oc.value = prev;
       return;
     }
   }
+  if (waited && (tr.dataset.access === 'checking' || !tr.isConnected)) return;
   saveWaitlist(tr, outcome, '', shownVersion, waited);
 }
 
@@ -1292,7 +1294,9 @@ function reopenRow(tr) {
   saveWaitlist(tr, '', 'reopen', Number(tr.dataset.version || 0), true);
 }
 
-function askClose(outcome) {
+let closeAsk = null;
+
+function askClose(outcome, tr) {
   const modal = $('confirmModal');
   $('confirmText').textContent = outcome === 'rebooked'
     ? 'Новая запись создана в клиенте? Старую отмените там же'
@@ -1301,17 +1305,27 @@ function askClose(outcome) {
   return new Promise(resolve => {
     const yes = $('confirmYes');
     const no = $('confirmNo');
+    let settled = false;
     const done = value => {
+      if (settled) return;
+      settled = true;
+      if (closeAsk && closeAsk.done === done) closeAsk = null;
       modal.hidden = true;
       yes.removeEventListener('click', onYes);
       no.removeEventListener('click', onNo);
       resolve(value);
     };
+    closeAsk = { tr, done };
     const onYes = () => done(true);
     const onNo = () => done(false);
     yes.addEventListener('click', onYes);
     no.addEventListener('click', onNo);
   });
+}
+
+function cancelClose(tr) {
+  if (!closeAsk || closeAsk.tr !== tr) return;
+  closeAsk.done(false);
 }
 
 function authStop(res) {
@@ -1357,6 +1371,7 @@ function concealRow(tr, message) {
   tr.dataset.access = 'checking';
   markRow(tr, message || 'Доступ к строке проверяется…');
   wlDenied.set(tr.dataset.key, ++requestSeq);
+  cancelClose(tr);
 }
 
 async function saveWaitlist(tr, outcome, action, shownVersion, blockIfNewer) {
@@ -1429,9 +1444,11 @@ async function saveWaitlist(tr, outcome, action, shownVersion, blockIfNewer) {
       if (body.error_details && body.error_details.message) msg = body.error_details.message;
       else if (body.error) msg = body.error;
       if (loggingOut) return;
-      if ((res.status === 403 && code === 'WAITLIST_MOVED') || res.status === 404) {
+      if (res.status === 403 || res.status === 404) {
         const gone = waitlistRow(key);
-        const note = res.status === 404 ? 'Строка больше не доступна — список обновляется…' : '';
+        const note = res.status === 404
+          ? 'Строка больше не доступна — список обновляется…'
+          : (code === 'WAITLIST_MOVED' ? 'Доступ к строке проверяется…' : 'Нет доступа к строке — список обновляется…');
         if (gone) concealRow(gone, note);
         else wlDenied.set(key, ++requestSeq);
         loadWaitlist();
