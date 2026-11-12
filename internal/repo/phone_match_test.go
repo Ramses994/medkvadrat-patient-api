@@ -8,6 +8,48 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+func TestNormalizePhone_CountryCode(t *testing.T) {
+	const want = "79265906994"
+	for _, raw := range []string{"+47 1234 5678", "+4712345678", "+1 926 590-69-94", "0079265906994"} {
+		if got := NormalizePhone(raw); got != "" {
+			t.Fatalf("%q normalized to %q", raw, got)
+		}
+	}
+	for _, raw := range []string{"+7 (926) 590-69-94", "8 926 590 69 94", "9265906994"} {
+		if got := NormalizePhone(raw); got != want {
+			t.Fatalf("%q = %q", raw, got)
+		}
+	}
+}
+
+func TestPhoneSearch_ForeignCountryCodeDoesNotMatch(t *testing.T) {
+	for _, search := range []bool{true, false} {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := &PatientRepo{db: db}
+		if search {
+			mock.ExpectQuery("PATIENTS").WillReturnRows(sqlmock.NewRows([]string{
+				"PATIENTS_ID", "FULL_NAME", "PHONE", "BIRTH_DATE", "MOBIL_TELEFON", "TEL", "RAB_TEL",
+			}).AddRow(1, "Чужой", "+47 1234 5678", nil, "+47 1234 5678", "", ""))
+			got, err := r.SearchByPhone(context.Background(), "74712345678")
+			if err != nil || len(got) != 0 {
+				t.Fatalf("search %+v err=%v", got, err)
+			}
+		} else {
+			mock.ExpectQuery("PATIENTS").WillReturnRows(sqlmock.NewRows([]string{
+				"PATIENTS_ID", "FULL_NAME", "EMAIL", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
+			}).AddRow(1, "Чужой", "", 0, 0, "+47 1234 5678", "", ""))
+			got, err := r.OTPPatientsByPhone(context.Background(), "74712345678")
+			if err != nil || len(got) != 0 {
+				t.Fatalf("otp %+v err=%v", got, err)
+			}
+		}
+		db.Close()
+	}
+}
+
 func TestPhoneMatch_ExactNormalizedNumber(t *testing.T) {
 	const want = "79265906994"
 	cases := []struct {
