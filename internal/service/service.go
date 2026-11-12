@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/apperr"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/confirmations"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/health"
@@ -123,7 +125,11 @@ func (s *Services) attachConfirmations(ctx context.Context, rows []repo.Planning
 }
 
 func (s *Services) PatientSearch(ctx context.Context, phone string) ([]repo.PatientInfo, error) {
-	return s.Repos.Patient.SearchByPhone(ctx, repo.CleanPhoneLast10(phone))
+	normalized := repo.NormalizePhone(phone)
+	if normalized == "" {
+		return nil, apperr.New(http.StatusBadRequest, "VALIDATION", "Введите телефон в формате +7 999 123-45-67")
+	}
+	return s.Repos.Patient.SearchByPhone(ctx, normalized)
 }
 
 func (s *Services) ScheduleChanges(ctx context.Context, since time.Time) ([]repo.ScheduleChange, error) {

@@ -130,7 +130,7 @@ func TestGolden_Doctors_OK_LegacyShape(t *testing.T) {
 func TestGolden_PatientSearch_OK_LegacyShape(t *testing.T) {
 	h := PatientHandler{Svc: fakePatientSvc{}, Logger: nil}
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/patients/search?phone=+7999", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/patients/search?phone=+79990000000", nil)
 
 	h.Search(rr, req)
 	if rr.Code != http.StatusOK {
@@ -194,7 +194,7 @@ func Test__GenerateGoldenFiles(t *testing.T) {
 	{
 		h := PatientHandler{Svc: fakePatientSvc{}, Logger: nil}
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/patients/search?phone=+7999", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/patients/search?phone=+79990000000", nil)
 		h.Search(rr, req)
 		writeGolden(t, "patients_search_ok", rr.Body.Bytes())
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/handler"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/otp"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/ratelimit"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 )
 
 func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string) (handler.OTPRequestResult, error) {
@@ -57,7 +58,7 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	}
 
 	// Fetch candidates from MSSQL (once) and store in otp_requests row.
-	pats, err := s.Repos.Patient.OTPPatientsByPhone(ctx, phone[len(phone)-10:])
+	pats, err := s.Repos.Patient.OTPPatientsByPhone(ctx, phone)
 	if err != nil {
 		s.Logger.Error("otp patients query failed", "err", err)
 		return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "INTERNAL", "Не получилось связаться с клиникой, попробуйте ещё раз через минуту")
@@ -395,22 +396,7 @@ func inList(list []string, phone string) bool {
 }
 
 func normalizePhone(phone string) string {
-	d := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, phone)
-	if len(d) == 11 && strings.HasPrefix(d, "8") {
-		d = "7" + d[1:]
-	}
-	if len(d) == 10 {
-		d = "7" + d
-	}
-	if len(d) != 11 || !strings.HasPrefix(d, "7") {
-		return ""
-	}
-	return d
+	return repo.NormalizePhone(phone)
 }
 
 func normalizeIP(remoteAddr string) string {
