@@ -56,7 +56,7 @@ func (r *PatientRepo) SearchByPhone(ctx context.Context, phoneLast10 string) ([]
 		SELECT PATIENTS_ID,
 			ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
 			ISNULL(MOBIL_TELEFON, ISNULL(TEL, ISNULL(RAB_TEL,''))) AS PHONE,
-			NULL AS BIRTH_DATE
+			NE_LE AS BIRTH_DATE
 		FROM PATIENTS
 		WHERE REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(MOBIL_TELEFON,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
 		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
@@ -78,7 +78,10 @@ func (r *PatientRepo) SearchByPhone(ctx context.Context, phoneLast10 string) ([]
 		}
 		if bd.Valid {
 			t := bd.Time
-			p.BirthDate = &t
+			if y := t.Year(); y >= 1800 && y <= 2200 {
+				tt := time.Date(y, t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+				p.BirthDate = &tt
+			}
 		}
 		patients = append(patients, p)
 	}
