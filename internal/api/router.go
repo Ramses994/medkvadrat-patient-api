@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
@@ -9,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/consents"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/handler"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/middleware"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/ratelimit"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/service"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/staff"
 	"github.com/medkvadrat/medkvadrat-patient-api/web"
@@ -30,8 +33,17 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	bookingH := handler.BookingCatalogHandler{Svc: svc, Logger: logger, SlotTokenSecret: cfg.SlotTokenSecret}
 	meH := handler.MeHandler{Svc: svc, Logger: logger, CancelMinHours: cfg.CancelMinHoursBefore, WaitlistExamIDs: cfg.WaitlistExamIDs, WriteGuard: wg}
 	confirmationsH := handler.ConfirmationsHandler{Svc: svc, Logger: logger}
-	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger}
-	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger}
+	consentStore := consents.New(svc.SQLite)
+	remindersH := handler.RemindersHandler{Svc: svc, Logger: logger, Consents: consentStore}
+	notificationsH := handler.NotificationsHandler{Svc: svc, Logger: logger, Consents: consentStore}
+	consentsH := handler.BotConsentsHandler{
+		Store: consentStore,
+		Notify: func(ctx context.Context, patientID int64) (*int, error) {
+			return repo.MessengerNotifyByPatient(ctx, svc.MSSQL, patientID)
+		},
+		Logger: logger,
+	}
+	adsExportH := handler.AdsExportHandler{Store: consentStore, Names: handler.NamesFromMedialog(svc.MSSQL), Logger: logger}
 	dashboardH := handler.DashboardHandler{Svc: svc, Logger: logger}
 	waitlistH := handler.WaitlistHandler{Svc: svc, Logger: logger}
 	users := staff.New(svc.SQLite)
@@ -82,8 +94,12 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("POST /api/internal/write-ops/{op_id}/resolve", bookH.Resolve)
 	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
 
-	// Server-to-server (API_TOKEN), same as /api/reminders/due
+	// Server-to-server (API_TOKEN), same as /api/reminders/due.
+	// Bot consents also require a clinic-network address.
 	mux.HandleFunc("POST /api/internal/confirmations", confirmationsH.Upsert)
+	consentLAN := middleware.AllowCIDRs{Nets: cidrNetsOrDefault(cfg)}
+	mux.Handle("GET /api/internal/bot-consents", consentLAN.Wrap(http.HandlerFunc(consentsH.Get)))
+	mux.Handle("POST /api/internal/bot-consents", consentLAN.Wrap(http.HandlerFunc(consentsH.Post)))
 
 	// Staff dashboard (session cookie; not API_TOKEN)
 	mux.HandleFunc("GET /dashboard/login", dashboardPageH.LoginForm)
@@ -98,6 +114,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.Handle("GET /dashboard/waitlist", staffMW.Wrap(http.HandlerFunc(waitlistH.List)))
 	mux.Handle("PATCH /dashboard/waitlist/{source}/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(waitlistH.Patch))))
 	mux.Handle("GET /dashboard/staff", staffMW.Wrap(http.HandlerFunc(staffH.List)))
+	mux.Handle("GET /dashboard/consents/ads.csv", staffMW.Wrap(http.HandlerFunc(adsExportH.AdsCSV)))
 	mux.Handle("POST /dashboard/staff", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Create))))
 	mux.Handle("POST /dashboard/staff/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Update))))
 

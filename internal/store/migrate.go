@@ -181,6 +181,23 @@ UPDATE staff_users SET branches = '*'
 WHERE role IN ('admin', 'manager') AND branches <> '*'`); err != nil {
 		return fmt.Errorf("normalize staff branches: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS bot_consents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  patient_id INTEGER NOT NULL,
+  max_user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('service', 'ads')),
+  text_version TEXT NOT NULL,
+  accepted_at TEXT NOT NULL,
+  revoked_at TEXT NULL,
+  source TEXT NOT NULL DEFAULT 'bot'
+)`); err != nil {
+		return fmt.Errorf("bot consents: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE INDEX IF NOT EXISTS idx_bot_consents_patient_kind ON bot_consents(patient_id, kind)`); err != nil {
+		return fmt.Errorf("bot consents index: %w", err)
+	}
 	if _, err := PurgeClosedWaitlist(ctx, db, time.Now().UTC()); err != nil {
 		return err
 	}

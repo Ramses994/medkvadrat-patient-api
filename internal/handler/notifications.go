@@ -21,33 +21,35 @@ type NotificationsService interface {
 }
 
 type NotificationsHandler struct {
-	Svc    NotificationsService
-	Logger *slog.Logger
-	Now    func() time.Time
+	Svc      NotificationsService
+	Consents ConsentReader
+	Logger   *slog.Logger
+	Now      func() time.Time
 }
 
 type newBookingsRequest struct {
-	PatientIDs []int64            `json:"patient_ids"`
+	PatientIDs []int64             `json:"patient_ids"`
 	Cursor     *repo.BookingCursor `json:"cursor"`
-	Limit      int                `json:"limit"`
+	Limit      int                 `json:"limit"`
 }
 
 type newBookingDTO struct {
-	PlanningID       int64  `json:"planning_id"`
-	PatientID        int64  `json:"patient_id"`
-	PatientPhone     string `json:"patient_phone"`
-	PatientName      string `json:"patient_name"`
-	DoctorName       string `json:"doctor_name"`
-	Service          string `json:"service"`
-	IsWaitlist       bool   `json:"is_waitlist"`
-	MessengerNotify  *int   `json:"messenger_notify"`
-	NoSMSNotify      bool   `json:"no_sms_notify"`
-	ApptVersion      string `json:"appt_version"`
-	BranchID         int    `json:"branch_id"`
-	BranchCode       string `json:"branch_code"`
-	DateConsultation string `json:"date_consultation"`
-	Status           int    `json:"status"`
-	CreatedAt        string `json:"created_at"`
+	PlanningID        int64  `json:"planning_id"`
+	PatientID         int64  `json:"patient_id"`
+	PatientPhone      string `json:"patient_phone"`
+	PatientName       string `json:"patient_name"`
+	DoctorName        string `json:"doctor_name"`
+	Service           string `json:"service"`
+	IsWaitlist        bool   `json:"is_waitlist"`
+	MessengerNotify   *int   `json:"messenger_notify"`
+	BotConsentService string `json:"bot_consent_service"`
+	NoSMSNotify       bool   `json:"no_sms_notify"`
+	ApptVersion       string `json:"appt_version"`
+	BranchID          int    `json:"branch_id"`
+	BranchCode        string `json:"branch_code"`
+	DateConsultation  string `json:"date_consultation"`
+	Status            int    `json:"status"`
+	CreatedAt         string `json:"created_at"`
 }
 
 type newBookingsPageDTO struct {
@@ -93,24 +95,37 @@ func (h NotificationsHandler) NewBookings(w http.ResponseWriter, r *http.Request
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
+	patientIDs := make([]int64, len(page.Rows))
+	for i, row := range page.Rows {
+		patientIDs[i] = row.PatientID
+	}
+	states, err := consentStates(r.Context(), h.Consents, patientIDs)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("bot consent states", "err", err)
+		}
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		return
+	}
 	items := make([]newBookingDTO, 0, len(page.Rows))
 	for _, row := range page.Rows {
 		items = append(items, newBookingDTO{
-			PlanningID:       row.PlanningID,
-			PatientID:        row.PatientID,
-			PatientPhone:     row.PatientPhone,
-			PatientName:      row.PatientName,
-			DoctorName:       displayDoctorName(row.DoctorName),
-			Service:          row.Service,
-			IsWaitlist:       row.IsWaitlist,
-			MessengerNotify:  row.MessengerNotify,
-			NoSMSNotify:      row.NoSMSNotify,
-			ApptVersion:      row.ApptVersion,
-			BranchID:         row.BranchID,
-			BranchCode:       row.BranchCode,
-			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
-			Status:           row.Status,
-			CreatedAt:        row.CreatedAt,
+			PlanningID:        row.PlanningID,
+			PatientID:         row.PatientID,
+			PatientPhone:      row.PatientPhone,
+			PatientName:       row.PatientName,
+			DoctorName:        displayDoctorName(row.DoctorName),
+			Service:           row.Service,
+			IsWaitlist:        row.IsWaitlist,
+			MessengerNotify:   row.MessengerNotify,
+			BotConsentService: consentState(states, row.PatientID),
+			NoSMSNotify:       row.NoSMSNotify,
+			ApptVersion:       row.ApptVersion,
+			BranchID:          row.BranchID,
+			BranchCode:        row.BranchCode,
+			DateConsultation:  row.DateConsultation.Format(reminderOutLayout),
+			Status:            row.Status,
+			CreatedAt:         row.CreatedAt,
 		})
 	}
 	response.OK(w, newBookingsPageDTO{Items: items, NextCursor: page.NextCursor, HasMore: page.HasMore})
@@ -139,23 +154,32 @@ func (h NotificationsHandler) BookingByID(w http.ResponseWriter, r *http.Request
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
+	states, err := consentStates(r.Context(), h.Consents, []int64{row.PatientID})
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("bot consent states", "err", err)
+		}
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		return
+	}
 	response.OK(w, bookingNoticeDTO{
 		newBookingDTO: newBookingDTO{
-			PlanningID:       row.PlanningID,
-			PatientID:        row.PatientID,
-			PatientPhone:     row.PatientPhone,
-			PatientName:      row.PatientName,
-			DoctorName:       displayDoctorName(row.DoctorName),
-			Service:          row.Service,
-			IsWaitlist:       row.IsWaitlist,
-			MessengerNotify:  row.MessengerNotify,
-			NoSMSNotify:      row.NoSMSNotify,
-			ApptVersion:      row.ApptVersion,
-			BranchID:         row.BranchID,
-			BranchCode:       row.BranchCode,
-			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
-			Status:           row.Status,
-			CreatedAt:        row.CreatedAt,
+			PlanningID:        row.PlanningID,
+			PatientID:         row.PatientID,
+			PatientPhone:      row.PatientPhone,
+			PatientName:       row.PatientName,
+			DoctorName:        displayDoctorName(row.DoctorName),
+			Service:           row.Service,
+			IsWaitlist:        row.IsWaitlist,
+			MessengerNotify:   row.MessengerNotify,
+			BotConsentService: consentState(states, row.PatientID),
+			NoSMSNotify:       row.NoSMSNotify,
+			ApptVersion:       row.ApptVersion,
+			BranchID:          row.BranchID,
+			BranchCode:        row.BranchCode,
+			DateConsultation:  row.DateConsultation.Format(reminderOutLayout),
+			Status:            row.Status,
+			CreatedAt:         row.CreatedAt,
 		},
 		Cancelled: row.Cancelled,
 	})
