@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -59,6 +60,11 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		}
 	}
 
+	whitelisted := s.Config.Auth.Mode == "pilot"
+	if whitelisted && !inList(s.Config.Auth.PilotWhitelist, phone) {
+		return handler.OTPRequestResult{}, apperr.New(http.StatusForbidden, "PILOT_ONLY", "Личный кабинет пока недоступен")
+	}
+
 	// Fetch candidates from MSSQL (once) and store in otp_requests row.
 	pats, err := s.Repos.Patient.OTPPatientsByPhone(ctx, phone)
 	if err != nil {
@@ -68,8 +74,6 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	if len(pats) == 0 {
 		return handler.OTPRequestResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
 	}
-
-	whitelisted := s.Config.Auth.Mode == "pilot" && inList(s.Config.Auth.PilotWhitelist, phone)
 
 	groups := groupOTPProfiles(pats, whitelisted)
 	for _, p := range pats {
@@ -92,6 +96,9 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		}
 		return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "EMAIL_NOT_SET", "Для входа в личный кабинет обратитесь в регистратуру, чтобы добавить email в карточку пациента. Телефон: +7 (499) 288-88-14")
 	}
+	if whitelisted && len(groups) != 1 {
+		return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "PILOT_SINGLE_ADDRESS", "В пилоте вход только для номеров с одним адресом")
+	}
 
 	secret := s.Config.OTP.HMACSecret
 	if secret == "" {
@@ -101,8 +108,8 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	codes := make([]string, 0, len(groups))
 	for _, g := range groups {
 		code := "000000"
-		if !(whitelisted && len(groups) == 1) {
-			c, err := otp.RandomCode6()
+		if !whitelisted {
+			c, err := uniqueOTPCode(codes)
 			if err != nil {
 				return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 			}
@@ -142,6 +149,7 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		Attempts:       0,
 		ExpiresAt:      expiresAt,
 		Whitelisted:    whitelisted,
+		Format:         otp.FormatAddresses,
 	}
 	if err := otpRepo.Create(ctx, row); err != nil {
 		s.Logger.Error("otp request insert failed", "err", err)
@@ -188,7 +196,7 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		Channel:           channelName,
 		MaskedDestination: masked,
 	}
-	if s.Config.Auth.Mode != "prod" && len(codes) == 1 {
+	if s.Config.Auth.Mode == "dev" && len(codes) == 1 {
 		res.DevCode = codes[0]
 	}
 	return res, nil
@@ -203,6 +211,9 @@ func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handl
 			return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 		}
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+	}
+	if row.Format != otp.FormatAddresses {
+		return handler.OTPVerifyResult{}, errOTPOldFormat()
 	}
 	if now.After(row.ExpiresAt) {
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_EXPIRED", "Код истёк, запросите новый")
@@ -222,8 +233,8 @@ func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handl
 	if err != nil || len(groups) == 0 {
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
 	}
-	matched, ok := matchAddress(groups, otp.HashCodeHMAC(code, secret))
-	if !ok {
+	matched, n := matchAddress(groups, otp.HashCodeHMAC(code, secret))
+	if n != 1 {
 		_, _ = otpRepo.IncrementAttempts(ctx, requestID)
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
@@ -241,8 +252,8 @@ func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handl
 			if err != nil {
 				return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 			}
-			matched, ok = matchAddress(groups, otp.HashCodeHMAC(code, secret))
-			if !ok {
+			matched, n = matchAddress(groups, otp.HashCodeHMAC(code, secret))
+			if n != 1 {
 				return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 			}
 		}
@@ -256,6 +267,9 @@ func (s *Services) OTPSelectPatient(ctx context.Context, requestID string, patie
 	row, err := otpRepo.Get(ctx, requestID)
 	if err != nil {
 		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+	}
+	if row.Format != otp.FormatAddresses {
+		return handler.Tokens{}, errOTPOldFormat()
 	}
 	if !row.VerifiedAt.Valid {
 		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
@@ -393,7 +407,7 @@ func groupOTPProfiles(pats []repo.OTPPatient, whitelisted bool) []*otpProfileGro
 			}
 			continue
 		}
-		add(strings.ToLower(email), email, otp.MaskEmail(email), otp.CandidatesItem{
+		add(otpAddressKey(email), email, otp.MaskEmail(email), otp.CandidatesItem{
 			PatientID:   p.PatientID,
 			FullName:    p.FullName,
 			MaskedEmail: otp.MaskEmail(email),
@@ -456,16 +470,45 @@ func (s *Services) consumeAndIssue(ctx context.Context, requestID string, patien
 	return tok, nil
 }
 
-func matchAddress(groups []otp.AddressGroup, hash string) (otp.AddressGroup, bool) {
+// otpAddressKey keeps the mailbox name as typed: only the domain is case-insensitive.
+func otpAddressKey(email string) string {
+	i := strings.LastIndex(email, "@")
+	if i < 0 {
+		return email
+	}
+	return email[:i+1] + strings.ToLower(email[i+1:])
+}
+
+var newOTPCode = otp.RandomCode6
+
+func uniqueOTPCode(taken []string) (string, error) {
+	for i := 0; i < 100; i++ {
+		c, err := newOTPCode()
+		if err != nil {
+			return "", err
+		}
+		if !slices.Contains(taken, c) {
+			return c, nil
+		}
+	}
+	return "", errors.New("otp code repeats")
+}
+
+func errOTPOldFormat() error {
+	return apperr.New(http.StatusUnauthorized, "OTP_EXPIRED", "Код устарел, запросите новый")
+}
+
+// matchAddress returns the mailbox whose code matched and how many matched; only one match may be used.
+func matchAddress(groups []otp.AddressGroup, hash string) (otp.AddressGroup, int) {
 	var found otp.AddressGroup
-	ok := false
+	n := 0
 	for _, g := range groups {
 		if len(g.CodeHash) == len(hash) && subtle.ConstantTimeCompare([]byte(g.CodeHash), []byte(hash)) == 1 {
 			found = g
-			ok = true
+			n++
 		}
 	}
-	return found, ok
+	return found, n
 }
 
 func addressHasPatient(groups []otp.AddressGroup, patientID int64) bool {

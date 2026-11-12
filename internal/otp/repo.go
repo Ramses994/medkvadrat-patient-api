@@ -22,7 +22,13 @@ type RequestRow struct {
 	Whitelisted     bool
 	UsedAt          sql.NullTime
 	CreatedAt       time.Time
+	Format          int
 }
+
+// FormatAddresses marks a row that stores one code per mailbox. Rows written before it have format 0.
+const FormatAddresses = 2
+
+var ErrOldFormat = errors.New("otp request has the old format")
 
 // AddressGroup is one mailbox: its code hash and the profiles that share it.
 type AddressGroup struct {
@@ -46,8 +52,8 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 func (r *Repo) Create(ctx context.Context, row RequestRow) error {
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO otp_requests(request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted)
-VALUES(@rid, @phone, @hash, @cand, @att, @exp, @ver, @sel, @wl)`,
+INSERT INTO otp_requests(request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, format)
+VALUES(@rid, @phone, @hash, @cand, @att, @exp, @ver, @sel, @wl, @fmt)`,
 		sql.Named("rid", row.RequestID),
 		sql.Named("phone", row.Phone),
 		sql.Named("hash", row.CodeHash),
@@ -57,6 +63,7 @@ VALUES(@rid, @phone, @hash, @cand, @att, @exp, @ver, @sel, @wl)`,
 		sql.Named("ver", nullTime(row.VerifiedAt)),
 		sql.Named("sel", nullInt64(row.SelectedPatient)),
 		sql.Named("wl", boolToInt(row.Whitelisted)),
+		sql.Named("fmt", row.Format),
 	)
 	if err != nil {
 		return fmt.Errorf("insert otp request: %w", err)
@@ -73,7 +80,7 @@ func (r *Repo) Get(ctx context.Context, requestID string) (RequestRow, error) {
 	var row RequestRow
 	var wlInt int
 	err := r.db.QueryRowContext(ctx, `
-SELECT request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, created_at, used_at
+SELECT request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, created_at, used_at, format
 FROM otp_requests
 WHERE request_id = @rid`,
 		sql.Named("rid", requestID),
@@ -89,6 +96,7 @@ WHERE request_id = @rid`,
 		&wlInt,
 		&row.CreatedAt,
 		&row.UsedAt,
+		&row.Format,
 	)
 	if err != nil {
 		return RequestRow{}, err
@@ -171,30 +179,26 @@ func (r *Repo) MarkSelectedPatient(ctx context.Context, requestID string, patien
 }
 
 func DecodeAddresses(row RequestRow) ([]AddressGroup, error) {
+	if row.Format != FormatAddresses {
+		return nil, ErrOldFormat
+	}
 	raw := strings.TrimSpace(row.CandidatesJSON)
 	if raw == "" {
 		return nil, errors.New("empty candidates")
 	}
 	var groups []AddressGroup
-	if err := json.Unmarshal([]byte(raw), &groups); err == nil && len(groups) > 0 && groups[0].CodeHash != "" && len(groups[0].Candidates) > 0 {
-		return groups, nil
-	}
-	cands, err := decodeFlatCandidates(raw)
-	if err != nil {
+	if err := json.Unmarshal([]byte(raw), &groups); err != nil {
 		return nil, err
 	}
-	return []AddressGroup{{CodeHash: row.CodeHash, Candidates: cands}}, nil
-}
-
-func decodeFlatCandidates(raw string) ([]CandidatesItem, error) {
-	var c []CandidatesItem
-	if err := json.Unmarshal([]byte(raw), &c); err != nil {
-		return nil, err
-	}
-	if len(c) == 0 || c[0].PatientID == 0 {
+	if len(groups) == 0 {
 		return nil, errors.New("empty candidates")
 	}
-	return c, nil
+	for _, g := range groups {
+		if g.CodeHash == "" || len(g.Candidates) == 0 {
+			return nil, errors.New("empty address group")
+		}
+	}
+	return groups, nil
 }
 
 func (r *Repo) DecodeCandidates(row RequestRow) ([]CandidatesItem, error) {

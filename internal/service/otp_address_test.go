@@ -182,8 +182,8 @@ func TestOTP_PilotWhitelistKeepsTheFixedCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sent) != 0 || res.DevCode != "000000" {
-		t.Fatalf("sent=%d code set=%v", len(sent), res.DevCode == "000000")
+	if len(sent) != 0 || res.DevCode != "" {
+		t.Fatalf("sent=%d code in response=%v", len(sent), res.DevCode != "")
 	}
 	verified, err := s.OTPVerify(context.Background(), res.RequestID, "000000")
 	if err != nil || verified.Access == "" {
@@ -198,6 +198,13 @@ type otpRow struct {
 
 func otpService(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string]string) {
 	t.Helper()
+	s, lite, sent, _ := otpServiceMock(t, rows)
+	return s, lite, sent
+}
+
+// otpServiceMock expects one Medialog search only when rows are given.
+func otpServiceMock(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string]string, sqlmock.Sqlmock) {
+	t.Helper()
 	mssql, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherFunc(
 		func(_, _ string) error { return nil },
 	)))
@@ -205,11 +212,15 @@ func otpService(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string]str
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = mssql.Close() })
-	rr := sqlmock.NewRows([]string{"PATIENTS_ID", "FULL_NAME", "EMAIL", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL"})
-	for _, row := range rows {
-		rr.AddRow(row.id, "Profile", row.email, 0, 0)
+	if rows != nil {
+		rr := sqlmock.NewRows([]string{
+			"PATIENTS_ID", "FULL_NAME", "EMAIL", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
+		})
+		for _, row := range rows {
+			rr.AddRow(row.id, "Profile", row.email, 0, 0, "79990000000", "", "")
+		}
+		mock.ExpectQuery("PATIENTS").WillReturnRows(rr)
 	}
-	mock.ExpectQuery("PATIENTS").WillReturnRows(rr)
 
 	lite, err := sql.Open("sqlite", "file:"+t.Name()+"?mode=memory&cache=shared")
 	if err != nil {
@@ -237,7 +248,7 @@ func otpService(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string]str
 			JWT:  config.JWTConfig{Secret: "jwt-secret", Issuer: "test", AccessTTLMin: 15, RefreshTTLDays: 30},
 		},
 	}
-	return s, lite, sent
+	return s, lite, sent, mock
 }
 
 func tokenPatient(t *testing.T, db *sql.DB) int64 {

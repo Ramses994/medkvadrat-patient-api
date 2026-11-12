@@ -255,6 +255,14 @@ func (c Config) validate() error {
 	return nil
 }
 
+// AuthModeWarning is logged at startup when patients can sign in without a delivered code.
+func AuthModeWarning(mode string) string {
+	if mode == "dev" {
+		return "AUTH_MODE=dev: вход без проверки, только для локальной отладки"
+	}
+	return ""
+}
+
 // ClampBookingMaxDays reports whether BOOKING_MAX_DAYS was above the hard cap.
 // The caller logs a warning at startup and stores 14.
 func ClampBookingMaxDays(n int) (int, bool) {
