@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -113,7 +114,7 @@ func TestRevokeWithoutRows_IsRevokedInGetAndTheThreeFeeds(t *testing.T) {
 			t.Fatalf("%s %d %s", feed.name, w.Code, w.Body.String())
 		}
 	}
-	if w := post(`{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"accept"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"state":"active"`) {
+	if w := post(`{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"accept","expected_revision":2}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"state":"active"`) {
 		t.Fatalf("accept %d %s", w.Code, w.Body.String())
 	}
 }
@@ -135,10 +136,11 @@ func TestAdsRefusalWithoutConsent_ExportsRevokedWithEmptyDate(t *testing.T) {
 func TestBotConsentService_OneSQLiteReadPerResponse(t *testing.T) {
 	s := consentDB(t)
 	ctx := context.Background()
-	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 10, MaxUserID: 1, Kind: consents.KindService, TextVersion: "service-v1", Action: "accept"}); err != nil {
+	zero := int64(0)
+	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 10, MaxUserID: 1, Kind: consents.KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 12, MaxUserID: 1, Kind: consents.KindService, TextVersion: "service-v1", Action: "accept"}); err != nil {
+	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 12, MaxUserID: 1, Kind: consents.KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 12, MaxUserID: 1, Kind: consents.KindService, TextVersion: "service-v1", Action: "revoke"}); err != nil {
@@ -211,13 +213,86 @@ func (s *scriptNames) Names(context.Context, []int64) (map[int64]string, error) 
 	return s.names, nil
 }
 
+func TestConsentRevision_RepeatRevokeAndStaleAccept(t *testing.T) {
+	s := consentDB(t)
+	h := BotConsentsHandler{Store: s}
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.Post(w, httptest.NewRequest(http.MethodPost, "/api/internal/bot-consents", strings.NewReader(body)))
+		return w
+	}
+	revoke := `{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"revoke"}`
+	first := post(revoke)
+	second := post(revoke)
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("revoke %d %d", first.Code, second.Code)
+	}
+	var snap struct {
+		Data struct {
+			Service struct {
+				Revision int64 `json:"revision"`
+			} `json:"service"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &snap); err != nil || snap.Data.Service.Revision != 2 {
+		t.Fatalf("revision %d %s err=%v", snap.Data.Service.Revision, second.Body.String(), err)
+	}
+	rows, err := s.RowCount(context.Background())
+	if err != nil || rows != 1 {
+		t.Fatalf("rows=%d err=%v", rows, err)
+	}
+	stale := post(`{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"accept","expected_revision":0}`)
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), `"code":"CONSENT_CHANGED"`) {
+		t.Fatalf("stale %d %s", stale.Code, stale.Body.String())
+	}
+	if rows, err = s.RowCount(context.Background()); err != nil || rows != 1 {
+		t.Fatalf("stale rows=%d err=%v", rows, err)
+	}
+	okBody := `{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"accept","expected_revision":2}`
+	accepted := post(okBody)
+	if err := json.Unmarshal(accepted.Body.Bytes(), &snap); err != nil || accepted.Code != http.StatusOK || snap.Data.Service.Revision != 3 {
+		t.Fatalf("accept %d %s err=%v", accepted.Code, accepted.Body.String(), err)
+	}
+	again := post(okBody)
+	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), `"code":"CONSENT_CHANGED"`) {
+		t.Fatalf("repeat %d %s", again.Code, again.Body.String())
+	}
+	if rows, err = s.RowCount(context.Background()); err != nil || rows != 2 {
+		t.Fatalf("rows=%d err=%v", rows, err)
+	}
+	missing := post(`{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"accept"}`)
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing %d %s", missing.Code, missing.Body.String())
+	}
+	if rows, err = s.RowCount(context.Background()); err != nil || rows != 2 {
+		t.Fatalf("missing rows=%d err=%v", rows, err)
+	}
+
+	loc := time.FixedZone("MSK", 3*3600)
+	row := repo.DueReminder{
+		PlanningID: 20, PatientID: 20, DoctorName: "Иванов Иван", Service: "Прием",
+		BranchID: 3, DateConsultation: time.Date(2026, 6, 26, 19, 30, 0, 0, loc),
+	}
+	due := httptest.NewRecorder()
+	RemindersHandler{Svc: reminderPage{rows: []repo.DueReminder{row}}, Consents: s}.Due(due, httptest.NewRequest(http.MethodGet, "/api/reminders/due?from=2026-06-26T00:00:00&to=2026-06-27T00:00:00", nil))
+	booked := httptest.NewRecorder()
+	NotificationsHandler{Svc: bookingPage{rows: []repo.NewBooking{{DueReminder: row}}}, Consents: s}.NewBookings(booked, httptest.NewRequest(http.MethodPost, "/api/notifications/new-bookings", strings.NewReader(`{"patient_ids":[20]}`)))
+	for _, body := range []string{due.Body.String(), booked.Body.String()} {
+		if !strings.Contains(body, `"bot_consent_service":"active"`) || strings.Contains(body, `"revision"`) {
+			t.Fatalf("feed %s", body)
+		}
+	}
+}
+
 func TestAdsExport_RegistrarForbiddenAndServiceOmitted(t *testing.T) {
 	s := consentDB(t)
 	ctx := context.Background()
-	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 10, MaxUserID: 1, Kind: consents.KindService, TextVersion: "service-v1", Action: "accept"}); err != nil {
+	zero := int64(0)
+	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 10, MaxUserID: 1, Kind: consents.KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 11, MaxUserID: 1, Kind: consents.KindAds, TextVersion: "ads-v1", Action: "accept"}); err != nil {
+	if _, _, err := s.Apply(ctx, consents.Input{PatientID: 11, MaxUserID: 1, Kind: consents.KindAds, TextVersion: "ads-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
 	names := &scriptNames{names: map[int64]string{11: "Иванов Иван Иванович"}}

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,11 +26,12 @@ type BotConsentsHandler struct {
 }
 
 type consentBody struct {
-	PatientID   int64  `json:"patient_id"`
-	MaxUserID   int64  `json:"max_user_id"`
-	Kind        string `json:"kind"`
-	TextVersion string `json:"text_version"`
-	Action      string `json:"action"`
+	PatientID        int64  `json:"patient_id"`
+	MaxUserID        int64  `json:"max_user_id"`
+	Kind             string `json:"kind"`
+	TextVersion      string `json:"text_version"`
+	Action           string `json:"action"`
+	ExpectedRevision *int64 `json:"expected_revision"`
 }
 
 func (h BotConsentsHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -70,10 +72,15 @@ func (h BotConsentsHandler) Post(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "action: accept или revoke")
 		return
 	}
+	if req.Action == "accept" && req.ExpectedRevision == nil {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "expected_revision")
+		return
+	}
 	h.write(w, r, req.PatientID, func() (consents.KindState, consents.KindState, error) {
 		return h.Store.Apply(r.Context(), consents.Input{
 			PatientID: req.PatientID, MaxUserID: req.MaxUserID,
 			Kind: req.Kind, TextVersion: req.TextVersion, Action: req.Action,
+			ExpectedRevision: req.ExpectedRevision,
 		})
 	})
 }
@@ -84,6 +91,14 @@ func (h BotConsentsHandler) write(w http.ResponseWriter, r *http.Request, patien
 		return
 	}
 	service, ads, err := load()
+	if errors.Is(err, consents.ErrConsentChanged) {
+		response.Error(w, http.StatusConflict, "CONSENT_CHANGED", "Согласие изменилось")
+		return
+	}
+	if errors.Is(err, consents.ErrExpectedRevision) {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "expected_revision")
+		return
+	}
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Error("bot consent", "err", err)

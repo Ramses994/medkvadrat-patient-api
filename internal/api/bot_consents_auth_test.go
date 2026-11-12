@@ -29,7 +29,7 @@ func TestBotConsents_TokenLikeConfirmationsFromTheBotNetwork(t *testing.T) {
 	cfg := config.Config{APIToken: "s2s-token"}
 	h := NewRouter(cfg, service.New(nil, nil, sqlDB, repo.Repos{}, slog.New(slog.DiscardHandler), 0, cfg), slog.New(slog.DiscardHandler))
 
-	body := `{"patient_id":1,"max_user_id":2,"kind":"service","text_version":"service-v1","action":"accept"}`
+	body := `{"patient_id":1,"max_user_id":2,"kind":"service","text_version":"service-v1","action":"accept","expected_revision":0}`
 	noToken := httptest.NewRequest(http.MethodPost, "/api/internal/bot-consents", strings.NewReader(body))
 	noToken.RemoteAddr = "127.0.0.1:9"
 	nw := httptest.NewRecorder()

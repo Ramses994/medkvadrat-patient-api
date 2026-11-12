@@ -20,11 +20,19 @@ const (
 
 // KindState is the latest consent row for one kind.
 // At is accepted_at while the row is active and revoked_at after revocation.
+// Revision is the number of consent changes for this patient and kind. No row means 0.
 type KindState struct {
 	State       string `json:"state"`
 	TextVersion string `json:"text_version,omitempty"`
 	At          string `json:"at,omitempty"`
+	Revision    int64  `json:"revision"`
 }
+
+// ErrConsentChanged means an accept named a revision that is no longer current.
+var ErrConsentChanged = errors.New("consent changed")
+
+// ErrExpectedRevision means an accept arrived without expected_revision.
+var ErrExpectedRevision = errors.New("expected_revision required")
 
 // Snapshot is the body of GET and POST /api/internal/bot-consents.
 type Snapshot struct {
@@ -34,12 +42,14 @@ type Snapshot struct {
 }
 
 // Input is one accept or revoke.
+// ExpectedRevision is required for accept and ignored for revoke.
 type Input struct {
-	PatientID   int64
-	MaxUserID   int64
-	Kind        string
-	TextVersion string
-	Action      string
+	PatientID        int64
+	MaxUserID        int64
+	Kind             string
+	TextVersion      string
+	Action           string
+	ExpectedRevision *int64
 }
 
 // Store keeps bot consents in gateway SQLite. Rows are never deleted.
@@ -96,7 +106,19 @@ func (s *Store) Current(ctx context.Context, patientID int64) (KindState, KindSt
 	if err != nil {
 		return KindState{}, KindState{}, err
 	}
-	return toState(service), toState(ads), nil
+	serviceRev, err := revisionOf(ctx, s.db, patientID, KindService)
+	if err != nil {
+		return KindState{}, KindState{}, err
+	}
+	adsRev, err := revisionOf(ctx, s.db, patientID, KindAds)
+	if err != nil {
+		return KindState{}, KindState{}, err
+	}
+	serviceState := toState(service)
+	adsState := toState(ads)
+	serviceState.Revision = serviceRev
+	adsState.Revision = adsRev
+	return serviceState, adsState, nil
 }
 
 // ServiceStates returns active, revoked, or omits patients with no service row.
@@ -194,72 +216,112 @@ func (s *Store) Apply(ctx context.Context, in Input) (KindState, KindState, erro
 	if s == nil || s.db == nil {
 		return KindState{}, KindState{}, errors.New("consents store is not configured")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
+	if in.Action == "accept" && in.ExpectedRevision == nil {
+		return KindState{}, KindState{}, ErrExpectedRevision
+	}
+	if err := s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		return s.applyLocked(ctx, conn, in)
+	}); err != nil {
 		return KindState{}, KindState{}, err
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	latest, err := s.latest(ctx, tx, in.PatientID, in.Kind)
+	return s.Current(ctx, in.PatientID)
+}
+
+func (s *Store) applyLocked(ctx context.Context, conn *sql.Conn, in Input) error {
+	current, err := revisionOf(ctx, conn, in.PatientID, in.Kind)
 	if err != nil {
-		return KindState{}, KindState{}, err
+		return err
+	}
+	latest, err := s.latest(ctx, conn, in.PatientID, in.Kind)
+	if err != nil {
+		return err
 	}
 	now := s.clock().UTC().Format(time.RFC3339)
 	switch in.Action {
 	case "accept":
+		if current != *in.ExpectedRevision {
+			return ErrConsentChanged
+		}
 		if latest != nil && !latest.RevokedAt.Valid && latest.TextVersion == in.TextVersion {
-			if err := tx.Commit(); err != nil {
-				return KindState{}, KindState{}, err
-			}
-			committed = true
-			return s.Current(ctx, in.PatientID)
+			return nil
 		}
 		if latest != nil && !latest.RevokedAt.Valid {
-			if _, err := tx.ExecContext(ctx, `
+			if _, err := conn.ExecContext(ctx, `
 UPDATE bot_consents SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, now, latest.ID); err != nil {
-				return KindState{}, KindState{}, err
+				return err
 			}
 			if s.failBeforeInsert != nil {
 				if err := s.failBeforeInsert(); err != nil {
-					return KindState{}, KindState{}, err
+					return err
 				}
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := conn.ExecContext(ctx, `
 INSERT INTO bot_consents (patient_id, max_user_id, kind, text_version, accepted_at, source)
 VALUES (?, ?, ?, ?, ?, 'bot')`, in.PatientID, in.MaxUserID, in.Kind, in.TextVersion, now); err != nil {
-			return KindState{}, KindState{}, err
+			return err
 		}
+		return bumpRevision(ctx, conn, in.PatientID, in.Kind)
 	case "revoke":
-		if latest != nil && latest.RevokedAt.Valid && strings.TrimSpace(latest.RevokedAt.String) != "" {
-			if err := tx.Commit(); err != nil {
-				return KindState{}, KindState{}, err
-			}
-			committed = true
-			return s.Current(ctx, in.PatientID)
-		}
-		if latest == nil {
-			if _, err := tx.ExecContext(ctx, `
+		already := latest != nil && latest.RevokedAt.Valid && strings.TrimSpace(latest.RevokedAt.String) != ""
+		if !already {
+			if latest == nil {
+				if _, err := conn.ExecContext(ctx, `
 INSERT INTO bot_consents (patient_id, max_user_id, kind, text_version, accepted_at, revoked_at, source)
 VALUES (?, ?, ?, ?, NULL, ?, 'bot')`, in.PatientID, in.MaxUserID, in.Kind, in.TextVersion, now); err != nil {
-				return KindState{}, KindState{}, err
-			}
-		} else if _, err := tx.ExecContext(ctx, `
+					return err
+				}
+			} else if _, err := conn.ExecContext(ctx, `
 UPDATE bot_consents SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, now, latest.ID); err != nil {
-			return KindState{}, KindState{}, err
+				return err
+			}
 		}
+		return bumpRevision(ctx, conn, in.PatientID, in.Kind)
 	default:
-		return KindState{}, KindState{}, fmt.Errorf("unknown action")
+		return fmt.Errorf("unknown action")
 	}
-	if err := tx.Commit(); err != nil {
-		return KindState{}, KindState{}, err
+}
+
+func (s *Store) withImmediate(ctx context.Context, fn func(context.Context, *sql.Conn) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	if err := fn(ctx, conn); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return err
 	}
 	committed = true
-	return s.Current(ctx, in.PatientID)
+	return nil
+}
+
+func revisionOf(ctx context.Context, q queryer, patientID int64, kind string) (int64, error) {
+	var n int64
+	err := q.QueryRowContext(ctx, `
+SELECT revision FROM bot_consent_revisions WHERE patient_id = ? AND kind = ?`, patientID, kind).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return n, err
+}
+
+func bumpRevision(ctx context.Context, conn *sql.Conn, patientID int64, kind string) error {
+	_, err := conn.ExecContext(ctx, `
+INSERT INTO bot_consent_revisions (patient_id, kind, revision) VALUES (?, ?, 1)
+ON CONFLICT(patient_id, kind) DO UPDATE SET revision = revision + 1`, patientID, kind)
+	return err
 }
 
 type queryer interface {

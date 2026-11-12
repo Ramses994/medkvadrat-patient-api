@@ -198,6 +198,15 @@ CREATE TABLE IF NOT EXISTS bot_consents (
 CREATE INDEX IF NOT EXISTS idx_bot_consents_patient_kind ON bot_consents(patient_id, kind)`); err != nil {
 		return fmt.Errorf("bot consents index: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS bot_consent_revisions (
+  patient_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  PRIMARY KEY (patient_id, kind)
+)`); err != nil {
+		return fmt.Errorf("bot consent revisions: %w", err)
+	}
 	if _, err := PurgeClosedWaitlist(ctx, db, time.Now().UTC()); err != nil {
 		return err
 	}

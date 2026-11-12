@@ -38,13 +38,16 @@ func countRows(t *testing.T, s *Store, patientID int64) int {
 func TestAccept_SameVersionIsIdempotent(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
-	in := Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept"}
+	zero := int64(0)
+	in := Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero}
 	first, _, err := s.Apply(ctx, in)
-	if err != nil || first.State != StateActive || first.TextVersion != "service-v1" {
+	if err != nil || first.State != StateActive || first.TextVersion != "service-v1" || first.Revision != 1 {
 		t.Fatalf("first %+v err=%v", first, err)
 	}
+	one := int64(1)
+	in.ExpectedRevision = &one
 	second, _, err := s.Apply(ctx, in)
-	if err != nil || second.State != StateActive || second.At != first.At {
+	if err != nil || second.State != StateActive || second.At != first.At || second.Revision != 1 {
 		t.Fatalf("second %+v err=%v", second, err)
 	}
 	if countRows(t, s, 10) != 1 {
@@ -55,16 +58,18 @@ func TestAccept_SameVersionIsIdempotent(t *testing.T) {
 func TestAccept_VersionChangeRevokesOldInOneTransaction(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
-	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept"}); err != nil {
+	zero := int64(0)
+	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
 	s.failBeforeInsert = func() error { return errors.New("stop") }
-	_, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 21, Kind: KindService, TextVersion: "service-v2", Action: "accept"})
+	one := int64(1)
+	_, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 21, Kind: KindService, TextVersion: "service-v2", Action: "accept", ExpectedRevision: &one})
 	if err == nil {
 		t.Fatal("expected rollback")
 	}
 	service, _, err := s.Current(ctx, 10)
-	if err != nil || service.State != StateActive || service.TextVersion != "service-v1" {
+	if err != nil || service.State != StateActive || service.TextVersion != "service-v1" || service.Revision != 1 {
 		t.Fatalf("after rollback %+v err=%v", service, err)
 	}
 	if countRows(t, s, 10) != 1 {
@@ -72,11 +77,11 @@ func TestAccept_VersionChangeRevokesOldInOneTransaction(t *testing.T) {
 	}
 
 	s.failBeforeInsert = nil
-	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 21, Kind: KindService, TextVersion: "service-v2", Action: "accept"})
+	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 21, Kind: KindService, TextVersion: "service-v2", Action: "accept", ExpectedRevision: &one})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.State != StateActive || service.TextVersion != "service-v2" {
+	if service.State != StateActive || service.TextVersion != "service-v2" || service.Revision != 2 {
 		t.Fatalf("new %+v", service)
 	}
 	if countRows(t, s, 10) != 2 {
@@ -92,18 +97,19 @@ func TestRevoke_WhenNothingIsActive(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
 	service, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "revoke"})
-	if err != nil || service.State != StateRevoked || service.TextVersion != "service-v1" {
+	if err != nil || service.State != StateRevoked || service.TextVersion != "service-v1" || service.Revision != 1 {
 		t.Fatalf("%+v err=%v", service, err)
 	}
 	if countRows(t, s, 10) != 1 {
 		t.Fatalf("rows=%d", countRows(t, s, 10))
 	}
 	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "revoke"})
-	if err != nil || service.State != StateRevoked || countRows(t, s, 10) != 1 {
+	if err != nil || service.State != StateRevoked || service.Revision != 2 || countRows(t, s, 10) != 1 {
 		t.Fatalf("repeat %+v rows=%d err=%v", service, countRows(t, s, 10), err)
 	}
-	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept"})
-	if err != nil || service.State != StateActive || countRows(t, s, 10) != 2 {
+	expected := service.Revision
+	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &expected})
+	if err != nil || service.State != StateActive || service.Revision != expected+1 || countRows(t, s, 10) != 2 {
 		t.Fatalf("accept after refusal %+v rows=%d err=%v", service, countRows(t, s, 10), err)
 	}
 }
@@ -111,7 +117,8 @@ func TestRevoke_WhenNothingIsActive(t *testing.T) {
 func TestPurgeDoesNotDeleteConsents(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
-	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindAds, TextVersion: "ads-v1", Action: "accept"}); err != nil {
+	zero := int64(0)
+	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindAds, TextVersion: "ads-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.PurgeClosedWaitlist(ctx, s.db, time.Now().UTC()); err != nil {
@@ -125,10 +132,11 @@ func TestPurgeDoesNotDeleteConsents(t *testing.T) {
 func TestServiceStates_OneQueryForManyPatients(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
-	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 1, Kind: KindService, TextVersion: "service-v1", Action: "accept"}); err != nil {
+	zero := int64(0)
+	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 1, Kind: KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Apply(ctx, Input{PatientID: 12, MaxUserID: 1, Kind: KindService, TextVersion: "service-v1", Action: "accept"}); err != nil {
+	if _, _, err := s.Apply(ctx, Input{PatientID: 12, MaxUserID: 1, Kind: KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.Apply(ctx, Input{PatientID: 12, MaxUserID: 1, Kind: KindService, TextVersion: "service-v1", Action: "revoke"}); err != nil {
@@ -153,11 +161,12 @@ func TestServiceStates_OneQueryForManyPatients(t *testing.T) {
 func TestAdsRows_SkipService(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
-	_, ads, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 1, Kind: KindService, TextVersion: "service-v1", Action: "accept"})
+	zero := int64(0)
+	_, ads, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 1, Kind: KindService, TextVersion: "service-v1", Action: "accept", ExpectedRevision: &zero})
 	if err != nil || ads.State != StateNone {
 		t.Fatalf("ads %+v err=%v", ads, err)
 	}
-	if _, _, err := s.Apply(ctx, Input{PatientID: 11, MaxUserID: 1, Kind: KindAds, TextVersion: "ads-v1", Action: "accept"}); err != nil {
+	if _, _, err := s.Apply(ctx, Input{PatientID: 11, MaxUserID: 1, Kind: KindAds, TextVersion: "ads-v1", Action: "accept", ExpectedRevision: &zero}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := s.AdsRows(ctx)
