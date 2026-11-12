@@ -16,7 +16,7 @@ import (
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 )
 
-func TestBotConsents_TokenLikeConfirmationsAndClinicNetwork(t *testing.T) {
+func TestBotConsents_TokenLikeConfirmationsFromTheBotNetwork(t *testing.T) {
 	ctx := context.Background()
 	sqlDB, err := db.OpenSQLite(filepath.Join(t.TempDir(), "gateway.db"))
 	if err != nil {
@@ -42,17 +42,8 @@ func TestBotConsents_TokenLikeConfirmationsAndClinicNetwork(t *testing.T) {
 		t.Fatalf("token gate consents=%d confirmations=%d", nw.Code, cw.Code)
 	}
 
-	outside := httptest.NewRequest(http.MethodPost, "/api/internal/bot-consents", strings.NewReader(body))
-	outside.RemoteAddr = "8.8.8.8:9"
-	outside.Header.Set("Authorization", "Bearer s2s-token")
-	ow := httptest.NewRecorder()
-	h.ServeHTTP(ow, outside)
-	if ow.Code != http.StatusForbidden {
-		t.Fatalf("outside clinic %d %s", ow.Code, ow.Body.String())
-	}
-
 	inside := httptest.NewRequest(http.MethodPost, "/api/internal/bot-consents", strings.NewReader(body))
-	inside.RemoteAddr = "192.168.2.104:9"
+	inside.RemoteAddr = "172.18.0.5:9"
 	inside.Header.Set("Authorization", "Bearer s2s-token")
 	iw := httptest.NewRecorder()
 	h.ServeHTTP(iw, inside)

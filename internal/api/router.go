@@ -95,11 +95,9 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.HandleFunc("GET /api/me/lab-panels", meH.LabPanels)
 
 	// Server-to-server (API_TOKEN), same as /api/reminders/due.
-	// Bot consents also require a clinic-network address.
 	mux.HandleFunc("POST /api/internal/confirmations", confirmationsH.Upsert)
-	consentLAN := middleware.AllowCIDRs{Nets: cidrNetsOrDefault(cfg)}
-	mux.Handle("GET /api/internal/bot-consents", consentLAN.Wrap(http.HandlerFunc(consentsH.Get)))
-	mux.Handle("POST /api/internal/bot-consents", consentLAN.Wrap(http.HandlerFunc(consentsH.Post)))
+	mux.HandleFunc("GET /api/internal/bot-consents", consentsH.Get)
+	mux.HandleFunc("POST /api/internal/bot-consents", consentsH.Post)
 
 	// Staff dashboard (session cookie; not API_TOKEN)
 	mux.HandleFunc("GET /dashboard/login", dashboardPageH.LoginForm)
