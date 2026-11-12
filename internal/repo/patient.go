@@ -14,21 +14,22 @@ type PatientRepo struct {
 	db *sql.DB
 }
 
-func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, phoneLast10 string) ([]OTPPatient, error) {
+func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, normalized string) ([]OTPPatient, error) {
 	query := `
 		SELECT
 			PATIENTS_ID,
 			ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
 			ISNULL(EMAIL,'') AS EMAIL,
 			CAST(ISNULL(NOT_SEND_MAILING_SMS,0) AS int) AS NOT_SEND_MAILING_SMS,
-			CAST(ISNULL(SEND_AUTO_EMAIL,0) AS int) AS SEND_AUTO_EMAIL
+			CAST(ISNULL(SEND_AUTO_EMAIL,0) AS int) AS SEND_AUTO_EMAIL,
+			ISNULL(MOBIL_TELEFON,'') AS MOBIL_TELEFON,
+			ISNULL(TEL,'') AS TEL,
+			ISNULL(RAB_TEL,'') AS RAB_TEL
 		FROM PATIENTS
-		WHERE REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(MOBIL_TELEFON,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
-		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
-		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(RAB_TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
+		WHERE ` + phoneLikeWhere() + `
 		ORDER BY PATIENTS_ID`
 
-	rows, err := r.db.QueryContext(ctx, query, sql.Named("phone", phoneLast10))
+	rows, err := r.db.QueryContext(ctx, query, sql.Named("phone", phoneTail(normalized)))
 	if err != nil {
 		return nil, fmt.Errorf("query otp patients: %w", err)
 	}
@@ -38,8 +39,12 @@ func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, phoneLast10 string
 	for rows.Next() {
 		var p OTPPatient
 		var notSend, sendAuto bitInt
-		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Email, &notSend, &sendAuto); err != nil {
+		var mobile, tel, work string
+		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Email, &notSend, &sendAuto, &mobile, &tel, &work); err != nil {
 			return nil, fmt.Errorf("scan otp patients: %w", err)
+		}
+		if !HasPhone(mobile, tel, work, normalized) {
+			continue
 		}
 		p.NotSendMailingSMS = notSend != 0
 		p.SendAutoEmail = sendAuto != 0
@@ -51,19 +56,20 @@ func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, phoneLast10 string
 	return out, nil
 }
 
-func (r *PatientRepo) SearchByPhone(ctx context.Context, phoneLast10 string) ([]PatientInfo, error) {
+func (r *PatientRepo) SearchByPhone(ctx context.Context, normalized string) ([]PatientInfo, error) {
 	query := `
 		SELECT PATIENTS_ID,
 			ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
 			ISNULL(MOBIL_TELEFON, ISNULL(TEL, ISNULL(RAB_TEL,''))) AS PHONE,
-			NULL AS BIRTH_DATE
+			NE_LE AS BIRTH_DATE,
+			ISNULL(MOBIL_TELEFON,'') AS MOBIL_TELEFON,
+			ISNULL(TEL,'') AS TEL,
+			ISNULL(RAB_TEL,'') AS RAB_TEL
 		FROM PATIENTS
-		WHERE REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(MOBIL_TELEFON,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
-		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
-		   OR REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(RAB_TEL,''),'+',''),'-',''),' ',''),'(','') LIKE '%' + @phone + '%'
+		WHERE ` + phoneLikeWhere() + `
 		ORDER BY PATIENTS_ID`
 
-	rows, err := r.db.QueryContext(ctx, query, sql.Named("phone", phoneLast10))
+	rows, err := r.db.QueryContext(ctx, query, sql.Named("phone", phoneTail(normalized)))
 	if err != nil {
 		return nil, fmt.Errorf("query patient search: %w", err)
 	}
@@ -73,12 +79,19 @@ func (r *PatientRepo) SearchByPhone(ctx context.Context, phoneLast10 string) ([]
 	for rows.Next() {
 		var p PatientInfo
 		var bd sql.NullTime
-		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Phone, &bd); err != nil {
+		var mobile, tel, work string
+		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Phone, &bd, &mobile, &tel, &work); err != nil {
 			return nil, fmt.Errorf("scan patient search: %w", err)
+		}
+		if !HasPhone(mobile, tel, work, normalized) {
+			continue
 		}
 		if bd.Valid {
 			t := bd.Time
-			p.BirthDate = &t
+			if y := t.Year(); y >= 1800 && y <= 2200 {
+				tt := time.Date(y, t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+				p.BirthDate = &tt
+			}
 		}
 		patients = append(patients, p)
 	}

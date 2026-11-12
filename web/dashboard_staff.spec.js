@@ -621,6 +621,7 @@ test('staff tab is admin-only and lists employees without a password hash', asyn
   await openBoard(page, { role: 'admin', items: [] });
   await expect(page.locator('#tabStaff')).toBeVisible();
   await page.locator('#tabStaff').click();
+  await expect(page.locator('#adsExport')).toHaveText('Выгрузить согласия на акции');
   await expect(page.locator('#staffTable')).toContainText('admin');
   await expect(page.locator('#staffTable')).toContainText('ИТ');
   await expect(page.locator('#staffPanel')).not.toContainText('password_hash');
@@ -630,6 +631,16 @@ test('staff tab is admin-only and lists employees without a password hash', asyn
 test('registrar does not see the staff tab', async ({ page }) => {
   await openBoard(page, { role: 'registrar', items: [] });
   await expect(page.locator('#tabStaff')).toBeHidden();
+});
+
+test('manager exports ads consents from the staff tab without the employee form', async ({ page }) => {
+  await openBoard(page, { role: 'manager', fullName: 'Директор', items: [] });
+  await expect(page.locator('#tabStaff')).toBeVisible();
+  await page.locator('#tabStaff').click();
+  await expect(page.locator('#adsExport')).toHaveText('Выгрузить согласия на акции');
+  await expect(page.locator('#adsExport')).toHaveAttribute('href', '/dashboard/consents/ads.csv');
+  await expect(page.locator('#staffForm')).toBeHidden();
+  await expect(page.locator('#staffTable')).toBeEmpty();
 });
 
 test('branch option text is darker than its background', async ({ page }) => {

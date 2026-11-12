@@ -285,6 +285,7 @@
 </section>
 <section class="staff-panel" id="staffPanel" hidden>
   <h2>Сотрудники</h2>
+  <p><a id="adsExport" href="/dashboard/consents/ads.csv" hidden>Выгрузить согласия на акции</a></p>
   <form id="staffForm" class="staff-form">
     <label>Логин <input id="staffLogin" required></label>
     <label>Имя <input id="staffName" required></label>
@@ -894,7 +895,7 @@ function setTab(name) {
       $('staffStatus').textContent = staffNotice;
       staffNotice = '';
     }
-    loadStaff();
+    if (dashMe && dashMe.role === 'admin') loadStaff();
     return;
   }
   load();
@@ -1745,7 +1746,10 @@ function applyMe(me, epoch) {
   renderBranchPicker(me);
   const who = me.full_name || me.login || '';
   $('whoami').textContent = [who, roleLabel(me.role), branchCaption(me)].filter(Boolean).join(' · ');
-  if (me.role === 'admin') $('tabStaff').hidden = false;
+  const staffTab = me.role === 'admin' || me.role === 'manager';
+  $('tabStaff').hidden = !staffTab;
+  $('adsExport').hidden = !staffTab;
+  $('staffForm').hidden = me.role !== 'admin';
 }
 
 async function loadMe() {

@@ -23,26 +23,28 @@ type RemindersService interface {
 }
 
 type RemindersHandler struct {
-	Svc    RemindersService
-	Logger *slog.Logger
-	Now    func() time.Time
+	Svc      RemindersService
+	Consents ConsentReader
+	Logger   *slog.Logger
+	Now      func() time.Time
 }
 
 type dueReminderDTO struct {
-	PlanningID       int64  `json:"planning_id"`
-	PatientID        int64  `json:"patient_id"`
-	PatientPhone     string `json:"patient_phone"`
-	PatientName      string `json:"patient_name"`
-	DoctorName       string `json:"doctor_name"`
-	Service          string `json:"service"`
-	IsWaitlist       bool   `json:"is_waitlist"`
-	MessengerNotify  *int   `json:"messenger_notify"`
-	NoSMSNotify      bool   `json:"no_sms_notify"`
-	ApptVersion      string `json:"appt_version"`
-	BranchID         int    `json:"branch_id"`
-	BranchCode       string `json:"branch_code"`
-	DateConsultation string `json:"date_consultation"`
-	Status           int    `json:"status"`
+	PlanningID        int64  `json:"planning_id"`
+	PatientID         int64  `json:"patient_id"`
+	PatientPhone      string `json:"patient_phone"`
+	PatientName       string `json:"patient_name"`
+	DoctorName        string `json:"doctor_name"`
+	Service           string `json:"service"`
+	IsWaitlist        bool   `json:"is_waitlist"`
+	MessengerNotify   *int   `json:"messenger_notify"`
+	BotConsentService string `json:"bot_consent_service"`
+	NoSMSNotify       bool   `json:"no_sms_notify"`
+	ApptVersion       string `json:"appt_version"`
+	BranchID          int    `json:"branch_id"`
+	BranchCode        string `json:"branch_code"`
+	DateConsultation  string `json:"date_consultation"`
+	Status            int    `json:"status"`
 }
 
 func (h RemindersHandler) now() time.Time {
@@ -148,7 +150,21 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.Svc.RemindersDue(r.Context(), from, to, patientIDs)
 	if err != nil {
-		h.Logger.Error("reminders due failed", "err", err)
+		if h.Logger != nil {
+			h.Logger.Error("reminders due failed", "err", err)
+		}
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		return
+	}
+	ids := make([]int64, len(rows))
+	for i, row := range rows {
+		ids[i] = row.PatientID
+	}
+	states, err := consentStates(r.Context(), h.Consents, ids)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("bot consent states", "err", err)
+		}
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
@@ -156,20 +172,21 @@ func (h RemindersHandler) Due(w http.ResponseWriter, r *http.Request) {
 	out := make([]dueReminderDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, dueReminderDTO{
-			PlanningID:       row.PlanningID,
-			PatientID:        row.PatientID,
-			PatientPhone:     row.PatientPhone,
-			PatientName:      row.PatientName,
-			DoctorName:       displayDoctorName(row.DoctorName),
-			Service:          row.Service,
-			IsWaitlist:       row.IsWaitlist,
-			MessengerNotify:  row.MessengerNotify,
-			NoSMSNotify:      row.NoSMSNotify,
-			ApptVersion:      row.ApptVersion,
-			BranchID:         row.BranchID,
-			BranchCode:       row.BranchCode,
-			DateConsultation: row.DateConsultation.Format(reminderOutLayout),
-			Status:           row.Status,
+			PlanningID:        row.PlanningID,
+			PatientID:         row.PatientID,
+			PatientPhone:      row.PatientPhone,
+			PatientName:       row.PatientName,
+			DoctorName:        displayDoctorName(row.DoctorName),
+			Service:           row.Service,
+			IsWaitlist:        row.IsWaitlist,
+			MessengerNotify:   row.MessengerNotify,
+			BotConsentService: consentState(states, row.PatientID),
+			NoSMSNotify:       row.NoSMSNotify,
+			ApptVersion:       row.ApptVersion,
+			BranchID:          row.BranchID,
+			BranchCode:        row.BranchCode,
+			DateConsultation:  row.DateConsultation.Format(reminderOutLayout),
+			Status:            row.Status,
 		})
 	}
 	response.OK(w, out)

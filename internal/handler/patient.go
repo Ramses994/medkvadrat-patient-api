@@ -52,8 +52,8 @@ func (h PatientHandler) Search(w http.ResponseWriter, r *http.Request) {
 			phone = strings.TrimSpace(req.Phone)
 		}
 	}
-	if phone == "" {
-		response.Error(w, http.StatusBadRequest, "VALIDATION", "Параметр phone обязателен")
+	if phone == "" || repo.NormalizePhone(phone) == "" {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "Введите телефон в формате +7 999 123-45-67")
 		return
 	}
 
