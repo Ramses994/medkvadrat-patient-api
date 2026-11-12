@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -88,6 +89,88 @@ func TestOTP_SharedMailboxSelectsOnce(t *testing.T) {
 	}
 	if tokenCount(t, lite) != 1 {
 		t.Fatalf("tokens=%d", tokenCount(t, lite))
+	}
+}
+
+func TestOTP_SelectRefusesProfileOfAnotherAddress(t *testing.T) {
+	s, lite, sent := otpService(t, []otpRow{
+		{id: 11, email: "a@example.com"},
+		{id: 12, email: "a@example.com"},
+		{id: 22, email: "b@example.com"},
+	})
+	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := s.OTPVerify(context.Background(), res.RequestID, sent["a@example.com"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[int64]bool{}
+	for _, c := range verified.Candidates {
+		ids[c.PatientID] = true
+	}
+	if verified.Access != "" || len(ids) != 2 || !ids[11] || !ids[12] {
+		t.Fatalf("access empty=%v candidates=%v", verified.Access == "", ids)
+	}
+	if tokenCount(t, lite) != 0 {
+		t.Fatal("token issued before the choice")
+	}
+	if _, err := s.OTPSelectPatient(context.Background(), res.RequestID, 22); err == nil || !(isCode(err, 403, "FORBIDDEN") || isCode(err, 401, "OTP_INVALID")) {
+		t.Fatalf("other address err=%v", err)
+	}
+	if tokenCount(t, lite) != 0 {
+		t.Fatal("other address received a token")
+	}
+	tok, err := s.OTPSelectPatient(context.Background(), res.RequestID, 11)
+	if err != nil || tok.Access == "" || tokenPatient(t, lite) != 11 || tokenCount(t, lite) != 1 {
+		t.Fatalf("select err=%v tokens=%d", err, tokenCount(t, lite))
+	}
+}
+
+func TestOTP_ConcurrentSelectIssuesOneToken(t *testing.T) {
+	s, lite, sent := otpService(t, []otpRow{
+		{id: 11, email: "family@example.com"},
+		{id: 12, email: "family@example.com"},
+	})
+	lite.SetMaxOpenConns(1)
+	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := s.OTPVerify(context.Background(), res.RequestID, sent["family@example.com"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.Access != "" || len(verified.Candidates) != 2 || tokenCount(t, lite) != 0 {
+		t.Fatal("verify should offer both profiles and issue no token")
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	okN, invalidN := 0, 0
+	var other []error
+	ids := []int64{11, 12, 11, 12, 11, 12, 11, 12}
+	for _, id := range ids {
+		wg.Add(1)
+		go func(id int64) {
+			defer wg.Done()
+			_, err := s.OTPSelectPatient(context.Background(), res.RequestID, id)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				okN++
+			case isCode(err, 401, "OTP_INVALID"):
+				invalidN++
+			default:
+				other = append(other, err)
+			}
+		}(id)
+	}
+	wg.Wait()
+	if okN != 1 || invalidN != 7 || len(other) != 0 || tokenCount(t, lite) != 1 {
+		t.Fatalf("ok=%d invalid=%d other=%v tokens=%d", okN, invalidN, other, tokenCount(t, lite))
 	}
 }
 
