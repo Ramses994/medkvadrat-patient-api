@@ -92,24 +92,19 @@ func TestRevoke_WhenNothingIsActive(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
 	service, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "revoke"})
-	if err != nil || service.State != StateNone {
+	if err != nil || service.State != StateRevoked || service.TextVersion != "service-v1" {
 		t.Fatalf("%+v err=%v", service, err)
-	}
-	if countRows(t, s, 10) != 0 {
-		t.Fatalf("rows=%d", countRows(t, s, 10))
-	}
-	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "revoke"}); err != nil {
-		t.Fatal(err)
-	}
-	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "revoke"})
-	if err != nil || service.State != StateRevoked {
-		t.Fatalf("second revoke %+v err=%v", service, err)
 	}
 	if countRows(t, s, 10) != 1 {
 		t.Fatalf("rows=%d", countRows(t, s, 10))
+	}
+	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "revoke"})
+	if err != nil || service.State != StateRevoked || countRows(t, s, 10) != 1 {
+		t.Fatalf("repeat %+v rows=%d err=%v", service, countRows(t, s, 10), err)
+	}
+	service, _, err = s.Apply(ctx, Input{PatientID: 10, MaxUserID: 20, Kind: KindService, TextVersion: "service-v1", Action: "accept"})
+	if err != nil || service.State != StateActive || countRows(t, s, 10) != 2 {
+		t.Fatalf("accept after refusal %+v rows=%d err=%v", service, countRows(t, s, 10), err)
 	}
 }
 

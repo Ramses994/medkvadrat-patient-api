@@ -80,7 +80,7 @@ func (s *Store) clock() time.Time {
 type row struct {
 	ID          int64
 	TextVersion string
-	AcceptedAt  string
+	AcceptedAt  sql.NullString
 	RevokedAt   sql.NullString
 }
 
@@ -168,9 +168,12 @@ ORDER BY c.patient_id`)
 	var out []AdsRow
 	for rows.Next() {
 		var row AdsRow
-		var revoked sql.NullString
-		if err := rows.Scan(&row.PatientID, &row.AcceptedAt, &revoked); err != nil {
+		var accepted, revoked sql.NullString
+		if err := rows.Scan(&row.PatientID, &accepted, &revoked); err != nil {
 			return nil, err
+		}
+		if accepted.Valid {
+			row.AcceptedAt = accepted.String
 		}
 		if revoked.Valid {
 			row.RevokedAt = revoked.String
@@ -232,14 +235,20 @@ VALUES (?, ?, ?, ?, ?, 'bot')`, in.PatientID, in.MaxUserID, in.Kind, in.TextVers
 			return KindState{}, KindState{}, err
 		}
 	case "revoke":
-		if latest == nil || latest.RevokedAt.Valid {
+		if latest != nil && latest.RevokedAt.Valid && strings.TrimSpace(latest.RevokedAt.String) != "" {
 			if err := tx.Commit(); err != nil {
 				return KindState{}, KindState{}, err
 			}
 			committed = true
 			return s.Current(ctx, in.PatientID)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		if latest == nil {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO bot_consents (patient_id, max_user_id, kind, text_version, accepted_at, revoked_at, source)
+VALUES (?, ?, ?, ?, NULL, ?, 'bot')`, in.PatientID, in.MaxUserID, in.Kind, in.TextVersion, now); err != nil {
+				return KindState{}, KindState{}, err
+			}
+		} else if _, err := tx.ExecContext(ctx, `
 UPDATE bot_consents SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, now, latest.ID); err != nil {
 			return KindState{}, KindState{}, err
 		}
@@ -281,7 +290,11 @@ func toState(r *row) KindState {
 	if r.RevokedAt.Valid && strings.TrimSpace(r.RevokedAt.String) != "" {
 		return KindState{State: StateRevoked, TextVersion: r.TextVersion, At: r.RevokedAt.String}
 	}
-	return KindState{State: StateActive, TextVersion: r.TextVersion, At: r.AcceptedAt}
+	at := ""
+	if r.AcceptedAt.Valid {
+		at = r.AcceptedAt.String
+	}
+	return KindState{State: StateActive, TextVersion: r.TextVersion, At: at}
 }
 
 func none() KindState { return KindState{State: StateNone} }

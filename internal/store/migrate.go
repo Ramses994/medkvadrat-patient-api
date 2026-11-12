@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS bot_consents (
   max_user_id INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('service', 'ads')),
   text_version TEXT NOT NULL,
-  accepted_at TEXT NOT NULL,
+  accepted_at TEXT NULL,
   revoked_at TEXT NULL,
   source TEXT NOT NULL DEFAULT 'bot'
 )`); err != nil {

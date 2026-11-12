@@ -57,6 +57,81 @@ func TestBotConsents_RejectsBadFields(t *testing.T) {
 	}
 }
 
+func TestRevokeWithoutRows_IsRevokedInGetAndTheThreeFeeds(t *testing.T) {
+	s := consentDB(t)
+	h := BotConsentsHandler{Store: s}
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.Post(w, httptest.NewRequest(http.MethodPost, "/api/internal/bot-consents", strings.NewReader(body)))
+		return w
+	}
+	body := `{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"revoke"}`
+	if w := post(body); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"state":"revoked"`) {
+		t.Fatalf("revoke %d %s", w.Code, w.Body.String())
+	}
+	if n, err := s.RowCount(context.Background()); err != nil || n != 1 {
+		t.Fatalf("rows=%d err=%v", n, err)
+	}
+	if w := post(body); w.Code != http.StatusOK {
+		t.Fatalf("repeat %d %s", w.Code, w.Body.String())
+	}
+	if n, err := s.RowCount(context.Background()); err != nil || n != 1 {
+		t.Fatalf("repeat rows=%d err=%v", n, err)
+	}
+	gw := httptest.NewRecorder()
+	h.Get(gw, httptest.NewRequest(http.MethodGet, "/api/internal/bot-consents?patient_id=20", nil))
+	if gw.Code != http.StatusOK || !strings.Contains(gw.Body.String(), `"state":"revoked"`) {
+		t.Fatalf("get %d %s", gw.Code, gw.Body.String())
+	}
+
+	loc := time.FixedZone("MSK", 3*3600)
+	row := repo.DueReminder{
+		PlanningID: 20, PatientID: 20, DoctorName: "Иванов Иван", Service: "Прием",
+		BranchID: 3, DateConsultation: time.Date(2026, 6, 26, 19, 30, 0, 0, loc),
+	}
+	feeds := []struct {
+		name string
+		call func(*httptest.ResponseRecorder)
+	}{
+		{"due", func(w *httptest.ResponseRecorder) {
+			RemindersHandler{Svc: reminderPage{rows: []repo.DueReminder{row}}, Consents: s}.Due(w, httptest.NewRequest(http.MethodGet, "/api/reminders/due?from=2026-06-26T00:00:00&to=2026-06-27T00:00:00", nil))
+		}},
+		{"new", func(w *httptest.ResponseRecorder) {
+			NotificationsHandler{Svc: bookingPage{rows: []repo.NewBooking{{DueReminder: row}}}, Consents: s}.NewBookings(w, httptest.NewRequest(http.MethodPost, "/api/notifications/new-bookings", strings.NewReader(`{"patient_ids":[20]}`)))
+		}},
+		{"one", func(w *httptest.ResponseRecorder) {
+			req := httptest.NewRequest(http.MethodGet, "/api/notifications/booking/20", nil)
+			req.SetPathValue("planning_id", "20")
+			NotificationsHandler{Svc: bookingPage{one: repo.BookingNotice{DueReminder: row}}, Consents: s}.BookingByID(w, req)
+		}},
+	}
+	for _, feed := range feeds {
+		w := httptest.NewRecorder()
+		feed.call(w)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"bot_consent_service":"revoked"`) {
+			t.Fatalf("%s %d %s", feed.name, w.Code, w.Body.String())
+		}
+	}
+	if w := post(`{"patient_id":20,"max_user_id":7,"kind":"service","text_version":"service-v1","action":"accept"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"state":"active"`) {
+		t.Fatalf("accept %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdsRefusalWithoutConsent_ExportsRevokedWithEmptyDate(t *testing.T) {
+	s := consentDB(t)
+	if _, _, err := s.Apply(context.Background(), consents.Input{PatientID: 13, MaxUserID: 1, Kind: consents.KindAds, TextVersion: "ads-v1", Action: "revoke"}); err != nil {
+		t.Fatal(err)
+	}
+	h := AdsExportHandler{Store: s, Names: &scriptNames{names: map[int64]string{}}}
+	w := httptest.NewRecorder()
+	h.AdsCSV(w, withPrincipal(httptest.NewRequest(http.MethodGet, "/dashboard/consents/ads.csv", nil), staff.Principal{ID: 2, Login: "boss", Role: staff.RoleManager}))
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, "13,,отозвано,,12.11.2026") || strings.Contains(body, "service-v1") {
+		t.Fatalf("%d %s", w.Code, body)
+	}
+}
+
 func TestBotConsentService_OneSQLiteReadPerResponse(t *testing.T) {
 	s := consentDB(t)
 	ctx := context.Background()
