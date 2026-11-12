@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -69,36 +71,11 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 
 	whitelisted := s.Config.Auth.Mode == "pilot" && inList(s.Config.Auth.PilotWhitelist, phone)
 
-	// Filter to recipients with EMAIL
-	var candidates []otp.CandidatesItem
-	emailSet := map[string]struct{}{}
-	var maskedDest []string
-
+	groups := groupOTPProfiles(pats, whitelisted)
 	for _, p := range pats {
-		email := strings.TrimSpace(p.Email)
-		if email == "" {
-			// In pilot whitelist mode we still need candidates for verify/select flow,
-			// even if EMAIL is missing (delivery is bypassed).
-			if whitelisted {
-				candidates = append(candidates, otp.CandidatesItem{
-					PatientID:   p.PatientID,
-					FullName:    p.FullName,
-					MaskedEmail: "",
-				})
-			}
+		if strings.TrimSpace(p.Email) == "" {
 			continue
 		}
-		masked := otp.MaskEmail(email)
-		candidates = append(candidates, otp.CandidatesItem{
-			PatientID:   p.PatientID,
-			FullName:    p.FullName,
-			MaskedEmail: masked,
-		})
-		if _, ok := emailSet[email]; !ok {
-			emailSet[email] = struct{}{}
-			maskedDest = append(maskedDest, masked)
-		}
-		// audit log (flags are orthogonal to OTP)
 		s.Logger.Info("otp.send.audit",
 			"patient_id", p.PatientID,
 			"channel", "email",
@@ -106,46 +83,37 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 			"send_auto_email", p.SendAutoEmail,
 		)
 	}
-	if whitelisted && len(candidates) == 0 {
-		for _, p := range pats {
-			candidates = append(candidates, otp.CandidatesItem{
-				PatientID:   p.PatientID,
-				FullName:    p.FullName,
-				MaskedEmail: "",
-			})
+	if len(groups) == 0 {
+		if s.Config.Auth.Mode == "dev" {
+			s.Logger.Warn(
+				"otp request blocked: patient email missing",
+				"hint", "set PATIENTS.EMAIL on dev MSSQL or use AUTH_MODE=pilot with AUTH_PILOT_WHITELIST for happy-path testing",
+			)
 		}
-	}
-
-	if len(maskedDest) == 0 {
-		if whitelisted {
-			maskedDest = []string{"pilot-whitelist"}
-		} else {
-			if s.Config.Auth.Mode == "dev" {
-				s.Logger.Warn(
-					"otp request blocked: patient email missing",
-					"hint", "set PATIENTS.EMAIL on dev MSSQL or use AUTH_MODE=pilot with AUTH_PILOT_WHITELIST for happy-path testing",
-				)
-			}
-			return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "EMAIL_NOT_SET", "Для входа в личный кабинет обратитесь в регистратуру, чтобы добавить email в карточку пациента. Телефон: +7 (499) 288-88-14")
-		}
-	}
-	code := ""
-	if whitelisted {
-		code = "000000"
-	} else {
-		c, err := otp.RandomCode6()
-		if err != nil {
-			return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
-		}
-		code = c
+		return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "EMAIL_NOT_SET", "Для входа в личный кабинет обратитесь в регистратуру, чтобы добавить email в карточку пациента. Телефон: +7 (499) 288-88-14")
 	}
 
 	secret := s.Config.OTP.HMACSecret
 	if secret == "" {
-		// dev default, but still hashed for uniformity
 		secret = "dev"
 	}
-	codeHash := otp.HashCodeHMAC(code, secret)
+	addresses := make([]otp.AddressGroup, 0, len(groups))
+	codes := make([]string, 0, len(groups))
+	for _, g := range groups {
+		code := "000000"
+		if !(whitelisted && len(groups) == 1) {
+			c, err := otp.RandomCode6()
+			if err != nil {
+				return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+			}
+			code = c
+		}
+		codes = append(codes, code)
+		addresses = append(addresses, otp.AddressGroup{
+			CodeHash:   otp.HashCodeHMAC(code, secret),
+			Candidates: g.candidates,
+		})
+	}
 
 	reqID, err := auth.NewJTI()
 	if err != nil {
@@ -157,12 +125,19 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	}
 	expiresAt := now.Add(time.Duration(ttl) * time.Second)
 
-	candJSON, _ := json.Marshal(candidates)
+	candJSON, err := json.Marshal(addresses)
+	if err != nil {
+		return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
+	hashJSON, err := json.Marshal(codeHashes(addresses))
+	if err != nil {
+		return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
 	otpRepo := otp.NewRepo(s.SQLite)
 	row := otp.RequestRow{
 		RequestID:      reqID,
 		Phone:          phone,
-		CodeHash:       codeHash,
+		CodeHash:       string(hashJSON),
 		CandidatesJSON: string(candJSON),
 		Attempts:       0,
 		ExpiresAt:      expiresAt,
@@ -173,7 +148,6 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
 
-	// Send OTP (dev: do not send email; pilot whitelist: do not send)
 	channelName := "email"
 	if s.Config.Auth.Mode == "dev" {
 		channelName = "dev"
@@ -181,13 +155,12 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		channelName = "pilot"
 	}
 
-	if s.Config.Auth.Mode == "dev" {
-		_ = otp.DevChannel{Logger: s.Logger}.Send(ctx, otp.Patient{MaskedEmail: maskedDest[0]}, code)
-	} else if !whitelisted {
-		ch := otp.NewEmailChannel(s.Config.SMTP)
-		for email := range emailSet {
-			err := ch.Send(ctx, otp.Patient{Email: email, MaskedEmail: otp.MaskEmail(email)}, code)
-			if err != nil {
+	if !whitelisted {
+		for i, g := range groups {
+			if g.email == "" {
+				continue
+			}
+			if err := sendOTPMail(ctx, s, g.email, codes[i]); err != nil {
 				_ = otpRepo.Delete(ctx, reqID)
 				s.Logger.Error("otp email send failed", "err", err)
 				return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "EMAIL_SEND_FAILED", "Не удалось отправить письмо, попробуйте ещё раз")
@@ -195,6 +168,12 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		}
 	}
 
+	maskedDest := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if g.masked != "" {
+			maskedDest = append(maskedDest, g.masked)
+		}
+	}
 	var masked interface{} = maskedDest
 	if len(maskedDest) == 1 {
 		masked = maskedDest[0]
@@ -209,8 +188,8 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		Channel:           channelName,
 		MaskedDestination: masked,
 	}
-	if s.Config.Auth.Mode != "prod" {
-		res.DevCode = code
+	if s.Config.Auth.Mode != "prod" && len(codes) == 1 {
+		res.DevCode = codes[0]
 	}
 	return res, nil
 }
@@ -232,42 +211,43 @@ func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handl
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_ATTEMPTS_EXCEEDED", "Слишком много попыток, запросите новый код")
 	}
 
+	if row.UsedAt.Valid {
+		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+	}
 	secret := s.Config.OTP.HMACSecret
 	if secret == "" {
 		secret = "dev"
 	}
-	if otp.HashCodeHMAC(code, secret) != row.CodeHash {
+	groups, err := otp.DecodeAddresses(row)
+	if err != nil || len(groups) == 0 {
+		return handler.OTPVerifyResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
+	}
+	matched, ok := matchAddress(groups, otp.HashCodeHMAC(code, secret))
+	if !ok {
 		_, _ = otpRepo.IncrementAttempts(ctx, requestID)
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
-	_ = otpRepo.MarkVerified(ctx, requestID, now)
-
-	cands, err := otpRepo.DecodeCandidates(row)
-	if err != nil || len(cands) == 0 {
-		return handler.OTPVerifyResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
-	}
-
-	if len(cands) == 1 {
-		tok, err := s.issueTokens(ctx, cands[0].PatientID, row.Phone)
+	if !row.VerifiedAt.Valid {
+		locked, err := otpRepo.LockAddress(ctx, requestID, matched, now)
 		if err != nil {
 			return handler.OTPVerifyResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		}
-		return handler.OTPVerifyResult{
-			Access:           tok.Access,
-			Refresh:          tok.Refresh,
-			AccessExpiresIn:  tok.AccessExpiresIn,
-			RefreshExpiresIn: tok.RefreshExpiresIn,
-		}, nil
+		if !locked {
+			row, err = otpRepo.Get(ctx, requestID)
+			if err != nil || row.UsedAt.Valid {
+				return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+			}
+			groups, err = otp.DecodeAddresses(row)
+			if err != nil {
+				return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+			}
+			matched, ok = matchAddress(groups, otp.HashCodeHMAC(code, secret))
+			if !ok {
+				return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+			}
+		}
 	}
-	out := make([]handler.Candidate, 0, len(cands))
-	for _, c := range cands {
-		out = append(out, handler.Candidate{
-			PatientID:   c.PatientID,
-			FullName:    c.FullName,
-			MaskedEmail: c.MaskedEmail,
-		})
-	}
-	return handler.OTPVerifyResult{Candidates: out}, nil
+	return s.finishVerified(ctx, requestID, row.Phone, matched.Candidates)
 }
 
 func (s *Services) OTPSelectPatient(ctx context.Context, requestID string, patientID int64) (handler.Tokens, error) {
@@ -280,26 +260,24 @@ func (s *Services) OTPSelectPatient(ctx context.Context, requestID string, patie
 	if !row.VerifiedAt.Valid {
 		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
+	if row.UsedAt.Valid {
+		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+	}
 	if now.After(row.ExpiresAt) {
 		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_EXPIRED", "Код истёк, запросите новый")
 	}
-	cands, err := otpRepo.DecodeCandidates(row)
+	groups, err := otp.DecodeAddresses(row)
 	if err != nil {
 		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
-	found := false
-	for _, c := range cands {
-		if c.PatientID == patientID {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !addressHasPatient(groups, patientID) {
 		return handler.Tokens{}, apperr.New(http.StatusForbidden, "FORBIDDEN", "Forbidden")
 	}
-	_ = otpRepo.MarkSelectedPatient(ctx, requestID, patientID)
-	tok, err := s.issueTokens(ctx, patientID, row.Phone)
+	tok, err := s.consumeAndIssue(ctx, requestID, patientID, row.Phone)
 	if err != nil {
+		if errors.Is(err, otp.ErrConsumed) {
+			return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+		}
 		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
 	return tok, nil
@@ -347,6 +325,10 @@ func (s *Services) Logout(ctx context.Context, refresh string) error {
 }
 
 func (s *Services) issueTokens(ctx context.Context, patientID int64, phone string) (handler.Tokens, error) {
+	return s.issueTokensExec(ctx, s.SQLite, patientID, phone)
+}
+
+func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, patientID int64, phone string) (handler.Tokens, error) {
 	now := time.Now()
 	secret := []byte(s.Config.JWT.Secret)
 	if len(secret) == 0 {
@@ -374,8 +356,7 @@ func (s *Services) issueTokens(ctx context.Context, patientID int64, phone strin
 	if err != nil {
 		return handler.Tokens{}, err
 	}
-	store := auth.NewRefreshStore(s.SQLite)
-	if err := store.Put(ctx, jti, patientID, auth.HashToken(refresh), now.Add(refreshTTL)); err != nil {
+	if err := auth.InsertRefresh(ctx, exec, jti, patientID, auth.HashToken(refresh), now.Add(refreshTTL)); err != nil {
 		return handler.Tokens{}, err
 	}
 	return handler.Tokens{
@@ -384,6 +365,133 @@ func (s *Services) issueTokens(ctx context.Context, patientID int64, phone strin
 		AccessExpiresIn:  int(accessTTL.Seconds()),
 		RefreshExpiresIn: int(refreshTTL.Seconds()),
 	}, nil
+}
+
+type otpProfileGroup struct {
+	email      string
+	masked     string
+	candidates []otp.CandidatesItem
+}
+
+func groupOTPProfiles(pats []repo.OTPPatient, whitelisted bool) []*otpProfileGroup {
+	var groups []*otpProfileGroup
+	byEmail := map[string]*otpProfileGroup{}
+	add := func(key, email, masked string, item otp.CandidatesItem) {
+		g, ok := byEmail[key]
+		if !ok {
+			g = &otpProfileGroup{email: email, masked: masked}
+			byEmail[key] = g
+			groups = append(groups, g)
+		}
+		g.candidates = append(g.candidates, item)
+	}
+	for _, p := range pats {
+		email := strings.TrimSpace(p.Email)
+		if email == "" {
+			if whitelisted {
+				add("", "", "", otp.CandidatesItem{PatientID: p.PatientID, FullName: p.FullName})
+			}
+			continue
+		}
+		add(strings.ToLower(email), email, otp.MaskEmail(email), otp.CandidatesItem{
+			PatientID:   p.PatientID,
+			FullName:    p.FullName,
+			MaskedEmail: otp.MaskEmail(email),
+		})
+	}
+	if whitelisted && len(groups) == 0 {
+		for _, p := range pats {
+			add("", "", "", otp.CandidatesItem{PatientID: p.PatientID, FullName: p.FullName})
+		}
+	}
+	return groups
+}
+
+func (s *Services) finishVerified(ctx context.Context, requestID, phone string, cands []otp.CandidatesItem) (handler.OTPVerifyResult, error) {
+	if len(cands) == 0 {
+		return handler.OTPVerifyResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
+	}
+	if len(cands) == 1 {
+		tok, err := s.consumeAndIssue(ctx, requestID, cands[0].PatientID, phone)
+		if err != nil {
+			if errors.Is(err, otp.ErrConsumed) {
+				return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+			}
+			return handler.OTPVerifyResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		}
+		return handler.OTPVerifyResult{
+			Access:           tok.Access,
+			Refresh:          tok.Refresh,
+			AccessExpiresIn:  tok.AccessExpiresIn,
+			RefreshExpiresIn: tok.RefreshExpiresIn,
+		}, nil
+	}
+	out := make([]handler.Candidate, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, handler.Candidate{
+			PatientID:   c.PatientID,
+			FullName:    c.FullName,
+			MaskedEmail: c.MaskedEmail,
+		})
+	}
+	return handler.OTPVerifyResult{Candidates: out}, nil
+}
+
+func (s *Services) consumeAndIssue(ctx context.Context, requestID string, patientID int64, phone string) (handler.Tokens, error) {
+	tx, err := s.SQLite.BeginTx(ctx, nil)
+	if err != nil {
+		return handler.Tokens{}, err
+	}
+	defer tx.Rollback()
+	if err := otp.NewRepo(s.SQLite).Consume(ctx, tx, requestID, patientID, time.Now()); err != nil {
+		return handler.Tokens{}, err
+	}
+	tok, err := s.issueTokensExec(ctx, tx, patientID, phone)
+	if err != nil {
+		return handler.Tokens{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return handler.Tokens{}, err
+	}
+	return tok, nil
+}
+
+func matchAddress(groups []otp.AddressGroup, hash string) (otp.AddressGroup, bool) {
+	var found otp.AddressGroup
+	ok := false
+	for _, g := range groups {
+		if len(g.CodeHash) == len(hash) && subtle.ConstantTimeCompare([]byte(g.CodeHash), []byte(hash)) == 1 {
+			found = g
+			ok = true
+		}
+	}
+	return found, ok
+}
+
+func addressHasPatient(groups []otp.AddressGroup, patientID int64) bool {
+	for _, g := range groups {
+		for _, c := range g.Candidates {
+			if c.PatientID == patientID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codeHashes(groups []otp.AddressGroup) []string {
+	out := make([]string, len(groups))
+	for i, g := range groups {
+		out[i] = g.CodeHash
+	}
+	return out
+}
+
+var sendOTPMail = func(ctx context.Context, s *Services, email, code string) error {
+	if s.Config.Auth.Mode == "dev" {
+		return otp.DevChannel{Logger: s.Logger}.Send(ctx, otp.Patient{MaskedEmail: otp.MaskEmail(email)}, code)
+	}
+	return otp.NewEmailChannel(s.Config.SMTP).Send(ctx, otp.Patient{Email: email, MaskedEmail: otp.MaskEmail(email)}, code)
 }
 
 func inList(list []string, phone string) bool {

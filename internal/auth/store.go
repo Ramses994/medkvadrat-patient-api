@@ -20,8 +20,16 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+type Execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func (s *RefreshStore) Put(ctx context.Context, jti string, patientID int64, tokenHash string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
+	return InsertRefresh(ctx, s.db, jti, patientID, tokenHash, expiresAt)
+}
+
+func InsertRefresh(ctx context.Context, exec Execer, jti string, patientID int64, tokenHash string, expiresAt time.Time) error {
+	_, err := exec.ExecContext(ctx, `
 INSERT INTO refresh_tokens(jti, patient_id, token_hash, expires_at)
 VALUES(@jti, @pid, @hash, @exp)`,
 		sql.Named("jti", jti),

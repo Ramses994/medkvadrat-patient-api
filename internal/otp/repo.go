@@ -20,8 +20,17 @@ type RequestRow struct {
 	VerifiedAt      sql.NullTime
 	SelectedPatient sql.NullInt64
 	Whitelisted     bool
+	UsedAt          sql.NullTime
 	CreatedAt       time.Time
 }
+
+// AddressGroup is one mailbox: its code hash and the profiles that share it.
+type AddressGroup struct {
+	CodeHash   string           `json:"code_hash"`
+	Candidates []CandidatesItem `json:"candidates"`
+}
+
+var ErrConsumed = errors.New("otp request already used")
 
 type CandidatesItem struct {
 	PatientID   int64  `json:"patient_id"`
@@ -64,7 +73,7 @@ func (r *Repo) Get(ctx context.Context, requestID string) (RequestRow, error) {
 	var row RequestRow
 	var wlInt int
 	err := r.db.QueryRowContext(ctx, `
-SELECT request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, created_at
+SELECT request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, created_at, used_at
 FROM otp_requests
 WHERE request_id = @rid`,
 		sql.Named("rid", requestID),
@@ -79,6 +88,7 @@ WHERE request_id = @rid`,
 		&row.SelectedPatient,
 		&wlInt,
 		&row.CreatedAt,
+		&row.UsedAt,
 	)
 	if err != nil {
 		return RequestRow{}, err
@@ -110,9 +120,81 @@ func (r *Repo) MarkVerified(ctx context.Context, requestID string, t time.Time) 
 	return err
 }
 
+// LockAddress keeps only the mailbox whose code matched. A second code cannot reopen the others.
+func (r *Repo) LockAddress(ctx context.Context, requestID string, group AddressGroup, t time.Time) (bool, error) {
+	payload, err := json.Marshal([]AddressGroup{group})
+	if err != nil {
+		return false, err
+	}
+	res, err := r.db.ExecContext(ctx, `
+UPDATE otp_requests
+SET verified_at=@t, candidates=@c, code_hash=@h
+WHERE request_id=@rid AND verified_at IS NULL AND used_at IS NULL`,
+		sql.Named("t", t.UTC()),
+		sql.Named("c", string(payload)),
+		sql.Named("h", group.CodeHash),
+		sql.Named("rid", requestID),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// Consume marks the request used and records the profile. It succeeds once, in the caller's transaction.
+func (r *Repo) Consume(ctx context.Context, tx *sql.Tx, requestID string, patientID int64, t time.Time) error {
+	res, err := tx.ExecContext(ctx, `
+UPDATE otp_requests
+SET used_at=@t, selected_patient=@p
+WHERE request_id=@rid AND used_at IS NULL AND verified_at IS NOT NULL`,
+		sql.Named("t", t.UTC()),
+		sql.Named("p", patientID),
+		sql.Named("rid", requestID),
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrConsumed
+	}
+	return nil
+}
+
 func (r *Repo) MarkSelectedPatient(ctx context.Context, requestID string, patientID int64) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE otp_requests SET selected_patient=@p WHERE request_id=@rid`, sql.Named("p", patientID), sql.Named("rid", requestID))
 	return err
+}
+
+func DecodeAddresses(row RequestRow) ([]AddressGroup, error) {
+	raw := strings.TrimSpace(row.CandidatesJSON)
+	if raw == "" {
+		return nil, errors.New("empty candidates")
+	}
+	var groups []AddressGroup
+	if err := json.Unmarshal([]byte(raw), &groups); err == nil && len(groups) > 0 && groups[0].CodeHash != "" && len(groups[0].Candidates) > 0 {
+		return groups, nil
+	}
+	cands, err := decodeFlatCandidates(raw)
+	if err != nil {
+		return nil, err
+	}
+	return []AddressGroup{{CodeHash: row.CodeHash, Candidates: cands}}, nil
+}
+
+func decodeFlatCandidates(raw string) ([]CandidatesItem, error) {
+	var c []CandidatesItem
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return nil, err
+	}
+	if len(c) == 0 || c[0].PatientID == 0 {
+		return nil, errors.New("empty candidates")
+	}
+	return c, nil
 }
 
 func (r *Repo) DecodeCandidates(row RequestRow) ([]CandidatesItem, error) {
