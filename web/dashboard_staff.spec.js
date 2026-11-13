@@ -60,6 +60,10 @@ function row(extra) {
   };
 }
 
+function staffUser(extra) {
+  return { active: true, must_change_password: false, ...extra };
+}
+
 let server;
 let base;
 
@@ -93,6 +97,9 @@ async function openBoard(page, opts) {
     closedHidden: !!opts.closedHidden,
     banner: opts.banner || '',
     list: (opts.items || [row()]).map(it => ({ ...it })),
+    staff: (opts.staff || [staffUser({ id: 1, login: 'admin', full_name: 'Администратор', role: 'admin', branches: '*' })]).map(u => ({ ...u })),
+    staffReads: 0,
+    deletes: [],
   };
   await page.clock.install({ time: new Date(opts.time || '2026-11-06T10:39:00.000Z') });
   await page.route('**/dashboard/me', async route => {
@@ -284,6 +291,19 @@ async function openBoard(page, opts) {
     });
   });
   await page.route('**/dashboard/staff**', async route => {
+    if (route.request().method() === 'DELETE') {
+      const id = Number(new URL(route.request().url()).pathname.split('/').pop());
+      state.deletes.push({ id, headers: route.request().headers() });
+      if (state.deleteReply) {
+        const reply = state.deleteReply;
+        state.deleteReply = null;
+        await route.fulfill(reply);
+        return;
+      }
+      state.staff = state.staff.filter(u => u.id !== id);
+      await route.fulfill({ json: { success: true, data: { id } } });
+      return;
+    }
     if (route.request().method() !== 'GET') {
       if (state.holdStaff) await state.holdStaff;
       await route.fulfill({
@@ -297,16 +317,8 @@ async function openBoard(page, opts) {
       });
       return;
     }
-    await route.fulfill({
-      json: {
-        success: true,
-        data: {
-          users: [{
-            id: 1, login: 'admin', full_name: 'Администратор', role: 'admin', branches: '*', active: true, must_change_password: false,
-          }],
-        },
-      },
-    });
+    state.staffReads++;
+    await route.fulfill({ json: { success: true, data: { users: state.staff } } });
   });
   await page.goto(base);
   return state;
@@ -641,6 +653,94 @@ test('manager exports ads consents from the staff tab without the employee form'
   await expect(page.locator('#adsExport')).toHaveAttribute('href', '/dashboard/consents/ads.csv');
   await expect(page.locator('#staffForm')).toBeHidden();
   await expect(page.locator('#staffTable')).toBeEmpty();
+});
+
+const STAFF = [
+  staffUser({ id: 1, login: 'admin', full_name: 'Администратор', role: 'admin', branches: '*' }),
+  staffUser({ id: 2, login: 'reg106', full_name: 'Регистратор', role: 'registrar', branches: '106' }),
+  staffUser({ id: 3, login: 'mgr-test', full_name: 'Тест', role: 'manager', branches: '*' }),
+];
+const DELETE_TEXT = 'Удалить учётную запись reg106? Сотрудник больше не сможет войти. Отметки в листе ожидания сохранятся.';
+
+test('staff delete button is admin-only and not in the own row', async ({ page }) => {
+  await openBoard(page, { role: 'admin', login: 'admin', staff: STAFF, items: [] });
+  await page.locator('#tabStaff').click();
+  await expect(page.locator('#staffTable tbody tr')).toHaveCount(3);
+  await expect(page.locator('#staffTable tr[data-login="admin"]').getByRole('button', { name: 'Удалить' })).toHaveCount(0);
+  await expect(page.locator('#staffTable tr[data-login="reg106"]').getByRole('button', { name: 'Удалить' })).toBeVisible();
+  await expect(page.locator('#staffTable tr[data-login="mgr-test"]').getByRole('button', { name: 'Удалить' })).toBeVisible();
+  await page.screenshot({ path: join(shots, 'staff-delete-buttons.png') });
+});
+
+test('manager and registrar get no staff delete button', async ({ page }) => {
+  const state = await openBoard(page, { role: 'manager', login: 'mgr', staff: STAFF, items: [] });
+  await page.locator('#tabStaff').click();
+  await expect(page.locator('#adsExport')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Удалить' })).toHaveCount(0);
+  expect(state.staffReads).toBe(0);
+});
+
+test('registrar has no staff tab and no delete button', async ({ page }) => {
+  await openBoard(page, { role: 'registrar', staff: STAFF, items: [] });
+  await expect(page.locator('#tabStaff')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Удалить' })).toHaveCount(0);
+});
+
+test('staff delete asks in the page, cancel keeps the row, delete removes it without reload', async ({ page }) => {
+  const state = await openBoard(page, { role: 'admin', login: 'admin', staff: STAFF, items: [] });
+  const nativeDialogs = [];
+  page.on('dialog', dialog => { nativeDialogs.push(dialog.type()); dialog.dismiss(); });
+  await page.locator('#tabStaff').click();
+  const line = page.locator('#staffTable tr[data-login="reg106"]');
+  await line.getByRole('button', { name: 'Удалить' }).click();
+  await expect(page.locator('#staffDeleteModal')).toBeVisible();
+  await expect(page.locator('#staffDeleteText')).toHaveText(DELETE_TEXT);
+  await expect(page.locator('#staffDeleteYes')).toHaveText('Удалить');
+  await expect(page.locator('#staffDeleteNo')).toHaveText('Отмена');
+  await page.screenshot({ path: join(shots, 'staff-delete-dialog.png') });
+  await page.locator('#staffDeleteNo').click();
+  await expect(page.locator('#staffDeleteModal')).toBeHidden();
+  expect(state.deletes).toHaveLength(0);
+  await expect(line).toBeVisible();
+  await expect(page.locator('#staffTable tbody tr')).toHaveCount(3);
+
+  const reads = state.staffReads;
+  await page.evaluate(() => { window.__noReload = true; });
+  await line.getByRole('button', { name: 'Удалить' }).click();
+  const sent = page.waitForRequest(r => r.method() === 'DELETE' && r.url().endsWith('/dashboard/staff/2'));
+  await page.locator('#staffDeleteYes').click();
+  await sent;
+  await expect(line).toHaveCount(0);
+  await expect(page.locator('#staffTable tbody tr')).toHaveCount(2);
+  await expect(page.locator('#staffTable tr[data-login="mgr-test"]')).toBeVisible();
+  await expect(page.locator('#staffStatus')).toContainText('Учётная запись reg106 удалена');
+  expect(state.deletes).toHaveLength(1);
+  expect(state.deletes[0].headers['x-dashboard-request']).toBe('1');
+  expect(state.staffReads).toBe(reads);
+  expect(await page.evaluate(() => window.__noReload)).toBe(true);
+  expect(nativeDialogs).toEqual([]);
+  await page.screenshot({ path: join(shots, 'staff-delete-done.png') });
+});
+
+test('a refused staff delete shows the reason next to the row', async ({ page }) => {
+  const state = await openBoard(page, { role: 'admin', login: 'admin', staff: STAFF, items: [] });
+  await page.locator('#tabStaff').click();
+  const line = page.locator('#staffTable tr[data-login="mgr-test"]');
+  state.deleteReply = {
+    status: 409,
+    json: {
+      success: false,
+      error: 'Нельзя удалить последнего администратора',
+      error_details: { code: 'LAST_ADMIN', message: 'Нельзя удалить последнего администратора' },
+    },
+  };
+  await line.getByRole('button', { name: 'Удалить' }).click();
+  await page.locator('#staffDeleteYes').click();
+  await expect(line.locator('.staff-row-note')).toHaveText('Нельзя удалить последнего администратора');
+  await expect(line).toBeVisible();
+  await expect(page.locator('#staffTable tbody tr')).toHaveCount(3);
+  await expect(page.locator('#staffTable tr[data-login="reg106"] .staff-row-note')).toHaveText('');
+  await page.screenshot({ path: join(shots, 'staff-delete-refused.png') });
 });
 
 test('branch option text is darker than its background', async ({ page }) => {

@@ -156,6 +156,39 @@ func (h StaffHandler) Update(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, payload)
 }
 
+func (h StaffHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	actor, ok := requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "id")
+		return
+	}
+	err = h.Store.Delete(r.Context(), actor.ID, actor.Login, id)
+	switch {
+	case err == nil:
+	case errors.Is(err, staff.ErrDeleteSelf):
+		response.Error(w, http.StatusConflict, "CANNOT_DELETE_SELF", "Нельзя удалить свою учётную запись")
+		return
+	case errors.Is(err, staff.ErrLastAdmin):
+		response.Error(w, http.StatusConflict, "LAST_ADMIN", "Нельзя удалить последнего администратора")
+		return
+	case errors.Is(err, staff.ErrNotFound):
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "Сотрудник не найден")
+		return
+	default:
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		return
+	}
+	if h.Logger != nil {
+		h.Logger.Info("staff deleted", "staff_id", id)
+	}
+	response.OK(w, map[string]any{"id": id})
+}
+
 func (h StaffHandler) writeStaffErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, staff.ErrShortPassword):
