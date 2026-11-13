@@ -115,6 +115,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux.Handle("GET /dashboard/consents/ads.csv", staffMW.Wrap(http.HandlerFunc(adsExportH.AdsCSV)))
 	mux.Handle("POST /dashboard/staff", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Create))))
 	mux.Handle("POST /dashboard/staff/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Update))))
+	mux.Handle("DELETE /dashboard/staff/{id}", staffMW.Wrap(middleware.RequireDashboardMutation(http.HandlerFunc(staffH.Delete))))
 
 	cidrNets, err := middleware.ParseCIDRList(cfg.Dashboard.AllowedCIDRs)
 	if err != nil || len(cidrNets) == 0 {

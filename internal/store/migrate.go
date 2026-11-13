@@ -7,6 +7,28 @@ import (
 	"time"
 )
 
+// staffUsersDDL has no table-wide UNIQUE(login): logins are unique only among
+// rows with deleted_at IS NULL (idx_staff_users_login_live).
+const staffUsersDDL = `
+CREATE TABLE IF NOT EXISTS %s (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  login                TEXT NOT NULL,
+  full_name            TEXT NOT NULL,
+  password_hash        TEXT NOT NULL,
+  role                 TEXT NOT NULL,
+  branches             TEXT NOT NULL,
+  active               INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  last_login_at        TEXT,
+  session_version      INTEGER NOT NULL DEFAULT 1,
+  deleted_at           TEXT
+);`
+
+const staffUsersColumns = `id, login, full_name, password_hash, role, branches, active, must_change_password,
+  created_at, updated_at, last_login_at, session_version, deleted_at`
+
 func Migrate(ctx context.Context, db *sql.DB) error {
 	stmts := []string{
 		`
@@ -124,20 +146,7 @@ CREATE TABLE IF NOT EXISTS waitlist_mis_work (
   updated_by  TEXT,
   updated_at  TEXT NOT NULL
 );`,
-		`
-CREATE TABLE IF NOT EXISTS staff_users (
-  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-  login                TEXT NOT NULL UNIQUE,
-  full_name            TEXT NOT NULL,
-  password_hash        TEXT NOT NULL,
-  role                 TEXT NOT NULL,
-  branches             TEXT NOT NULL,
-  active               INTEGER NOT NULL DEFAULT 1,
-  must_change_password INTEGER NOT NULL DEFAULT 0,
-  created_at           TEXT NOT NULL,
-  updated_at           TEXT NOT NULL,
-  last_login_at        TEXT
-);`,
+		fmt.Sprintf(staffUsersDDL, "staff_users"),
 		`
 CREATE TABLE IF NOT EXISTS staff_login_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,6 +170,12 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 		return err
 	}
 	if err := ensureColumn(ctx, db, "staff_users", "session_version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "staff_users", "deleted_at", "TEXT"); err != nil {
+		return err
+	}
+	if err := staffLoginUniqueAmongLive(ctx, db); err != nil {
 		return err
 	}
 	if err := ensureColumn(ctx, db, "waitlist", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
@@ -226,6 +241,77 @@ CREATE TABLE IF NOT EXISTS bot_consent_revisions (
 	if _, err := PurgeClosedWaitlist(ctx, db, time.Now().UTC()); err != nil {
 		return err
 	}
+	return nil
+}
+
+// staffLoginUniqueAmongLive rebuilds an older staff_users whose login column
+// carries an inline UNIQUE (SQLite cannot drop it in place), then adds the
+// partial unique index. Ids, the AUTOINCREMENT counter and every column survive.
+func staffLoginUniqueAmongLive(ctx context.Context, db *sql.DB) error {
+	var inline int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM sqlite_master
+WHERE type = 'index' AND tbl_name = 'staff_users' AND name LIKE 'sqlite_autoindex_staff_users_%'`).Scan(&inline); err != nil {
+		return fmt.Errorf("staff login index: %w", err)
+	}
+	if inline > 0 {
+		if err := rebuildStaffUsers(ctx, db); err != nil {
+			return fmt.Errorf("rebuild staff_users: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_users_login_live ON staff_users(login) WHERE deleted_at IS NULL`); err != nil {
+		return fmt.Errorf("staff login index: %w", err)
+	}
+	return nil
+}
+
+func rebuildStaffUsers(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	var seq sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `SELECT MAX(seq) FROM sqlite_sequence WHERE name = 'staff_users'`).Scan(&seq); err != nil {
+		return err
+	}
+	stmts := []string{
+		`DROP TABLE IF EXISTS staff_users_rebuild`,
+		fmt.Sprintf(staffUsersDDL, "staff_users_rebuild"),
+		fmt.Sprintf(`INSERT INTO staff_users_rebuild (%s) SELECT %s FROM staff_users`, staffUsersColumns, staffUsersColumns),
+		`DROP TABLE staff_users`,
+		`ALTER TABLE staff_users_rebuild RENAME TO staff_users`,
+	}
+	for _, s := range stmts {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			return err
+		}
+	}
+	if seq.Valid {
+		if _, err := conn.ExecContext(ctx, `
+DELETE FROM sqlite_sequence WHERE name = 'staff_users' AND seq < ?`, seq.Int64); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, `
+INSERT INTO sqlite_sequence (name, seq)
+SELECT 'staff_users', ? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'staff_users')`, seq.Int64); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
