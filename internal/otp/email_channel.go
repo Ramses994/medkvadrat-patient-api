@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/smtp"
+	"net/textproto"
+	"os"
 	"strings"
 	"time"
 
@@ -24,8 +27,6 @@ func NewEmailChannel(cfg config.SMTPConfig) EmailChannel {
 func (c EmailChannel) Name() string { return "email" }
 
 func (c EmailChannel) Send(ctx context.Context, patient Patient, code string) error {
-	_ = ctx // stdlib net/smtp has no context; timeouts are enforced via dialer.
-
 	host := c.cfg.Host
 	port := c.cfg.Port
 	if host == "" || port == 0 {
@@ -70,11 +71,17 @@ func (c EmailChannel) Send(ctx context.Context, patient Patient, code string) er
 
 	// custom dialer for timeouts
 	d := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := d.Dial("tcp", addr)
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
 	defer conn.Close()
+	// net/smtp has no context: the deadline bounds the whole SMTP exchange.
+	if dl, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(dl); err != nil {
+			return fmt.Errorf("smtp deadline: %w", err)
+		}
+	}
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
@@ -96,7 +103,7 @@ func (c EmailChannel) Send(ctx context.Context, patient Patient, code string) er
 	if c.cfg.User != "" {
 		auth := smtp.PlainAuth("", c.cfg.User, c.cfg.Password, host)
 		if err := client.Auth(auth); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
+			return fmt.Errorf("%w: %w", errSMTPAuth, err)
 		}
 	}
 
@@ -119,6 +126,30 @@ func (c EmailChannel) Send(ctx context.Context, patient Patient, code string) er
 		return fmt.Errorf("smtp close: %w", err)
 	}
 	return client.Quit()
+}
+
+var errSMTPAuth = errors.New("smtp auth")
+
+// SMTPErrorCode names a send failure without the server's text, which may repeat the recipient address.
+func SMTPErrorCode(err error) string {
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		return "timeout"
+	}
+	if errors.Is(err, errSMTPAuth) {
+		return "auth"
+	}
+	var te *textproto.Error
+	if errors.As(err, &te) {
+		switch te.Code {
+		case 530, 534, 535, 538:
+			return "auth"
+		}
+		if te.Code >= 400 {
+			return "rejected"
+		}
+	}
+	return "other"
 }
 
 func fromNameAddr(name, email string) string {

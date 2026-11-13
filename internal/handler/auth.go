@@ -24,12 +24,12 @@ type AuthHandler struct {
 	Logger *slog.Logger
 }
 
+// OTPRequestResult is the same for a known number, an unknown one and a card without e-mail.
 type OTPRequestResult struct {
-	RequestID         string      `json:"request_id"`
-	TTL               int         `json:"ttl"`
-	Channel           string      `json:"channel"`
-	MaskedDestination interface{} `json:"masked_destination"` // string or []string
-	DevCode           string      `json:"dev_code,omitempty"`
+	RequestID string `json:"request_id"`
+	TTL       int    `json:"ttl"`
+	Message   string `json:"message"`
+	DevCode   string `json:"dev_code,omitempty"`
 }
 
 type Tokens struct {

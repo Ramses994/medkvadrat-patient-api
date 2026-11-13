@@ -20,8 +20,24 @@ type RequestRow struct {
 	VerifiedAt      sql.NullTime
 	SelectedPatient sql.NullInt64
 	Whitelisted     bool
+	UsedAt          sql.NullTime
 	CreatedAt       time.Time
+	Format          int
+	IssuedMode      string
 }
+
+// FormatAddresses marks a row that stores one code per mailbox. Rows written before it have format 0.
+const FormatAddresses = 2
+
+var ErrOldFormat = errors.New("otp request has the old format")
+
+// AddressGroup is one mailbox: its code hash and the profiles that share it.
+type AddressGroup struct {
+	CodeHash   string           `json:"code_hash"`
+	Candidates []CandidatesItem `json:"candidates"`
+}
+
+var ErrConsumed = errors.New("otp request already used")
 
 type CandidatesItem struct {
 	PatientID   int64  `json:"patient_id"`
@@ -37,8 +53,8 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 func (r *Repo) Create(ctx context.Context, row RequestRow) error {
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO otp_requests(request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted)
-VALUES(@rid, @phone, @hash, @cand, @att, @exp, @ver, @sel, @wl)`,
+INSERT INTO otp_requests(request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, format, issued_mode)
+VALUES(@rid, @phone, @hash, @cand, @att, @exp, @ver, @sel, @wl, @fmt, @mode)`,
 		sql.Named("rid", row.RequestID),
 		sql.Named("phone", row.Phone),
 		sql.Named("hash", row.CodeHash),
@@ -48,6 +64,8 @@ VALUES(@rid, @phone, @hash, @cand, @att, @exp, @ver, @sel, @wl)`,
 		sql.Named("ver", nullTime(row.VerifiedAt)),
 		sql.Named("sel", nullInt64(row.SelectedPatient)),
 		sql.Named("wl", boolToInt(row.Whitelisted)),
+		sql.Named("fmt", row.Format),
+		sql.Named("mode", row.IssuedMode),
 	)
 	if err != nil {
 		return fmt.Errorf("insert otp request: %w", err)
@@ -64,7 +82,7 @@ func (r *Repo) Get(ctx context.Context, requestID string) (RequestRow, error) {
 	var row RequestRow
 	var wlInt int
 	err := r.db.QueryRowContext(ctx, `
-SELECT request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, created_at
+SELECT request_id, phone, code_hash, candidates, attempts, expires_at, verified_at, selected_patient, whitelisted, created_at, used_at, format, issued_mode
 FROM otp_requests
 WHERE request_id = @rid`,
 		sql.Named("rid", requestID),
@@ -79,6 +97,9 @@ WHERE request_id = @rid`,
 		&row.SelectedPatient,
 		&wlInt,
 		&row.CreatedAt,
+		&row.UsedAt,
+		&row.Format,
+		&row.IssuedMode,
 	)
 	if err != nil {
 		return RequestRow{}, err
@@ -87,22 +108,22 @@ WHERE request_id = @rid`,
 	return row, nil
 }
 
-func (r *Repo) IncrementAttempts(ctx context.Context, requestID string) (int, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
+// MaxAttempts is how many codes one request may check, the right one included.
+const MaxAttempts = 3
 
-	var attempts int
-	if err := tx.QueryRowContext(ctx, `SELECT attempts FROM otp_requests WHERE request_id=@rid`, sql.Named("rid", requestID)).Scan(&attempts); err != nil {
-		return 0, err
+// SpendAttempt takes one attempt before the code is compared. False means none are left.
+func (r *Repo) SpendAttempt(ctx context.Context, requestID string) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `
+UPDATE otp_requests SET attempts = attempts + 1
+WHERE request_id = @rid AND attempts < @max`,
+		sql.Named("rid", requestID),
+		sql.Named("max", MaxAttempts),
+	)
+	if err != nil {
+		return false, err
 	}
-	attempts++
-	if _, err := tx.ExecContext(ctx, `UPDATE otp_requests SET attempts=@a WHERE request_id=@rid`, sql.Named("a", attempts), sql.Named("rid", requestID)); err != nil {
-		return 0, err
-	}
-	return attempts, tx.Commit()
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (r *Repo) MarkVerified(ctx context.Context, requestID string, t time.Time) error {
@@ -110,9 +131,74 @@ func (r *Repo) MarkVerified(ctx context.Context, requestID string, t time.Time) 
 	return err
 }
 
+// LockAddress keeps only the mailbox whose code matched. A second code cannot reopen the others.
+func (r *Repo) LockAddress(ctx context.Context, requestID string, group AddressGroup, t time.Time) (bool, error) {
+	payload, err := json.Marshal([]AddressGroup{group})
+	if err != nil {
+		return false, err
+	}
+	res, err := r.db.ExecContext(ctx, `
+UPDATE otp_requests
+SET verified_at=@t, candidates=@c, code_hash=@h
+WHERE request_id=@rid AND verified_at IS NULL AND used_at IS NULL`,
+		sql.Named("t", t.UTC()),
+		sql.Named("c", string(payload)),
+		sql.Named("h", group.CodeHash),
+		sql.Named("rid", requestID),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// Consume marks the request used and records the profile. It succeeds once, in the caller's transaction.
+func (r *Repo) Consume(ctx context.Context, tx *sql.Tx, requestID string, patientID int64, t time.Time) error {
+	res, err := tx.ExecContext(ctx, `
+UPDATE otp_requests
+SET used_at=@t, selected_patient=@p
+WHERE request_id=@rid AND used_at IS NULL AND verified_at IS NOT NULL`,
+		sql.Named("t", t.UTC()),
+		sql.Named("p", patientID),
+		sql.Named("rid", requestID),
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrConsumed
+	}
+	return nil
+}
+
 func (r *Repo) MarkSelectedPatient(ctx context.Context, requestID string, patientID int64) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE otp_requests SET selected_patient=@p WHERE request_id=@rid`, sql.Named("p", patientID), sql.Named("rid", requestID))
 	return err
+}
+
+func DecodeAddresses(row RequestRow) ([]AddressGroup, error) {
+	if row.Format != FormatAddresses {
+		return nil, ErrOldFormat
+	}
+	raw := strings.TrimSpace(row.CandidatesJSON)
+	if raw == "" {
+		return nil, errors.New("empty candidates")
+	}
+	var groups []AddressGroup
+	if err := json.Unmarshal([]byte(raw), &groups); err != nil {
+		return nil, err
+	}
+	for _, g := range groups {
+		if g.CodeHash == "" || len(g.Candidates) == 0 {
+			return nil, errors.New("empty address group")
+		}
+	}
+	return groups, nil
 }
 
 func (r *Repo) DecodeCandidates(row RequestRow) ([]CandidatesItem, error) {

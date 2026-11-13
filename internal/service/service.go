@@ -34,6 +34,8 @@ type Services struct {
 	engOnce         sync.Once
 	engAtomic       atomic.Pointer[BookingEngine]
 	rwLang          atomic.Bool
+	mailOnce        sync.Once
+	mailQ           *otpMailQueue
 }
 
 func New(mssql, mssqlWrite, sqlite *sql.DB, repos repo.Repos, logger *slog.Logger, defaultModelsID int, cfg config.Config) *Services {

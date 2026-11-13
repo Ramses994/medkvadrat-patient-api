@@ -20,14 +20,32 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *RefreshStore) Put(ctx context.Context, jti string, patientID int64, tokenHash string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO refresh_tokens(jti, patient_id, token_hash, expires_at)
-VALUES(@jti, @pid, @hash, @exp)`,
+type Execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// RefreshRow is a stored refresh token. Mode is the AUTH_MODE it was issued in; rows written before it have "".
+type RefreshRow struct {
+	PatientID int64
+	TokenHash string
+	ExpiresAt time.Time
+	RevokedAt sql.NullTime
+	Mode      string
+}
+
+func (s *RefreshStore) Put(ctx context.Context, jti string, patientID int64, tokenHash, mode string, expiresAt time.Time) error {
+	return InsertRefresh(ctx, s.db, jti, patientID, tokenHash, mode, expiresAt)
+}
+
+func InsertRefresh(ctx context.Context, exec Execer, jti string, patientID int64, tokenHash, mode string, expiresAt time.Time) error {
+	_, err := exec.ExecContext(ctx, `
+INSERT INTO refresh_tokens(jti, patient_id, token_hash, expires_at, issued_mode)
+VALUES(@jti, @pid, @hash, @exp, @mode)`,
 		sql.Named("jti", jti),
 		sql.Named("pid", patientID),
 		sql.Named("hash", tokenHash),
 		sql.Named("exp", expiresAt.UTC()),
+		sql.Named("mode", mode),
 	)
 	if err != nil {
 		return fmt.Errorf("refresh put: %w", err)
@@ -35,14 +53,15 @@ VALUES(@jti, @pid, @hash, @exp)`,
 	return nil
 }
 
-func (s *RefreshStore) Get(ctx context.Context, jti string) (patientID int64, tokenHash string, expiresAt time.Time, revokedAt sql.NullTime, err error) {
-	err = s.db.QueryRowContext(ctx, `
-SELECT patient_id, token_hash, expires_at, revoked_at
+func (s *RefreshStore) Get(ctx context.Context, jti string) (RefreshRow, error) {
+	var row RefreshRow
+	err := s.db.QueryRowContext(ctx, `
+SELECT patient_id, token_hash, expires_at, revoked_at, issued_mode
 FROM refresh_tokens
 WHERE jti=@jti`,
 		sql.Named("jti", jti),
-	).Scan(&patientID, &tokenHash, &expiresAt, &revokedAt)
-	return
+	).Scan(&row.PatientID, &row.TokenHash, &row.ExpiresAt, &row.RevokedAt, &row.Mode)
+	return row, err
 }
 
 func (s *RefreshStore) Revoke(ctx context.Context, jti string, now time.Time) error {

@@ -88,6 +88,7 @@ type SQLiteConfig struct {
 type AuthConfig struct {
 	Mode           string // dev | pilot | prod
 	PilotWhitelist []string
+	PilotCode      string
 }
 
 type OTPConfig struct {
@@ -168,6 +169,7 @@ func Load() (Config, error) {
 		Auth: AuthConfig{
 			Mode:           strings.ToLower(strings.TrimSpace(getEnv("AUTH_MODE", "dev"))),
 			PilotWhitelist: splitCSV(getEnv("AUTH_PILOT_WHITELIST", "")),
+			PilotCode:      strings.TrimSpace(os.Getenv("AUTH_PILOT_CODE")),
 		},
 		OTP: OTPConfig{
 			TTLSeconds:        mustInt(getEnv("OTP_TTL_SECONDS", "300"), 300),
@@ -252,7 +254,31 @@ func (c Config) validate() error {
 			return errors.New("missing required env var: JWT_SECRET (required when AUTH_MODE != dev)")
 		}
 	}
+	if c.Auth.Mode == "pilot" && !ValidPilotCode(c.Auth.PilotCode) {
+		return errors.New("AUTH_PILOT_CODE is required when AUTH_MODE=pilot: at least 12 characters, digits and latin letters only")
+	}
 	return nil
+}
+
+// ValidPilotCode reports whether AUTH_PILOT_CODE is long enough to be used as the pilot login code.
+func ValidPilotCode(code string) bool {
+	if len(code) < 12 {
+		return false
+	}
+	for _, r := range code {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// AuthModeWarning is logged at startup when patients can sign in without a delivered code.
+func AuthModeWarning(mode string) string {
+	if mode == "dev" {
+		return "AUTH_MODE=dev: вход без проверки, только для локальной отладки"
+	}
+	return ""
 }
 
 // ClampBookingMaxDays reports whether BOOKING_MAX_DAYS was above the hard cap.

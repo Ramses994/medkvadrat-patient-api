@@ -168,7 +168,7 @@ func newLive(t *testing.T) *liveEnv {
 	svc.RefreshBookingPairs(ctx)
 	svc.RefreshRWLanguage(ctx)
 	env.srv = httptest.NewServer(api.NewRouter(cfg, svc, logger))
-	tok, err := auth.IssueAccess([]byte(cfg.JWT.Secret), cfg.JWT.Issuer, 1, "", time.Hour, time.Now())
+	tok, err := auth.IssueAccess([]byte(cfg.JWT.Secret), cfg.JWT.Issuer, 1, "", cfg.Auth.Mode, time.Hour, time.Now())
 	if err != nil {
 		env.close()
 		t.Fatal(err)

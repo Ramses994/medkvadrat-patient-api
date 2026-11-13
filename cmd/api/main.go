@@ -30,6 +30,9 @@ func main() {
 	}
 
 	logger := logging.New(cfg.LogLevel)
+	if msg := config.AuthModeWarning(cfg.Auth.Mode); msg != "" {
+		logger.Warn(msg)
+	}
 	if days, clamped := config.ClampBookingMaxDays(cfg.BookingMaxDays); clamped {
 		logger.Warn("BOOKING_MAX_DAYS above 14, using 14", "configured", cfg.BookingMaxDays)
 		cfg.BookingMaxDays = days
@@ -152,6 +155,9 @@ func main() {
 
 	logger.Info("http server shutting down")
 	_ = server.Shutdown(shutdownCtx)
+	if err := services.StopOTPMail(shutdownCtx); err != nil {
+		logger.Warn("otp email queue not drained before shutdown")
+	}
 	logger.Info("poller stopping")
 	poller.Stop()
 	logger.Info("db closing")

@@ -13,6 +13,7 @@ type AccessClaims struct {
 	Sub   int64  `json:"sub"`
 	Phone string `json:"phone"`
 	Typ   string `json:"typ"`
+	Mode  string `json:"mode"`
 	jwt.RegisteredClaims
 }
 
@@ -31,11 +32,13 @@ func NewJTI() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-func IssueAccess(secret []byte, issuer string, patientID int64, phone string, ttl time.Duration, now time.Time) (string, error) {
+// IssueAccess signs an access token for the AUTH_MODE it was issued in; another mode refuses it.
+func IssueAccess(secret []byte, issuer string, patientID int64, phone, mode string, ttl time.Duration, now time.Time) (string, error) {
 	claims := AccessClaims{
 		Sub:   patientID,
 		Phone: phone,
 		Typ:   "access",
+		Mode:  mode,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    issuer,
 			IssuedAt:  jwt.NewNumericDate(now),
