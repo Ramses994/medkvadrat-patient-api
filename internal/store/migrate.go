@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   token_hash      TEXT NOT NULL,
   expires_at      DATETIME NOT NULL,
   revoked_at      DATETIME,
+  issued_mode     TEXT NOT NULL DEFAULT '',
   created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_patient ON refresh_tokens(patient_id);`,
@@ -175,6 +176,9 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 		return err
 	}
 	if err := ensureColumn(ctx, db, "otp_requests", "issued_mode", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "refresh_tokens", "issued_mode", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, `

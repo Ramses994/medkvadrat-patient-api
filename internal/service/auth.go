@@ -76,10 +76,6 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		s.Logger.Error("otp patients query failed", "err", err)
 		return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "INTERNAL", "Не получилось связаться с клиникой, попробуйте ещё раз через минуту")
 	}
-	if pilot && len(pats) == 0 {
-		return handler.OTPRequestResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
-	}
-
 	groups := groupOTPProfiles(pats, pilot)
 	for _, p := range pats {
 		if strings.TrimSpace(p.Email) == "" {
@@ -99,7 +95,12 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		)
 	}
 	if pilot && len(groups) != 1 {
-		return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "PILOT_SINGLE_ADDRESS", "В пилоте вход только для номеров с одним адресом")
+		reason := "several_addresses"
+		if len(pats) == 0 {
+			reason = "no_card"
+		}
+		s.Logger.Warn("otp pilot request has no address", "reason", reason)
+		groups = nil
 	}
 
 	secret := s.Config.OTP.HMACSecret
@@ -164,11 +165,7 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 			if g.email == "" {
 				continue
 			}
-			if err := sendOTPMail(ctx, s, g.email, codes[i]); err != nil {
-				_ = otpRepo.Delete(ctx, reqID)
-				s.Logger.Error("otp email send failed", "stage", "smtp_send", "code", otp.SMTPErrorCode(err), "request_id", reqID)
-				return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "EMAIL_SEND_FAILED", "Не удалось отправить письмо, попробуйте ещё раз")
-			}
+			s.enqueueOTPMail(otpMailJob{requestID: reqID, email: g.email, code: codes[i]})
 		}
 	}
 
@@ -295,18 +292,21 @@ func (s *Services) Refresh(ctx context.Context, refresh string) (handler.Tokens,
 		return handler.Tokens{}, apperr.ErrUnauthorized
 	}
 	store := auth.NewRefreshStore(s.SQLite)
-	pid, tokenHash, exp, revokedAt, err := store.Get(ctx, claims.JTI)
+	row, err := store.Get(ctx, claims.JTI)
 	if err != nil {
 		return handler.Tokens{}, apperr.ErrUnauthorized
 	}
-	if revokedAt.Valid || now.After(exp) {
+	if row.RevokedAt.Valid || now.After(row.ExpiresAt) {
 		return handler.Tokens{}, apperr.ErrUnauthorized
 	}
-	if tokenHash != auth.HashToken(refresh) {
+	if row.TokenHash != auth.HashToken(refresh) {
+		return handler.Tokens{}, apperr.ErrUnauthorized
+	}
+	if row.Mode != s.Config.Auth.Mode {
 		return handler.Tokens{}, apperr.ErrUnauthorized
 	}
 	_ = store.Revoke(ctx, claims.JTI, now)
-	tok, err := s.issueTokens(ctx, pid, "")
+	tok, err := s.issueTokens(ctx, row.PatientID, "")
 	if err != nil {
 		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
@@ -345,7 +345,8 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, patien
 		refreshTTL = 30 * 24 * time.Hour
 	}
 
-	access, err := auth.IssueAccess(secret, issuer, patientID, phone, accessTTL, now)
+	mode := s.Config.Auth.Mode
+	access, err := auth.IssueAccess(secret, issuer, patientID, phone, mode, accessTTL, now)
 	if err != nil {
 		return handler.Tokens{}, err
 	}
@@ -357,7 +358,7 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, patien
 	if err != nil {
 		return handler.Tokens{}, err
 	}
-	if err := auth.InsertRefresh(ctx, exec, jti, patientID, auth.HashToken(refresh), now.Add(refreshTTL)); err != nil {
+	if err := auth.InsertRefresh(ctx, exec, jti, patientID, auth.HashToken(refresh), mode, now.Add(refreshTTL)); err != nil {
 		return handler.Tokens{}, err
 	}
 	return handler.Tokens{

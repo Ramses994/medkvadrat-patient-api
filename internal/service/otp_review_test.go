@@ -49,7 +49,7 @@ func TestOTP_EmailCaseBeforeAtIsAnotherAddress(t *testing.T) {
 		{id: 11, email: "Ivan@Mail.ru"},
 		{id: 22, email: "ivan@mail.ru"},
 	})
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestOTP_EmailDomainCaseIsSameAddress(t *testing.T) {
 		{id: 11, email: "ivan@Mail.ru"},
 		{id: 22, email: "ivan@mail.ru"},
 	})
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestOTP_CodesInOneRequestDiffer(t *testing.T) {
 	}
 	t.Cleanup(func() { newOTPCode = prev })
 
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestOTP_PilotOutsideWhitelistIsRefused(t *testing.T) {
 	pilotMode(s)
 	s.Config.Auth.PilotWhitelist = []string{"79991111111"}
 
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if !isCode(err, 403, "PILOT_ONLY") || errMessage(err) != "Личный кабинет пока недоступен" {
 		t.Fatalf("err=%v", err)
 	}
@@ -171,25 +171,28 @@ func TestOTP_PilotOutsideWhitelistIsRefused(t *testing.T) {
 	}
 }
 
-func TestOTP_PilotWhitelistRefusesSeveralAddresses(t *testing.T) {
+func TestOTP_PilotSeveralAddressesGetNoCode(t *testing.T) {
 	s, lite, sent := otpService(t, []otpRow{
 		{id: 11, email: "a@example.com"},
 		{id: 22, email: "b@example.com"},
 	})
 	pilotMode(s)
 
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
-	if !isCode(err, 400, "PILOT_SINGLE_ADDRESS") || errMessage(err) != "В пилоте вход только для номеров с одним адресом" {
-		t.Fatalf("err=%v", err)
+	res, err := requestOTP(s)
+	if err != nil || res.RequestID == "" || res.DevCode != "" || len(sent) != 0 {
+		t.Fatalf("err=%v mails=%d code in response=%v", err, len(sent), res.DevCode != "")
 	}
-	if len(sent) != 0 || res.DevCode != "" || res.RequestID != "" || otpRowCount(t, lite) != 0 {
-		t.Fatalf("mails=%d code in response=%v rows=%d", len(sent), res.DevCode != "", otpRowCount(t, lite))
+	if _, err := s.OTPVerify(context.Background(), res.RequestID, testPilotCode); !isCode(err, 401, "OTP_INVALID") {
+		t.Fatalf("verify err=%v", err)
+	}
+	if n := tokenCount(t, lite); n != 0 {
+		t.Fatalf("tokens=%d", n)
 	}
 }
 
 func TestOTP_ProdHidesTheCode(t *testing.T) {
 	s, _, sent := otpService(t, []otpRow{{id: 11, email: "a@example.com"}})
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +204,7 @@ func TestOTP_ProdHidesTheCode(t *testing.T) {
 func TestOTP_DevShowsTheCode(t *testing.T) {
 	s, _, sent := otpService(t, []otpRow{{id: 11, email: "a@example.com"}})
 	s.Config.Auth.Mode = "dev"
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}

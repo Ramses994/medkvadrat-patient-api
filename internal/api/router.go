@@ -130,7 +130,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	}
 
 	auth := middleware.Auth{Token: cfg.APIToken}
-	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret)}
+	reqPatient := middleware.RequirePatient{JWTSecret: []byte(cfg.JWT.Secret), Mode: cfg.Auth.Mode}
 	var base http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/dashboard") {
 			dashReady.Wrap(cidr.Wrap(mux)).ServeHTTP(w, r)

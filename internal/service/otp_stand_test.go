@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 func TestOTP_PilotRequestExpiresAfterSwitchToProd(t *testing.T) {
 	s, lite, _ := otpService(t, []otpRow{{id: 11, email: "a@example.com"}})
 	pilotMode(s)
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestOTP_PilotRequestExpiresAfterSwitchToProd(t *testing.T) {
 func TestOTP_PilotSelectExpiresAfterSwitchToProd(t *testing.T) {
 	s, lite, _ := otpService(t, []otpRow{{id: 11, email: ""}, {id: 12, email: ""}})
 	pilotMode(s)
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func TestOTP_PilotWithoutPilotCodeIssuesNothing(t *testing.T) {
 	s, lite, sent, mock := otpServiceMock(t, nil)
 	pilotMode(s)
 	s.Config.Auth.PilotCode = "000000"
-	if _, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1"); !isCode(err, 500, "INTERNAL") {
+	if _, err := requestOTP(s); !isCode(err, 500, "INTERNAL") {
 		t.Fatalf("err=%v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -69,57 +70,132 @@ func TestOTP_PilotWithoutPilotCodeIssuesNothing(t *testing.T) {
 }
 
 func TestOTPRequest_ProdAnswersAlike(t *testing.T) {
+	type otpCase struct {
+		name string
+		rows []otpRow
+	}
+	cases := []otpCase{
+		{"known", []otpRow{{id: 11, email: "a@example.com"}}},
+		{"unknown", []otpRow{}},
+		{"no email", []otpRow{{id: 11, email: ""}}},
+	}
+	outcomes := []string{"sent", "slow", "failed"}
+	var first string
+	for _, outcome := range outcomes {
+		for _, c := range cases {
+			t.Run(outcome+"/"+c.name, func(t *testing.T) {
+				s, lite, _ := otpService(t, c.rows)
+				var finished atomic.Bool
+				sendOTPMail = func(context.Context, *Services, string, string) error {
+					defer finished.Store(true)
+					switch outcome {
+					case "slow":
+						time.Sleep(2 * time.Second)
+					case "failed":
+						return fmt.Errorf("smtp rcpt: %w", &textproto.Error{Code: 550, Msg: "rejected"})
+					}
+					return nil
+				}
+
+				start := time.Now()
+				status, body, id := postOTPRequest(t, s)
+				elapsed := time.Since(start)
+				if status != http.StatusOK {
+					t.Fatalf("status=%d", status)
+				}
+				if outcome == "slow" && (elapsed > time.Second || finished.Load()) {
+					t.Fatalf("response waited for the letter: %v", elapsed)
+				}
+				var env struct {
+					Data map[string]json.RawMessage `json:"data"`
+				}
+				if err := json.Unmarshal([]byte(body), &env); err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{"masked_destination", "dev_code", "channel"} {
+					if _, ok := env.Data[field]; ok {
+						t.Fatalf("response has %s", field)
+					}
+				}
+				var msg string
+				_ = json.Unmarshal(env.Data["message"], &msg)
+				if msg != "Если номер зарегистрирован в клинике, код отправлен на e-mail из карточки" {
+					t.Fatalf("message=%q", msg)
+				}
+				if first == "" {
+					first = body
+				}
+				if body != first {
+					t.Fatalf("body differs:\n%s\n%s", first, body)
+				}
+
+				if c.name != "known" {
+					if _, err := s.OTPVerify(context.Background(), id, "123456"); !isCode(err, 401, "OTP_INVALID") {
+						t.Fatalf("verify err=%v", err)
+					}
+					row, err := otp.NewRepo(lite).Get(context.Background(), id)
+					if err != nil || row.Attempts != 1 || tokenCount(t, lite) != 0 {
+						t.Fatalf("attempts=%d tokens=%d err=%v", row.Attempts, tokenCount(t, lite), err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestOTP_PilotWhitelistAnswersAlike(t *testing.T) {
 	cases := map[string][]otpRow{
-		"known":    {{id: 11, email: "a@example.com"}},
-		"unknown":  {},
-		"no email": {{id: 11, email: ""}},
+		"one address":       {{id: 11, email: "a@example.com"}},
+		"no card":           {},
+		"several addresses": {{id: 11, email: "a@example.com"}, {id: 22, email: "b@example.com"}},
 	}
 	bodies := map[string]string{}
 	for name, rows := range cases {
 		t.Run(name, func(t *testing.T) {
-			s, lite, _ := otpService(t, rows)
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/auth/otp/request", strings.NewReader(`{"phone":"79990000000"}`))
-			handler.AuthHandler{Svc: s, Logger: s.Logger}.OTPRequest(w, req)
-			if w.Code != http.StatusOK {
-				t.Fatalf("status=%d", w.Code)
+			s, lite, sent := otpService(t, rows)
+			pilotMode(s)
+			status, body, id := postOTPRequest(t, s)
+			if status != http.StatusOK {
+				t.Fatalf("status=%d", status)
 			}
-			var env struct {
-				Data map[string]json.RawMessage `json:"data"`
+			waitOTPMail(s)
+			if len(sent) != 0 {
+				t.Fatalf("mails=%d", len(sent))
 			}
-			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
-				t.Fatal(err)
-			}
-			var id string
-			if err := json.Unmarshal(env.Data["request_id"], &id); err != nil || id == "" {
-				t.Fatalf("request_id err=%v", err)
-			}
-			for _, field := range []string{"masked_destination", "dev_code", "channel"} {
-				if _, ok := env.Data[field]; ok {
-					t.Fatalf("response has %s", field)
-				}
-			}
-			var msg string
-			_ = json.Unmarshal(env.Data["message"], &msg)
-			if msg != "Если номер зарегистрирован в клинике, код отправлен на e-mail из карточки" {
-				t.Fatalf("message=%q", msg)
-			}
-			bodies[name] = strings.Replace(w.Body.String(), id, "REQUEST_ID", 1)
+			bodies[name] = body
 
-			if name != "known" {
-				if _, err := s.OTPVerify(context.Background(), id, "123456"); !isCode(err, 401, "OTP_INVALID") {
+			_, err := s.OTPVerify(context.Background(), id, testPilotCode)
+			if name == "one address" {
+				if err != nil || tokenCount(t, lite) != 1 {
 					t.Fatalf("verify err=%v", err)
 				}
-				row, err := otp.NewRepo(lite).Get(context.Background(), id)
-				if err != nil || row.Attempts != 1 || tokenCount(t, lite) != 0 {
-					t.Fatalf("attempts=%d tokens=%d err=%v", row.Attempts, tokenCount(t, lite), err)
-				}
+				return
+			}
+			if !isCode(err, 401, "OTP_INVALID") || tokenCount(t, lite) != 0 {
+				t.Fatalf("verify err=%v tokens=%d", err, tokenCount(t, lite))
 			}
 		})
 	}
-	if bodies["known"] == "" || bodies["known"] != bodies["unknown"] || bodies["known"] != bodies["no email"] {
-		t.Fatalf("bodies differ:\n%s\n%s\n%s", bodies["known"], bodies["unknown"], bodies["no email"])
+	if bodies["one address"] == "" || bodies["one address"] != bodies["no card"] || bodies["one address"] != bodies["several addresses"] {
+		t.Fatalf("bodies differ:\n%s\n%s\n%s", bodies["one address"], bodies["no card"], bodies["several addresses"])
 	}
+}
+
+// postOTPRequest calls the HTTP handler and returns the body with request_id replaced.
+func postOTPRequest(t *testing.T, s *Services) (int, string, string) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/otp/request", strings.NewReader(`{"phone":"79990000000"}`))
+	handler.AuthHandler{Svc: s, Logger: s.Logger}.OTPRequest(w, req)
+	var env struct {
+		Data struct {
+			RequestID string `json:"request_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil || env.Data.RequestID == "" {
+		t.Fatalf("status=%d request_id missing: %v", w.Code, err)
+	}
+	return w.Code, strings.Replace(w.Body.String(), env.Data.RequestID, "REQUEST_ID", 1), env.Data.RequestID
 }
 
 func TestOTP_SMTPErrorLogHasNoAddress(t *testing.T) {
@@ -130,8 +206,7 @@ func TestOTP_SMTPErrorLogHasNoAddress(t *testing.T) {
 		return fmt.Errorf("smtp rcpt: %w", &textproto.Error{Code: 550, Msg: "5.1.1 <" + email + "> mailbox unavailable"})
 	}
 
-	_, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
-	if !isCode(err, 502, "EMAIL_SEND_FAILED") {
+	if _, err := requestOTP(s); err != nil {
 		t.Fatalf("err=%v", err)
 	}
 	log := out.String()
@@ -200,7 +275,7 @@ func TestOTP_LastAttemptIsComparedOnce(t *testing.T) {
 
 func TestOTP_RightCodeSpendsAnAttempt(t *testing.T) {
 	s, lite, sent := otpService(t, []otpRow{{id: 11, email: "a@example.com"}})
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}

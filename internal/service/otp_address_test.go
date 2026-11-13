@@ -11,6 +11,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/apperr"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/handler"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/store"
 	_ "modernc.org/sqlite"
@@ -22,7 +23,7 @@ func TestOTP_CodeOpensOnlyItsAddress(t *testing.T) {
 		{id: 22, email: "b@example.com"},
 		{id: 33, email: ""},
 	})
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func TestOTP_SharedMailboxSelectsOnce(t *testing.T) {
 		{id: 11, email: "family@example.com"},
 		{id: 22, email: "family@example.com"},
 	})
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func TestOTP_SelectRefusesProfileOfAnotherAddress(t *testing.T) {
 		{id: 12, email: "a@example.com"},
 		{id: 22, email: "b@example.com"},
 	})
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +135,7 @@ func TestOTP_ConcurrentSelectIssuesOneToken(t *testing.T) {
 		{id: 12, email: "family@example.com"},
 	})
 	lite.SetMaxOpenConns(1)
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestOTP_ConcurrentSelectIssuesOneToken(t *testing.T) {
 func TestOTP_PilotWhitelistUsesThePilotCode(t *testing.T) {
 	s, lite, sent := otpService(t, []otpRow{{id: 11, email: "a@example.com"}})
 	pilotMode(s)
-	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
+	res, err := requestOTP(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,8 +245,11 @@ func otpServiceMock(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string
 		t.Fatal(err)
 	}
 	sent := map[string]string{}
+	var sentMu sync.Mutex
 	prev := sendOTPMail
 	sendOTPMail = func(_ context.Context, _ *Services, email, code string) error {
+		sentMu.Lock()
+		defer sentMu.Unlock()
 		sent[email] = code
 		return nil
 	}
@@ -261,8 +265,19 @@ func otpServiceMock(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string
 			JWT:  config.JWTConfig{Secret: "jwt-secret", Issuer: "test", AccessTTLMin: 15, RefreshTTLDays: 30},
 		},
 	}
+	t.Cleanup(func() { _ = s.StopOTPMail(context.Background()) })
 	return s, lite, sent, mock
 }
+
+// requestOTP asks for a code and waits until the queued letters are handed to sendOTPMail.
+func requestOTP(s *Services) (handler.OTPRequestResult, error) {
+	ctx := context.Background()
+	res, err := s.OTPRequest(ctx, "79990000000", "127.0.0.1")
+	waitOTPMail(s)
+	return res, err
+}
+
+func waitOTPMail(s *Services) { s.otpMail().pending.Wait() }
 
 func tokenPatient(t *testing.T, db *sql.DB) int64 {
 	t.Helper()

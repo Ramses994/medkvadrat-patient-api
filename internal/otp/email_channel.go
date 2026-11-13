@@ -27,8 +27,6 @@ func NewEmailChannel(cfg config.SMTPConfig) EmailChannel {
 func (c EmailChannel) Name() string { return "email" }
 
 func (c EmailChannel) Send(ctx context.Context, patient Patient, code string) error {
-	_ = ctx // stdlib net/smtp has no context; timeouts are enforced via dialer.
-
 	host := c.cfg.Host
 	port := c.cfg.Port
 	if host == "" || port == 0 {
@@ -73,11 +71,17 @@ func (c EmailChannel) Send(ctx context.Context, patient Patient, code string) er
 
 	// custom dialer for timeouts
 	d := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := d.Dial("tcp", addr)
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
 	defer conn.Close()
+	// net/smtp has no context: the deadline bounds the whole SMTP exchange.
+	if dl, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(dl); err != nil {
+			return fmt.Errorf("smtp deadline: %w", err)
+		}
+	}
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {

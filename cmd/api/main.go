@@ -155,6 +155,9 @@ func main() {
 
 	logger.Info("http server shutting down")
 	_ = server.Shutdown(shutdownCtx)
+	if err := services.StopOTPMail(shutdownCtx); err != nil {
+		logger.Warn("otp email queue not drained before shutdown")
+	}
 	logger.Info("poller stopping")
 	poller.Stop()
 	logger.Info("db closing")

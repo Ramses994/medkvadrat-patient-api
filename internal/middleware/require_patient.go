@@ -21,8 +21,10 @@ func WithPatientID(ctx context.Context, patientID int64) context.Context {
 	return context.WithValue(ctx, ctxKeyPatientID{}, patientID)
 }
 
+// RequirePatient accepts access tokens issued in the current AUTH_MODE only.
 type RequirePatient struct {
 	JWTSecret []byte
+	Mode      string
 }
 
 func (m RequirePatient) Wrap(next http.Handler) http.Handler {
@@ -39,7 +41,7 @@ func (m RequirePatient) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		claims, err := auth.ParseAccess(m.JWTSecret, tok)
-		if err != nil {
+		if err != nil || claims.Mode == "" || claims.Mode != m.Mode {
 			response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized")
 			return
 		}
