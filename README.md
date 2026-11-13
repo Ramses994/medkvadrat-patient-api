@@ -18,6 +18,10 @@ The script must be executable (`chmod +x scripts/dev-smoke.sh`). It exercises OT
 
 `GET /api/me/profile` exposes `birth_date` (`YYYY-MM-DD`) from Medialog `PATIENTS.NE_LE` when set, otherwise `birth_year` from `GOD_ROGDENIQ`. Clients should show one or the other, not both.
 
+## Web cabinet session (LK-1c)
+
+Requests with `X-LK-Client: web` to `verify`, `select-patient`, `refresh` and `logout` use the cookie `lk_refresh` (`HttpOnly`, `SameSite=Strict`, `Path=/api/auth`, `Secure` unless `LK_COOKIE_SECURE=false`) for the refresh token; the body carries only `access` and `access_expires_in`. `refresh` and `logout` read the cookie and ignore a `refresh` field in the body; `logout` clears it. These requests must come from the same origin (`Origin` or `Referer` host equals `Host`), otherwise `403`. The web refresh token lives `LK_WEB_REFRESH_TTL_HOURS` (default `12`), rotates once and is accepted only from the web client. Without the header the responses are as before. Every `/api/auth/*` and `/api/me/*` response carries `Cache-Control: no-store`.
+
 ## Booking slots (LK-2a)
 
 `GET /api/catalog/booking-options` and `GET /api/catalog/slots` (patient JWT) read free time from `pl_TelemedGetAvaliableSlots` for pairs in `LK_BOOKING_PAIRS`. The old `GET /api/schedule/slots` route is removed. `SLOT_TOKEN_SECRET` must be at least 32 bytes or slots and booking answer `503`. Times are Moscow wall-clock strings without an offset.
