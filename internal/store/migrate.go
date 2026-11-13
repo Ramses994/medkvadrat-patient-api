@@ -181,6 +181,9 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 	if err := ensureColumn(ctx, db, "refresh_tokens", "issued_mode", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, "refresh_tokens", "client", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS staff_admin_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

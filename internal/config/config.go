@@ -89,6 +89,9 @@ type AuthConfig struct {
 	Mode           string // dev | pilot | prod
 	PilotWhitelist []string
 	PilotCode      string
+	// Web cabinet session (X-LK-Client: web): refresh token in the lk_refresh cookie.
+	CookieSecure  bool
+	WebRefreshTTL time.Duration
 }
 
 type OTPConfig struct {
@@ -170,6 +173,8 @@ func Load() (Config, error) {
 			Mode:           strings.ToLower(strings.TrimSpace(getEnv("AUTH_MODE", "dev"))),
 			PilotWhitelist: splitCSV(getEnv("AUTH_PILOT_WHITELIST", "")),
 			PilotCode:      strings.TrimSpace(os.Getenv("AUTH_PILOT_CODE")),
+			CookieSecure:   boolOr(os.Getenv("LK_COOKIE_SECURE"), true),
+			WebRefreshTTL:  time.Duration(positiveOr(mustInt(getEnv("LK_WEB_REFRESH_TTL_HOURS", "12"), 12), 12)) * time.Hour,
 		},
 		OTP: OTPConfig{
 			TTLSeconds:        mustInt(getEnv("OTP_TTL_SECONDS", "300"), 300),
@@ -387,6 +392,15 @@ func mustDuration(s string) time.Duration {
 		return 5 * time.Second
 	}
 	return d
+}
+
+// boolOr keeps def for an empty or unreadable value.
+func boolOr(s string, def bool) bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(s))
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 func mustBool(s string) bool {

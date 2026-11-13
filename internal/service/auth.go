@@ -165,7 +165,7 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 			if g.email == "" {
 				continue
 			}
-			s.enqueueOTPMail(otpMailJob{requestID: reqID, email: g.email, code: codes[i]})
+			s.enqueueOTPMail(otpMailJob{requestID: reqID, email: g.email, code: codes[i], expiresAt: expiresAt})
 		}
 	}
 
@@ -184,6 +184,15 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 }
 
 func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handler.OTPVerifyResult, error) {
+	return s.otpVerify(ctx, auth.ClientMobile, requestID, code)
+}
+
+// WebOTPVerify is OTPVerify for the web cabinet: the refresh token gets the web lifetime and binding.
+func (s *Services) WebOTPVerify(ctx context.Context, requestID, code string) (handler.OTPVerifyResult, error) {
+	return s.otpVerify(ctx, auth.ClientWeb, requestID, code)
+}
+
+func (s *Services) otpVerify(ctx context.Context, client auth.Client, requestID, code string) (handler.OTPVerifyResult, error) {
 	now := time.Now()
 	otpRepo := otp.NewRepo(s.SQLite)
 	row, err := otpRepo.Get(ctx, requestID)
@@ -242,10 +251,19 @@ func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handl
 			}
 		}
 	}
-	return s.finishVerified(ctx, requestID, row.Phone, matched.Candidates)
+	return s.finishVerified(ctx, client, requestID, row.Phone, matched.Candidates)
 }
 
 func (s *Services) OTPSelectPatient(ctx context.Context, requestID string, patientID int64) (handler.Tokens, error) {
+	return s.otpSelectPatient(ctx, auth.ClientMobile, requestID, patientID)
+}
+
+// WebOTPSelectPatient is OTPSelectPatient for the web cabinet.
+func (s *Services) WebOTPSelectPatient(ctx context.Context, requestID string, patientID int64) (handler.Tokens, error) {
+	return s.otpSelectPatient(ctx, auth.ClientWeb, requestID, patientID)
+}
+
+func (s *Services) otpSelectPatient(ctx context.Context, client auth.Client, requestID string, patientID int64) (handler.Tokens, error) {
 	now := time.Now()
 	otpRepo := otp.NewRepo(s.SQLite)
 	row, err := otpRepo.Get(ctx, requestID)
@@ -271,7 +289,7 @@ func (s *Services) OTPSelectPatient(ctx context.Context, requestID string, patie
 	if !addressHasPatient(groups, patientID) {
 		return handler.Tokens{}, apperr.New(http.StatusForbidden, "FORBIDDEN", "Forbidden")
 	}
-	tok, err := s.consumeAndIssue(ctx, requestID, patientID, row.Phone)
+	tok, err := s.consumeAndIssue(ctx, client, requestID, patientID, row.Phone)
 	if err != nil {
 		if errors.Is(err, otp.ErrConsumed) {
 			return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
@@ -282,6 +300,49 @@ func (s *Services) OTPSelectPatient(ctx context.Context, requestID string, patie
 }
 
 func (s *Services) Refresh(ctx context.Context, refresh string) (handler.Tokens, error) {
+	row, claims, err := s.liveRefresh(ctx, auth.ClientMobile, refresh)
+	if err != nil {
+		return handler.Tokens{}, err
+	}
+	_ = auth.NewRefreshStore(s.SQLite).Revoke(ctx, claims.JTI, time.Now())
+	tok, err := s.issueTokens(ctx, auth.ClientMobile, row.PatientID, "")
+	if err != nil {
+		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
+	return tok, nil
+}
+
+// WebRefresh rotates a web cabinet refresh token. The old token is revoked and the new one issued in one
+// transaction; a token that was already rotated is refused.
+func (s *Services) WebRefresh(ctx context.Context, refresh string) (handler.Tokens, error) {
+	row, claims, err := s.liveRefresh(ctx, auth.ClientWeb, refresh)
+	if err != nil {
+		return handler.Tokens{}, err
+	}
+	tx, err := s.SQLite.BeginTx(ctx, nil)
+	if err != nil {
+		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
+	defer tx.Rollback()
+	revoked, err := auth.RevokeOnce(ctx, tx, claims.JTI, time.Now())
+	if err != nil {
+		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
+	if !revoked {
+		return handler.Tokens{}, apperr.ErrUnauthorized
+	}
+	tok, err := s.issueTokensExec(ctx, tx, auth.ClientWeb, row.PatientID, "")
+	if err != nil {
+		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
+	if err := tx.Commit(); err != nil {
+		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
+	return tok, nil
+}
+
+// liveRefresh checks a refresh token: signature, stored row, not revoked or expired, same AUTH_MODE and client.
+func (s *Services) liveRefresh(ctx context.Context, client auth.Client, refresh string) (auth.RefreshRow, auth.RefreshClaims, error) {
 	now := time.Now()
 	secret := []byte(s.Config.JWT.Secret)
 	if len(secret) == 0 {
@@ -289,28 +350,22 @@ func (s *Services) Refresh(ctx context.Context, refresh string) (handler.Tokens,
 	}
 	claims, err := auth.ParseRefresh(secret, refresh)
 	if err != nil {
-		return handler.Tokens{}, apperr.ErrUnauthorized
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
-	store := auth.NewRefreshStore(s.SQLite)
-	row, err := store.Get(ctx, claims.JTI)
+	row, err := auth.NewRefreshStore(s.SQLite).Get(ctx, claims.JTI)
 	if err != nil {
-		return handler.Tokens{}, apperr.ErrUnauthorized
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
 	if row.RevokedAt.Valid || now.After(row.ExpiresAt) {
-		return handler.Tokens{}, apperr.ErrUnauthorized
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
 	if row.TokenHash != auth.HashToken(refresh) {
-		return handler.Tokens{}, apperr.ErrUnauthorized
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
-	if row.Mode != s.Config.Auth.Mode {
-		return handler.Tokens{}, apperr.ErrUnauthorized
+	if row.Mode != s.Config.Auth.Mode || row.Client != client {
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
-	_ = store.Revoke(ctx, claims.JTI, now)
-	tok, err := s.issueTokens(ctx, row.PatientID, "")
-	if err != nil {
-		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
-	}
-	return tok, nil
+	return row, claims, nil
 }
 
 func (s *Services) Logout(ctx context.Context, refresh string) error {
@@ -325,11 +380,11 @@ func (s *Services) Logout(ctx context.Context, refresh string) error {
 	return auth.NewRefreshStore(s.SQLite).Revoke(ctx, claims.JTI, time.Now())
 }
 
-func (s *Services) issueTokens(ctx context.Context, patientID int64, phone string) (handler.Tokens, error) {
-	return s.issueTokensExec(ctx, s.SQLite, patientID, phone)
+func (s *Services) issueTokens(ctx context.Context, client auth.Client, patientID int64, phone string) (handler.Tokens, error) {
+	return s.issueTokensExec(ctx, s.SQLite, client, patientID, phone)
 }
 
-func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, patientID int64, phone string) (handler.Tokens, error) {
+func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, client auth.Client, patientID int64, phone string) (handler.Tokens, error) {
 	now := time.Now()
 	secret := []byte(s.Config.JWT.Secret)
 	if len(secret) == 0 {
@@ -343,6 +398,12 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, patien
 	refreshTTL := time.Duration(s.Config.JWT.RefreshTTLDays) * 24 * time.Hour
 	if refreshTTL <= 0 {
 		refreshTTL = 30 * 24 * time.Hour
+	}
+	if client == auth.ClientWeb {
+		refreshTTL = s.Config.Auth.WebRefreshTTL
+		if refreshTTL <= 0 {
+			refreshTTL = 12 * time.Hour
+		}
 	}
 
 	mode := s.Config.Auth.Mode
@@ -358,7 +419,7 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, patien
 	if err != nil {
 		return handler.Tokens{}, err
 	}
-	if err := auth.InsertRefresh(ctx, exec, jti, patientID, auth.HashToken(refresh), mode, now.Add(refreshTTL)); err != nil {
+	if err := auth.InsertRefresh(ctx, exec, jti, patientID, auth.HashToken(refresh), mode, client, now.Add(refreshTTL)); err != nil {
 		return handler.Tokens{}, err
 	}
 	return handler.Tokens{
@@ -408,12 +469,12 @@ func groupOTPProfiles(pats []repo.OTPPatient, whitelisted bool) []*otpProfileGro
 	return groups
 }
 
-func (s *Services) finishVerified(ctx context.Context, requestID, phone string, cands []otp.CandidatesItem) (handler.OTPVerifyResult, error) {
+func (s *Services) finishVerified(ctx context.Context, client auth.Client, requestID, phone string, cands []otp.CandidatesItem) (handler.OTPVerifyResult, error) {
 	if len(cands) == 0 {
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
 	}
 	if len(cands) == 1 {
-		tok, err := s.consumeAndIssue(ctx, requestID, cands[0].PatientID, phone)
+		tok, err := s.consumeAndIssue(ctx, client, requestID, cands[0].PatientID, phone)
 		if err != nil {
 			if errors.Is(err, otp.ErrConsumed) {
 				return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
@@ -438,7 +499,7 @@ func (s *Services) finishVerified(ctx context.Context, requestID, phone string, 
 	return handler.OTPVerifyResult{Candidates: out}, nil
 }
 
-func (s *Services) consumeAndIssue(ctx context.Context, requestID string, patientID int64, phone string) (handler.Tokens, error) {
+func (s *Services) consumeAndIssue(ctx context.Context, client auth.Client, requestID string, patientID int64, phone string) (handler.Tokens, error) {
 	tx, err := s.SQLite.BeginTx(ctx, nil)
 	if err != nil {
 		return handler.Tokens{}, err
@@ -447,7 +508,7 @@ func (s *Services) consumeAndIssue(ctx context.Context, requestID string, patien
 	if err := otp.NewRepo(s.SQLite).Consume(ctx, tx, requestID, patientID, time.Now()); err != nil {
 		return handler.Tokens{}, err
 	}
-	tok, err := s.issueTokensExec(ctx, tx, patientID, phone)
+	tok, err := s.issueTokensExec(ctx, tx, client, patientID, phone)
 	if err != nil {
 		return handler.Tokens{}, err
 	}
