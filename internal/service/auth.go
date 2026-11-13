@@ -14,6 +14,7 @@ import (
 
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/apperr"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/auth"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/config"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/handler"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/otp"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/ratelimit"
@@ -60,9 +61,13 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		}
 	}
 
-	whitelisted := s.Config.Auth.Mode == "pilot"
-	if whitelisted && !inList(s.Config.Auth.PilotWhitelist, phone) {
+	pilot := s.Config.Auth.Mode == "pilot"
+	if pilot && !inList(s.Config.Auth.PilotWhitelist, phone) {
 		return handler.OTPRequestResult{}, apperr.New(http.StatusForbidden, "PILOT_ONLY", "Личный кабинет пока недоступен")
+	}
+	if pilot && !config.ValidPilotCode(s.Config.Auth.PilotCode) {
+		s.Logger.Error("otp pilot code is not configured", "hint", "set AUTH_PILOT_CODE")
+		return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
 
 	// Fetch candidates from MSSQL (once) and store in otp_requests row.
@@ -71,11 +76,11 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		s.Logger.Error("otp patients query failed", "err", err)
 		return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "INTERNAL", "Не получилось связаться с клиникой, попробуйте ещё раз через минуту")
 	}
-	if len(pats) == 0 {
+	if pilot && len(pats) == 0 {
 		return handler.OTPRequestResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
 	}
 
-	groups := groupOTPProfiles(pats, whitelisted)
+	groups := groupOTPProfiles(pats, pilot)
 	for _, p := range pats {
 		if strings.TrimSpace(p.Email) == "" {
 			continue
@@ -87,16 +92,13 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 			"send_auto_email", p.SendAutoEmail,
 		)
 	}
-	if len(groups) == 0 {
-		if s.Config.Auth.Mode == "dev" {
-			s.Logger.Warn(
-				"otp request blocked: patient email missing",
-				"hint", "set PATIENTS.EMAIL on dev MSSQL or use AUTH_MODE=pilot with AUTH_PILOT_WHITELIST for happy-path testing",
-			)
-		}
-		return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "EMAIL_NOT_SET", "Для входа в личный кабинет обратитесь в регистратуру, чтобы добавить email в карточку пациента. Телефон: +7 (499) 288-88-14")
+	if len(groups) == 0 && s.Config.Auth.Mode == "dev" {
+		s.Logger.Warn(
+			"otp request has no address: patient not found or email missing",
+			"hint", "set PATIENTS.EMAIL on dev MSSQL",
+		)
 	}
-	if whitelisted && len(groups) != 1 {
+	if pilot && len(groups) != 1 {
 		return handler.OTPRequestResult{}, apperr.New(http.StatusBadRequest, "PILOT_SINGLE_ADDRESS", "В пилоте вход только для номеров с одним адресом")
 	}
 
@@ -107,8 +109,8 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 	addresses := make([]otp.AddressGroup, 0, len(groups))
 	codes := make([]string, 0, len(groups))
 	for _, g := range groups {
-		code := "000000"
-		if !whitelisted {
+		code := s.Config.Auth.PilotCode
+		if !pilot {
 			c, err := uniqueOTPCode(codes)
 			if err != nil {
 				return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
@@ -148,53 +150,35 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		CandidatesJSON: string(candJSON),
 		Attempts:       0,
 		ExpiresAt:      expiresAt,
-		Whitelisted:    whitelisted,
+		Whitelisted:    pilot,
 		Format:         otp.FormatAddresses,
+		IssuedMode:     s.Config.Auth.Mode,
 	}
 	if err := otpRepo.Create(ctx, row); err != nil {
 		s.Logger.Error("otp request insert failed", "err", err)
 		return handler.OTPRequestResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
 
-	channelName := "email"
-	if s.Config.Auth.Mode == "dev" {
-		channelName = "dev"
-	} else if whitelisted {
-		channelName = "pilot"
-	}
-
-	if !whitelisted {
+	if !pilot {
 		for i, g := range groups {
 			if g.email == "" {
 				continue
 			}
 			if err := sendOTPMail(ctx, s, g.email, codes[i]); err != nil {
 				_ = otpRepo.Delete(ctx, reqID)
-				s.Logger.Error("otp email send failed", "err", err)
+				s.Logger.Error("otp email send failed", "stage", "smtp_send", "code", otp.SMTPErrorCode(err), "request_id", reqID)
 				return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "EMAIL_SEND_FAILED", "Не удалось отправить письмо, попробуйте ещё раз")
 			}
 		}
 	}
 
-	maskedDest := make([]string, 0, len(groups))
-	for _, g := range groups {
-		if g.masked != "" {
-			maskedDest = append(maskedDest, g.masked)
-		}
-	}
-	var masked interface{} = maskedDest
-	if len(maskedDest) == 1 {
-		masked = maskedDest[0]
-	}
-	if whitelisted {
-		masked = "pilot-whitelist"
-	}
-
 	res := handler.OTPRequestResult{
-		RequestID:         reqID,
-		TTL:               ttl,
-		Channel:           channelName,
-		MaskedDestination: masked,
+		RequestID: reqID,
+		TTL:       ttl,
+		Message:   otpSentMessage,
+	}
+	if pilot {
+		res.Message = otpPilotMessage
 	}
 	if s.Config.Auth.Mode == "dev" && len(codes) == 1 {
 		res.DevCode = codes[0]
@@ -212,30 +196,33 @@ func (s *Services) OTPVerify(ctx context.Context, requestID, code string) (handl
 		}
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
-	if row.Format != otp.FormatAddresses {
-		return handler.OTPVerifyResult{}, errOTPOldFormat()
+	if s.staleOTPRow(row) {
+		return handler.OTPVerifyResult{}, errOTPStale()
 	}
 	if now.After(row.ExpiresAt) {
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_EXPIRED", "Код истёк, запросите новый")
 	}
-	if row.Attempts >= 3 {
-		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_ATTEMPTS_EXCEEDED", "Слишком много попыток, запросите новый код")
-	}
-
 	if row.UsedAt.Valid {
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
+	}
+	spent, err := otpRepo.SpendAttempt(ctx, requestID)
+	if err != nil {
+		s.Logger.Error("otp attempt update failed", "err", err)
+		return handler.OTPVerifyResult{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+	}
+	if !spent {
+		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_ATTEMPTS_EXCEEDED", "Слишком много попыток, запросите новый код")
 	}
 	secret := s.Config.OTP.HMACSecret
 	if secret == "" {
 		secret = "dev"
 	}
 	groups, err := otp.DecodeAddresses(row)
-	if err != nil || len(groups) == 0 {
-		return handler.OTPVerifyResult{}, apperr.New(http.StatusNotFound, "PATIENT_NOT_FOUND", "Пациент не найден")
+	if err != nil {
+		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
 	matched, n := matchAddress(groups, otp.HashCodeHMAC(code, secret))
 	if n != 1 {
-		_, _ = otpRepo.IncrementAttempts(ctx, requestID)
 		return handler.OTPVerifyResult{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
 	if !row.VerifiedAt.Valid {
@@ -268,8 +255,8 @@ func (s *Services) OTPSelectPatient(ctx context.Context, requestID string, patie
 	if err != nil {
 		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
 	}
-	if row.Format != otp.FormatAddresses {
-		return handler.Tokens{}, errOTPOldFormat()
+	if s.staleOTPRow(row) {
+		return handler.Tokens{}, errOTPStale()
 	}
 	if !row.VerifiedAt.Valid {
 		return handler.Tokens{}, apperr.New(http.StatusUnauthorized, "OTP_INVALID", "Неверный код")
@@ -383,17 +370,16 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, patien
 
 type otpProfileGroup struct {
 	email      string
-	masked     string
 	candidates []otp.CandidatesItem
 }
 
 func groupOTPProfiles(pats []repo.OTPPatient, whitelisted bool) []*otpProfileGroup {
 	var groups []*otpProfileGroup
 	byEmail := map[string]*otpProfileGroup{}
-	add := func(key, email, masked string, item otp.CandidatesItem) {
+	add := func(key, email string, item otp.CandidatesItem) {
 		g, ok := byEmail[key]
 		if !ok {
-			g = &otpProfileGroup{email: email, masked: masked}
+			g = &otpProfileGroup{email: email}
 			byEmail[key] = g
 			groups = append(groups, g)
 		}
@@ -403,11 +389,11 @@ func groupOTPProfiles(pats []repo.OTPPatient, whitelisted bool) []*otpProfileGro
 		email := strings.TrimSpace(p.Email)
 		if email == "" {
 			if whitelisted {
-				add("", "", "", otp.CandidatesItem{PatientID: p.PatientID, FullName: p.FullName})
+				add("", "", otp.CandidatesItem{PatientID: p.PatientID, FullName: p.FullName})
 			}
 			continue
 		}
-		add(otpAddressKey(email), email, otp.MaskEmail(email), otp.CandidatesItem{
+		add(otpAddressKey(email), email, otp.CandidatesItem{
 			PatientID:   p.PatientID,
 			FullName:    p.FullName,
 			MaskedEmail: otp.MaskEmail(email),
@@ -415,7 +401,7 @@ func groupOTPProfiles(pats []repo.OTPPatient, whitelisted bool) []*otpProfileGro
 	}
 	if whitelisted && len(groups) == 0 {
 		for _, p := range pats {
-			add("", "", "", otp.CandidatesItem{PatientID: p.PatientID, FullName: p.FullName})
+			add("", "", otp.CandidatesItem{PatientID: p.PatientID, FullName: p.FullName})
 		}
 	}
 	return groups
@@ -494,7 +480,17 @@ func uniqueOTPCode(taken []string) (string, error) {
 	return "", errors.New("otp code repeats")
 }
 
-func errOTPOldFormat() error {
+const (
+	otpSentMessage  = "Если номер зарегистрирован в клинике, код отправлен на e-mail из карточки"
+	otpPilotMessage = "Введите код доступа пилота"
+)
+
+// staleOTPRow is true for a row written before per-address codes or in another AUTH_MODE.
+func (s *Services) staleOTPRow(row otp.RequestRow) bool {
+	return row.Format != otp.FormatAddresses || row.IssuedMode != s.Config.Auth.Mode
+}
+
+func errOTPStale() error {
 	return apperr.New(http.StatusUnauthorized, "OTP_EXPIRED", "Код устарел, запросите новый")
 }
 

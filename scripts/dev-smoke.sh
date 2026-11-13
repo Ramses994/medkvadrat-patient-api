@@ -71,11 +71,15 @@ do_curl "auth otp request" "POST" "${BASE_URL}/api/auth/otp/request" \
   -d "$(jq -n --arg p "$PHONE" '{phone: $p}')"
 [[ "$LAST_CODE" =~ ^2 ]] || { echo "auth otp request failed" >&2; exit 1; }
 RID=$(jq -r '.data.request_id // empty' <"$BODY")
+# AUTH_MODE=dev returns dev_code; for AUTH_MODE=pilot pass the pilot code in OTP_CODE.
+CODE=$(jq -r '.data.dev_code // empty' <"$BODY")
+CODE="${CODE:-${OTP_CODE:-}}"
+[[ -n "$CODE" ]] || { echo "No dev_code in response; set OTP_CODE" >&2; exit 1; }
 
-# 2) OTP verify (dev code)
+# 2) OTP verify
 do_curl "auth otp verify" "POST" "${BASE_URL}/api/auth/otp/verify" \
   -H "Content-Type: application/json" \
-  -d "$(jq -n --arg r "$RID" '{request_id: $r, code: "000000"}')"
+  -d "$(jq -n --arg r "$RID" --arg c "$CODE" '{request_id: $r, code: $c}')"
 [[ "$LAST_CODE" =~ ^2 ]] || { echo "auth otp verify failed" >&2; exit 1; }
 ACCESS=$(jq -r '.data.access // empty' <"$BODY")
 

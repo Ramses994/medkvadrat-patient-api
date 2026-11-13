@@ -136,6 +136,7 @@ func TestOTP_AmbiguousCodeIsRefused(t *testing.T) {
 		CandidatesJSON: string(cands),
 		ExpiresAt:      time.Now().Add(5 * time.Minute),
 		Format:         otp.FormatAddresses,
+		IssuedMode:     "prod",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +156,7 @@ func TestOTP_AmbiguousCodeIsRefused(t *testing.T) {
 
 func TestOTP_PilotOutsideWhitelistIsRefused(t *testing.T) {
 	s, lite, sent, mock := otpServiceMock(t, nil)
-	s.Config.Auth.Mode = "pilot"
+	pilotMode(s)
 	s.Config.Auth.PilotWhitelist = []string{"79991111111"}
 
 	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
@@ -175,8 +176,7 @@ func TestOTP_PilotWhitelistRefusesSeveralAddresses(t *testing.T) {
 		{id: 11, email: "a@example.com"},
 		{id: 22, email: "b@example.com"},
 	})
-	s.Config.Auth.Mode = "pilot"
-	s.Config.Auth.PilotWhitelist = []string{"79990000000"}
+	pilotMode(s)
 
 	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
 	if !isCode(err, 400, "PILOT_SINGLE_ADDRESS") || errMessage(err) != "В пилоте вход только для номеров с одним адресом" {

@@ -174,10 +174,9 @@ func TestOTP_ConcurrentSelectIssuesOneToken(t *testing.T) {
 	}
 }
 
-func TestOTP_PilotWhitelistKeepsTheFixedCode(t *testing.T) {
-	s, _, sent := otpService(t, []otpRow{{id: 11, email: "a@example.com"}})
-	s.Config.Auth.Mode = "pilot"
-	s.Config.Auth.PilotWhitelist = []string{"79990000000"}
+func TestOTP_PilotWhitelistUsesThePilotCode(t *testing.T) {
+	s, lite, sent := otpService(t, []otpRow{{id: 11, email: "a@example.com"}})
+	pilotMode(s)
 	res, err := s.OTPRequest(context.Background(), "79990000000", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
@@ -185,10 +184,24 @@ func TestOTP_PilotWhitelistKeepsTheFixedCode(t *testing.T) {
 	if len(sent) != 0 || res.DevCode != "" {
 		t.Fatalf("sent=%d code in response=%v", len(sent), res.DevCode != "")
 	}
-	verified, err := s.OTPVerify(context.Background(), res.RequestID, "000000")
-	if err != nil || verified.Access == "" {
+	if _, err := s.OTPVerify(context.Background(), res.RequestID, "000000"); !isCode(err, 401, "OTP_INVALID") {
+		t.Fatalf("fixed code err=%v", err)
+	}
+	if tokenCount(t, lite) != 0 {
+		t.Fatal("fixed code issued a token")
+	}
+	verified, err := s.OTPVerify(context.Background(), res.RequestID, testPilotCode)
+	if err != nil || verified.Access == "" || tokenPatient(t, lite) != 11 {
 		t.Fatalf("verify err=%v", err)
 	}
+}
+
+const testPilotCode = "Pilot2026code"
+
+func pilotMode(s *Services) {
+	s.Config.Auth.Mode = "pilot"
+	s.Config.Auth.PilotWhitelist = []string{"79990000000"}
+	s.Config.Auth.PilotCode = testPilotCode
 }
 
 type otpRow struct {

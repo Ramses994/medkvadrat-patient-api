@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS otp_requests (
   whitelisted       INTEGER NOT NULL DEFAULT 0,
   used_at           DATETIME,
   format            INTEGER NOT NULL DEFAULT 0,
+  issued_mode       TEXT NOT NULL DEFAULT '',
   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_otp_phone_created ON otp_requests(phone, created_at);`,
@@ -171,6 +172,9 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 		return err
 	}
 	if err := ensureColumn(ctx, db, "otp_requests", "format", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "otp_requests", "issued_mode", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, `
