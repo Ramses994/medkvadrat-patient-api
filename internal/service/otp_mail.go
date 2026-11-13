@@ -18,7 +18,11 @@ type otpMailJob struct {
 	requestID string
 	email     string
 	code      string
+	// expiresAt is the code request's expiry; a letter still queued after it is not sent.
+	expiresAt time.Time
 }
+
+var otpMailNow = time.Now
 
 // otpMailQueue sends login codes after the response, so the answer does not depend on SMTP.
 type otpMailQueue struct {
@@ -65,6 +69,10 @@ func (s *Services) enqueueOTPMail(job otpMailJob) {
 }
 
 func (s *Services) sendQueuedOTPMail(job otpMailJob) {
+	if !otpMailNow().Before(job.expiresAt) {
+		s.Logger.Warn("otp email skipped", "stage", "queue", "reason", "expired", "request_id", job.requestID)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), otpMailTimeout)
 	defer cancel()
 	if err := sendOTPMail(ctx, s, job.email, job.code); err != nil {

@@ -24,7 +24,7 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	mux := http.NewServeMux()
 
 	healthH := handler.HealthHandler{Svc: svc}
-	authH := handler.AuthHandler{Svc: svc, Logger: logger}
+	authH := handler.AuthHandler{Svc: svc, Logger: logger, CookieSecure: cfg.Auth.CookieSecure}
 	doctorH := handler.DoctorHandler{Svc: svc, Logger: logger}
 	patientH := handler.PatientHandler{Svc: svc, Logger: logger}
 	wg := svc.WriteGuardDeps()
@@ -62,10 +62,10 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
 	mux.HandleFunc("POST /api/auth/otp/request", authH.OTPRequest)
-	mux.HandleFunc("POST /api/auth/otp/verify", authH.OTPVerify)
-	mux.HandleFunc("POST /api/auth/otp/select-patient", authH.OTPSelectPatient)
-	mux.HandleFunc("POST /api/auth/refresh", authH.Refresh)
-	mux.HandleFunc("POST /api/auth/logout", authH.Logout)
+	mux.Handle("POST /api/auth/otp/verify", webSameOrigin(authH.OTPVerify))
+	mux.Handle("POST /api/auth/otp/select-patient", webSameOrigin(authH.OTPSelectPatient))
+	mux.Handle("POST /api/auth/refresh", webSameOrigin(authH.Refresh))
+	mux.Handle("POST /api/auth/logout", webSameOrigin(authH.Logout))
 
 	// Protected (step 1: protect all existing /api/* endpoints except /api/health)
 	mux.HandleFunc("/api/schedule/changes", scheduleH.Changes)
@@ -158,8 +158,22 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	h = middleware.Logging(logger, h)
 	h = middleware.Recover(logger, h)
 	h = middleware.CORS(cfg.CORSAllowedOrigins, h)
+	h = middleware.NoStore([]string{"/api/auth/", "/api/me/"}, h)
 
 	return h
+}
+
+// webSameOrigin accepts web cabinet requests (they read or set the lk_refresh cookie) from this origin only.
+// Requests without X-LK-Client: web pass through unchanged.
+func webSameOrigin(next http.HandlerFunc) http.Handler {
+	guarded := middleware.RequireSameOrigin(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handler.IsWebClient(r) {
+			guarded.ServeHTTP(w, r)
+			return
+		}
+		next(w, r)
+	})
 }
 
 func tokenLabel(token string) string {
