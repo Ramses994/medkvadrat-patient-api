@@ -46,7 +46,7 @@ func TestStaffDelete_TwoAdminsDeletingEachOtherOneIsLastAdmin(t *testing.T) {
 			defer wg.Done()
 			r := httptest.NewRequest(http.MethodDelete, "/dashboard/staff/"+strconv.FormatInt(target, 10), nil)
 			r.SetPathValue("id", strconv.FormatInt(target, 10))
-			r = r.WithContext(staff.WithPrincipal(r.Context(), staff.Principal{ID: actor, Role: staff.RoleAdmin, All: true}))
+			r = r.WithContext(staff.WithPrincipal(r.Context(), staff.Principal{ID: actor, Role: staff.RoleAdmin, All: true, SessionVersion: 1}))
 			w := httptest.NewRecorder()
 			h.Delete(w, r)
 			codes[i] = w.Code
@@ -54,19 +54,21 @@ func TestStaffDelete_TwoAdminsDeletingEachOtherOneIsLastAdmin(t *testing.T) {
 		}(i, pair[0], pair[1])
 	}
 	wg.Wait()
-	ok, last := 0, 0
+	ok, refused := 0, 0
 	for i, code := range codes {
 		switch {
 		case code == http.StatusOK:
 			ok++
+		case code == http.StatusUnauthorized && strings.Contains(bodies[i], "UNAUTHORIZED"):
+			refused++
 		case code == http.StatusConflict && strings.Contains(bodies[i], "LAST_ADMIN"):
-			last++
+			refused++
 		default:
 			t.Fatalf("codes=%v bodies=%v", codes, bodies)
 		}
 	}
-	if ok != 1 || last != 1 {
-		t.Fatalf("ok=%d last=%d", ok, last)
+	if ok != 1 || refused != 1 {
+		t.Fatalf("ok=%d refused=%d codes=%v", ok, refused, codes)
 	}
 	users, err := s.List(ctx)
 	if err != nil || len(users) != 1 || users[0].Role != staff.RoleAdmin || !users[0].Active {

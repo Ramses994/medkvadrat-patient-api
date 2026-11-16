@@ -14,7 +14,7 @@ func TestMisWork_PersistsAndReopenClosed(t *testing.T) {
 	now := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
 	const planningID int64 = 3118001
 
-	row, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusContacted, "no_answer", "reg", now, nil)
+	row, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusContacted, "no_answer", LoginOnly("reg"), now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,10 +28,10 @@ func TestMisWork_PersistsAndReopenClosed(t *testing.T) {
 	if got[planningID].Status != WaitlistStatusContacted || got[planningID].UpdatedBy != "reg" {
 		t.Fatalf("%+v", got)
 	}
-	if _, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusClosed, "refused", "reg", now.Add(time.Minute), nil); err != nil {
+	if _, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusClosed, "refused", LoginOnly("reg"), now.Add(time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusContacted, "refused", "reg", now.Add(2*time.Minute), nil)
+	reopened, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusContacted, "refused", LoginOnly("reg"), now.Add(2*time.Minute), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,13 +53,13 @@ func TestMisWork_StaleStatusIsConflict(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
 	const planningID int64 = 42
-	if _, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusContacted, "call_back", "reg", now, nil); err != nil {
+	if _, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusContacted, "call_back", LoginOnly("reg"), now, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE waitlist_mis_work SET status = ? WHERE planning_id = ?`, WaitlistStatusClosed, planningID); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusClosed, "refused", "reg", now.Add(time.Minute), nil)
+	_, err := r.UpdateMisWork(ctx, planningID, WaitlistStatusClosed, "refused", LoginOnly("reg"), now.Add(time.Minute), nil)
 	if !errors.Is(err, ErrWaitlistChanged) && !errors.Is(err, ErrInvalidWaitlistTransition) {
 		t.Fatalf("%v", err)
 	}
@@ -82,7 +82,7 @@ INSERT INTO waitlist(planning_id,patient_id,appt_version,appt_start,reason,sourc
 VALUES(9,8,'v1','2026-11-06 10:00:00','declined','max','closed','refused','2026-11-06T06:00:00Z','2026-11-06T06:00:00Z','2026-11-06 09:00:00',106)`); err != nil {
 		t.Fatal(err)
 	}
-	row, err := r.UpdateWaitlist(ctx, 1, WaitlistStatusContacted, "refused", "reg", now, nil)
+	row, err := r.UpdateWaitlist(ctx, 1, WaitlistStatusContacted, "refused", LoginOnly("reg"), now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

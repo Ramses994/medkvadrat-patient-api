@@ -52,12 +52,12 @@ VALUES(1,1,'v1','2026-10-25 12:00:00','declined','max','new','2026-10-22T09:00:0
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, e := r.UpdateWaitlist(ctx, 1, "closed", "refused", "staff_a", now, nil)
+			_, e := r.UpdateWaitlist(ctx, 1, "closed", "refused", LoginOnly("staff_a"), now, nil)
 			errCh <- e
 		}()
 		go func() {
 			defer wg.Done()
-			_, e := r.UpdateWaitlist(ctx, 1, "rebooked", "rebooked", "staff_b", now, nil)
+			_, e := r.UpdateWaitlist(ctx, 1, "rebooked", "rebooked", LoginOnly("staff_b"), now, nil)
 			errCh <- e
 		}()
 		wg.Wait()

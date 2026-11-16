@@ -181,7 +181,25 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 	if err := ensureColumn(ctx, db, "waitlist", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, "waitlist", "staff_id", "INTEGER"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "waitlist", "updated_by_name", "TEXT"); err != nil {
+		return err
+	}
 	if err := ensureColumn(ctx, db, "waitlist_mis_work", "version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "waitlist_mis_work", "staff_id", "INTEGER"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "waitlist_mis_work", "updated_by_name", "TEXT"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "lk_write_ops", "staff_id", "INTEGER"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "lk_write_ops", "resolved_by_name", "TEXT"); err != nil {
 		return err
 	}
 	if err := ensureColumn(ctx, db, "otp_requests", "used_at", "DATETIME"); err != nil {

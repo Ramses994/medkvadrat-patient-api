@@ -81,7 +81,7 @@ func TestStaffCreate_LogOmitsTemporaryPassword(t *testing.T) {
 	var buf bytes.Buffer
 	h := StaffHandler{Store: s, Logger: slog.New(slog.NewTextHandler(&buf, nil))}
 	r := withPrincipal(httptest.NewRequest(http.MethodPost, "/dashboard/staff", strings.NewReader(`{"login":"reg106","full_name":"Регистратор","role":"registrar","branches":"106"}`)), staff.Principal{
-		ID: 1, Login: "admin", Role: staff.RoleAdmin, All: true,
+		ID: 1, Login: "admin", Role: staff.RoleAdmin, All: true, SessionVersion: 1,
 	})
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

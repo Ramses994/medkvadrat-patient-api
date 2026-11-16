@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -138,9 +139,9 @@ func TestRouter_StaffDeleteSelfAndLastAdminAre409(t *testing.T) {
 	}
 
 	mgr := mustCreateStaff(t, users, "mgr", staff.RoleManager, "*")
-	err := users.Delete(context.Background(), mgr.ID, "mgr", admin.ID)
-	if err != staff.ErrLastAdmin {
-		t.Fatalf("last admin err=%v", err)
+	err := users.Delete(context.Background(), mgr.ID, 1, admin.ID)
+	if !errors.Is(err, staff.ErrNotAdmin) {
+		t.Fatalf("manager as actor err=%v", err)
 	}
 	if w := deleteStaff(h, mgr.ID, adminCookie); w.Code != http.StatusOK {
 		t.Fatalf("delete manager %d %s", w.Code, w.Body.String())
@@ -161,7 +162,7 @@ VALUES(1,1,'v1','2026-11-14 12:00:00','declined','max','new','2026-11-13T09:00:0
 		t.Fatal(err)
 	}
 	waitlist := confirmations.NewRepo(sqlite)
-	if _, err := waitlist.UpdateWaitlist(ctx, 1, "contacted", "call_back", "reg", time.Now(), nil); err != nil {
+	if _, err := waitlist.UpdateWaitlist(ctx, 1, "contacted", "call_back", confirmations.LoginOnly("reg"), time.Now(), nil); err != nil {
 		t.Fatal(err)
 	}
 

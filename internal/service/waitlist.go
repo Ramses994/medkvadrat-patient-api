@@ -132,7 +132,7 @@ func itemFromWaitlist(row confirmations.WaitlistRow) confirmations.DashboardItem
 		ID: row.ID, PlanningID: row.PlanningID, PatientID: row.PatientID,
 		Reason: row.Reason, Status: row.Status, Outcome: row.Outcome,
 		CreatedAt: row.CreatedAt, CreatedAtMSK: row.CreatedAtMSK, BranchID: row.BranchID,
-		Source: "max", UpdatedBy: row.UpdatedBy, UpdatedAt: row.UpdatedAt, ApptStart: row.ApptStart,
+		Source: "max", UpdatedBy: row.AuthorDisplay(), UpdatedAt: row.UpdatedAt, ApptStart: row.ApptStart,
 		Version: row.Version,
 	}
 }

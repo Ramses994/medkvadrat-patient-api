@@ -41,6 +41,8 @@ var (
 	ErrBranchForbidden = errors.New("BRANCH_FORBIDDEN")
 	ErrNoBranches      = errors.New("no branches")
 	ErrJournal         = errors.New("login journal")
+	ErrSessionInvalid  = errors.New("staff session invalid")
+	ErrNotAdmin        = errors.New("staff not admin")
 )
 
 // Dashboard branch ids in display order: Каширка, Куркино, Куркино 2.
@@ -513,13 +515,14 @@ WHERE id = ?`, string(nextHash), now, id); err != nil {
 }
 
 type CreateUser struct {
-	Login      string
-	FullName   string
-	Role       string
-	Branches   string
-	Password   string
-	ActorID    int64
-	ActorLogin string
+	Login              string
+	FullName           string
+	Role               string
+	Branches           string
+	Password           string
+	ActorID            int64
+	ActorLogin         string
+	ActorSessionVersion int
 }
 
 func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error) {
@@ -562,6 +565,13 @@ func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error)
 	}
 	var id int64
 	err = s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		actorLogin, err := requireActorAdmin(ctx, conn, in.ActorID, in.ActorSessionVersion)
+		if err != nil {
+			return err
+		}
+		if actorLogin == "" {
+			actorLogin = in.ActorLogin
+		}
 		res, err := conn.ExecContext(ctx, `
 INSERT INTO staff_users (
   login, full_name, password_hash, role, branches, active, must_change_password, created_at, updated_at
@@ -575,7 +585,7 @@ INSERT INTO staff_users (
 			return err
 		}
 		change := fmt.Sprintf("create;role=%s;branches=%s", strings.ToLower(in.Role), strings.TrimSpace(in.Branches))
-		return insertAdminLog(ctx, conn, in.ActorID, in.ActorLogin, id, change, now)
+		return insertAdminLog(ctx, conn, in.ActorID, actorLogin, id, change, now)
 	})
 	if err != nil {
 		return User{}, "", err
@@ -585,10 +595,11 @@ INSERT INTO staff_users (
 }
 
 type UpdateUser struct {
-	Role          string
-	Branches      string
-	Active        *bool
-	ResetPassword bool
+	Role                string
+	Branches            string
+	Active              *bool
+	ResetPassword       bool
+	ActorSessionVersion int
 }
 
 func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (User, string, error) {
@@ -611,13 +622,11 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 			return User{}, "", err
 		}
 	}
-	actorLogin := ""
-	if actorID != 0 {
-		if actor, err := s.userByID(ctx, actorID); err == nil {
-			actorLogin = actor.Login
-		}
-	}
 	err := s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		actorLogin, err := requireActorAdmin(ctx, conn, actorID, in.ActorSessionVersion)
+		if err != nil {
+			return err
+		}
 		u, err := userByIDConn(ctx, conn, id)
 		if err != nil {
 			return err
@@ -687,11 +696,15 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 
 // Delete marks the employee deleted: login refused, every cookie dead, row kept
 // for waitlist marks and the journal, login free for a new account.
-func (s *Store) Delete(ctx context.Context, actorID int64, actorLogin string, id int64) error {
+func (s *Store) Delete(ctx context.Context, actorID int64, actorSessionVersion int, id int64) error {
 	if actorID == id {
 		return ErrDeleteSelf
 	}
 	return s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		actorLogin, err := requireActorAdmin(ctx, conn, actorID, actorSessionVersion)
+		if err != nil {
+			return err
+		}
 		u, err := userByIDConn(ctx, conn, id)
 		if err != nil {
 			return err
@@ -720,6 +733,30 @@ WHERE id = ? AND deleted_at IS NULL`, now, now, id)
 		}
 		return insertAdminLog(ctx, conn, actorID, actorLogin, id, "delete;login="+u.Login, now)
 	})
+}
+
+// requireActorAdmin re-reads the author inside the mutating transaction.
+// Missing, deleted, inactive or bumped session → ErrSessionInvalid (401).
+// Role no longer admin → ErrNotAdmin (403). Target must stay untouched.
+// ActorID 0 skips the check (unit-test helpers that seed rows without a staff session).
+func requireActorAdmin(ctx context.Context, conn *sql.Conn, actorID int64, sessionVersion int) (string, error) {
+	if actorID <= 0 {
+		return "", nil
+	}
+	u, err := userByIDConn(ctx, conn, actorID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return "", ErrSessionInvalid
+		}
+		return "", err
+	}
+	if !u.Active || u.SessionVersion != sessionVersion {
+		return "", ErrSessionInvalid
+	}
+	if u.Role != RoleAdmin {
+		return "", ErrNotAdmin
+	}
+	return u.Login, nil
 }
 
 func insertAdminLog(ctx context.Context, conn *sql.Conn, actorID int64, actorLogin string, targetID int64, change, now string) error {

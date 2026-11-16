@@ -48,7 +48,7 @@ func TestStaffUpdate_TwoAdminsOneConflict(t *testing.T) {
 			defer wg.Done()
 			r := httptest.NewRequest(http.MethodPost, "/dashboard/staff/"+strconv.FormatInt(id, 10), strings.NewReader(`{"active":false}`))
 			r.SetPathValue("id", strconv.FormatInt(id, 10))
-			r = r.WithContext(staff.WithPrincipal(r.Context(), staff.Principal{ID: id, Role: staff.RoleAdmin, All: true}))
+			r = r.WithContext(staff.WithPrincipal(r.Context(), staff.Principal{ID: id, Role: staff.RoleAdmin, All: true, SessionVersion: 1}))
 			w := httptest.NewRecorder()
 			h.Update(w, r)
 			codes[i] = w.Code
