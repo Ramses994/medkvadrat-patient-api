@@ -62,10 +62,10 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	// Public
 	mux.HandleFunc("GET /api/health", healthH.Health)
 	mux.HandleFunc("POST /api/auth/otp/request", authH.OTPRequest)
-	mux.Handle("POST /api/auth/otp/verify", webSameOrigin(authH.OTPVerify))
-	mux.Handle("POST /api/auth/otp/select-patient", webSameOrigin(authH.OTPSelectPatient))
-	mux.Handle("POST /api/auth/refresh", webSameOrigin(authH.Refresh))
-	mux.Handle("POST /api/auth/logout", webSameOrigin(authH.Logout))
+	mux.Handle("POST /api/auth/otp/verify", webSameOrigin(cfg.Auth.WebOrigins, authH.OTPVerify))
+	mux.Handle("POST /api/auth/otp/select-patient", webSameOrigin(cfg.Auth.WebOrigins, authH.OTPSelectPatient))
+	mux.Handle("POST /api/auth/refresh", webSameOrigin(cfg.Auth.WebOrigins, authH.Refresh))
+	mux.Handle("POST /api/auth/logout", webSameOrigin(cfg.Auth.WebOrigins, authH.Logout))
 
 	// Protected (step 1: protect all existing /api/* endpoints except /api/health)
 	mux.HandleFunc("/api/schedule/changes", scheduleH.Changes)
@@ -164,10 +164,10 @@ func NewRouter(cfg config.Config, svc *service.Services, logger *slog.Logger) ht
 	return h
 }
 
-// webSameOrigin accepts web cabinet requests (they read or set the lk_refresh cookie) from this origin only.
-// Requests without X-LK-Client: web pass through unchanged.
-func webSameOrigin(next http.HandlerFunc) http.Handler {
-	guarded := middleware.RequireSameOrigin(next)
+// webSameOrigin accepts web cabinet requests from an Origin in LK_WEB_ORIGINS only.
+// Requests without X-LK-Client: web pass through unchanged. Dashboard same-origin is separate.
+func webSameOrigin(allowed []string, next http.HandlerFunc) http.Handler {
+	guarded := middleware.RequireWebOrigin(allowed, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handler.IsWebClient(r) {
 			guarded.ServeHTTP(w, r)

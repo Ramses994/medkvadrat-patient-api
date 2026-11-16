@@ -312,26 +312,29 @@ func (s *Services) Refresh(ctx context.Context, refresh string) (handler.Tokens,
 	return tok, nil
 }
 
-// WebRefresh rotates a web cabinet refresh token. The old token is revoked and the new one issued in one
-// transaction; a token that was already rotated is refused.
+// WebRefresh rotates a web cabinet refresh token. Absolute session TTL is not extended; idle window resets.
+// A token that was already rotated kills the whole sid.
 func (s *Services) WebRefresh(ctx context.Context, refresh string) (handler.Tokens, error) {
 	row, claims, err := s.liveRefresh(ctx, auth.ClientWeb, refresh)
 	if err != nil {
 		return handler.Tokens{}, err
 	}
+	now := time.Now()
 	tx, err := s.SQLite.BeginTx(ctx, nil)
 	if err != nil {
 		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
 	defer tx.Rollback()
-	revoked, err := auth.RevokeOnce(ctx, tx, claims.JTI, time.Now())
+	revoked, err := auth.RevokeOnce(ctx, tx, claims.JTI, now)
 	if err != nil {
 		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
 	if !revoked {
+		_ = auth.RevokeSid(ctx, tx, row.Sid, now)
+		_ = tx.Commit()
 		return handler.Tokens{}, apperr.ErrUnauthorized
 	}
-	tok, err := s.issueTokensExec(ctx, tx, auth.ClientWeb, row.PatientID, "")
+	tok, err := s.issueTokensExec(ctx, tx, auth.ClientWeb, row.PatientID, "", row.Sid, row.SessionExpiresAt)
 	if err != nil {
 		return handler.Tokens{}, apperr.New(http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 	}
@@ -342,6 +345,7 @@ func (s *Services) WebRefresh(ctx context.Context, refresh string) (handler.Toke
 }
 
 // liveRefresh checks a refresh token: signature, stored row, not revoked or expired, same AUTH_MODE and client.
+// For web, a revoked/used token also kills the whole session (sid).
 func (s *Services) liveRefresh(ctx context.Context, client auth.Client, refresh string) (auth.RefreshRow, auth.RefreshClaims, error) {
 	now := time.Now()
 	secret := []byte(s.Config.JWT.Secret)
@@ -352,17 +356,28 @@ func (s *Services) liveRefresh(ctx context.Context, client auth.Client, refresh 
 	if err != nil {
 		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
-	row, err := auth.NewRefreshStore(s.SQLite).Get(ctx, claims.JTI)
+	store := auth.NewRefreshStore(s.SQLite)
+	row, err := store.Get(ctx, claims.JTI)
 	if err != nil {
-		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
-	}
-	if row.RevokedAt.Valid || now.After(row.ExpiresAt) {
 		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
 	if row.TokenHash != auth.HashToken(refresh) {
 		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
 	if row.Mode != s.Config.Auth.Mode || row.Client != client {
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
+	}
+	if row.RevokedAt.Valid {
+		if client == auth.ClientWeb && row.Sid != "" {
+			_ = auth.RevokeSid(ctx, s.SQLite, row.Sid, now)
+		}
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
+	}
+	if now.After(row.ExpiresAt) {
+		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
+	}
+	if client == auth.ClientWeb && !row.SessionExpiresAt.IsZero() && !now.Before(row.SessionExpiresAt) {
+		_ = auth.RevokeSid(ctx, s.SQLite, row.Sid, now)
 		return auth.RefreshRow{}, auth.RefreshClaims{}, apperr.ErrUnauthorized
 	}
 	return row, claims, nil
@@ -380,11 +395,36 @@ func (s *Services) Logout(ctx context.Context, refresh string) error {
 	return auth.NewRefreshStore(s.SQLite).Revoke(ctx, claims.JTI, time.Now())
 }
 
-func (s *Services) issueTokens(ctx context.Context, client auth.Client, patientID int64, phone string) (handler.Tokens, error) {
-	return s.issueTokensExec(ctx, s.SQLite, client, patientID, phone)
+// WebLogout revokes every refresh token for the web session (sid), including tokens issued after this one.
+func (s *Services) WebLogout(ctx context.Context, refresh string) error {
+	secret := []byte(s.Config.JWT.Secret)
+	if len(secret) == 0 {
+		secret = []byte("dev")
+	}
+	claims, err := auth.ParseRefresh(secret, refresh)
+	if err != nil {
+		return nil
+	}
+	store := auth.NewRefreshStore(s.SQLite)
+	row, err := store.Get(ctx, claims.JTI)
+	if err != nil {
+		return nil
+	}
+	if row.TokenHash != auth.HashToken(refresh) {
+		return nil
+	}
+	now := time.Now()
+	if row.Sid != "" {
+		return auth.RevokeSid(ctx, s.SQLite, row.Sid, now)
+	}
+	return store.Revoke(ctx, claims.JTI, now)
 }
 
-func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, client auth.Client, patientID int64, phone string) (handler.Tokens, error) {
+func (s *Services) issueTokens(ctx context.Context, client auth.Client, patientID int64, phone string) (handler.Tokens, error) {
+	return s.issueTokensExec(ctx, s.SQLite, client, patientID, phone, "", time.Time{})
+}
+
+func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, client auth.Client, patientID int64, phone, sid string, sessionExp time.Time) (handler.Tokens, error) {
 	now := time.Now()
 	secret := []byte(s.Config.JWT.Secret)
 	if len(secret) == 0 {
@@ -400,9 +440,32 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, client
 		refreshTTL = 30 * 24 * time.Hour
 	}
 	if client == auth.ClientWeb {
-		refreshTTL = s.Config.Auth.WebRefreshTTL
+		abs := s.Config.Auth.WebRefreshTTL
+		if abs <= 0 {
+			abs = 12 * time.Hour
+		}
+		idle := s.Config.Auth.WebIdleMin
+		if idle <= 0 {
+			idle = 20 * time.Minute
+		}
+		if sid == "" {
+			var err error
+			sid, err = auth.NewJTI()
+			if err != nil {
+				return handler.Tokens{}, err
+			}
+			sessionExp = now.Add(abs)
+		}
+		if sessionExp.IsZero() {
+			sessionExp = now.Add(abs)
+		}
+		idleExp := now.Add(idle)
+		if idleExp.After(sessionExp) {
+			idleExp = sessionExp
+		}
+		refreshTTL = idleExp.Sub(now)
 		if refreshTTL <= 0 {
-			refreshTTL = 12 * time.Hour
+			return handler.Tokens{}, apperr.ErrUnauthorized
 		}
 	}
 
@@ -419,7 +482,15 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, client
 	if err != nil {
 		return handler.Tokens{}, err
 	}
-	if err := auth.InsertRefresh(ctx, exec, jti, patientID, auth.HashToken(refresh), mode, client, now.Add(refreshTTL)); err != nil {
+	in := auth.RefreshInsert{
+		JTI: jti, PatientID: patientID, TokenHash: auth.HashToken(refresh), Mode: mode, Client: client,
+		ExpiresAt: now.Add(refreshTTL),
+	}
+	if client == auth.ClientWeb {
+		in.Sid = sid
+		in.SessionExpiresAt = sessionExp
+	}
+	if err := auth.InsertRefresh(ctx, exec, in); err != nil {
 		return handler.Tokens{}, err
 	}
 	return handler.Tokens{
@@ -508,7 +579,7 @@ func (s *Services) consumeAndIssue(ctx context.Context, client auth.Client, requ
 	if err := otp.NewRepo(s.SQLite).Consume(ctx, tx, requestID, patientID, time.Now()); err != nil {
 		return handler.Tokens{}, err
 	}
-	tok, err := s.issueTokensExec(ctx, tx, client, patientID, phone)
+	tok, err := s.issueTokensExec(ctx, tx, client, patientID, phone, "", time.Time{})
 	if err != nil {
 		return handler.Tokens{}, err
 	}

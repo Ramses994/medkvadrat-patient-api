@@ -43,7 +43,11 @@ func (f *fakeAuth) WebOTPSelectPatient(context.Context, string, int64) (Tokens, 
 }
 func (f *fakeAuth) WebRefresh(_ context.Context, refresh string) (Tokens, error) {
 	f.calls = append(f.calls, "web-refresh:"+refresh)
-	return Tokens{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 43200}, nil
+	return Tokens{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 1200}, nil
+}
+func (f *fakeAuth) WebLogout(_ context.Context, refresh string) error {
+	f.calls = append(f.calls, "web-logout:"+refresh)
+	return nil
 }
 
 // TestAuth_WithoutWebHeaderBytesUnchanged pins the mobile contract: same status, headers and body bytes
@@ -110,10 +114,13 @@ func TestAuth_WebHeaderUsesCookie(t *testing.T) {
 		t.Fatalf("calls %q", got)
 	}
 	sc := w.Header().Get("Set-Cookie")
-	for _, part := range []string{"lk_refresh=webref", "Path=/api/auth", "Max-Age=43200", "HttpOnly", "SameSite=Strict"} {
+	for _, part := range []string{"lk_refresh=webref", "Path=/api/auth", "HttpOnly", "SameSite=Strict"} {
 		if !strings.Contains(sc, part) {
 			t.Fatalf("set-cookie %q lacks %q", sc, part)
 		}
+	}
+	if strings.Contains(sc, "Max-Age=") || strings.Contains(sc, "Expires=") {
+		t.Fatalf("session cookie must not set expiry: %q", sc)
 	}
 	if strings.Contains(sc, "Secure") {
 		t.Fatalf("secure without LK_COOKIE_SECURE: %q", sc)

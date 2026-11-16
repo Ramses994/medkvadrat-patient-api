@@ -45,9 +45,13 @@ func newWebEnv(t *testing.T) webEnv {
 	}
 	cfg := config.Config{
 		APIToken: "s2s-token",
-		Auth:     config.AuthConfig{Mode: "prod", CookieSecure: true, WebRefreshTTL: 12 * time.Hour},
-		OTP:      config.OTPConfig{HMACSecret: "otp-secret", TTLSeconds: 300},
-		JWT:      config.JWTConfig{Secret: "jwt-secret", Issuer: "test", AccessTTLMin: 15, RefreshTTLDays: 30},
+		Auth: config.AuthConfig{
+			Mode: "prod", CookieSecure: true,
+			WebRefreshTTL: 12 * time.Hour, WebIdleMin: 20 * time.Minute,
+			WebOrigins: []string{webOrigin},
+		},
+		OTP: config.OTPConfig{HMACSecret: "otp-secret", TTLSeconds: 300},
+		JWT: config.JWTConfig{Secret: "jwt-secret", Issuer: "test", AccessTTLMin: 15, RefreshTTLDays: 30},
 	}
 	svc := service.New(nil, nil, lite, repo.Repos{}, slog.New(slog.DiscardHandler), 0, cfg)
 	return webEnv{h: NewRouter(cfg, svc, slog.New(slog.DiscardHandler)), lite: lite, cfg: cfg}
@@ -149,8 +153,11 @@ func webLogin(t *testing.T, e webEnv) (*httptest.ResponseRecorder, *http.Cookie)
 func TestWebSession_VerifySetsHttpOnlyCookieAndHidesRefresh(t *testing.T) {
 	e := newWebEnv(t)
 	w, c := webLogin(t, e)
-	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != "/api/auth" || c.MaxAge != 12*3600 {
+	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != "/api/auth" || c.MaxAge != 0 {
 		t.Fatalf("cookie attrs: httponly=%v secure=%v samesite=%v path=%q maxage=%d", c.HttpOnly, c.Secure, c.SameSite, c.Path, c.MaxAge)
+	}
+	if sc := w.Header().Get("Set-Cookie"); strings.Contains(sc, "Max-Age=") || strings.Contains(strings.ToLower(sc), "expires=") {
+		t.Fatalf("session cookie must not set expiry: %q", sc)
 	}
 	data := dataOf(t, w)
 	if data["access"] == "" || data["access"] == nil {
@@ -170,20 +177,25 @@ func TestWebSession_VerifySetsHttpOnlyCookieAndHidesRefresh(t *testing.T) {
 	}
 }
 
-func TestWebSession_RefreshTTLIs12Hours(t *testing.T) {
+func TestWebSession_AbsoluteAndIdleTTL(t *testing.T) {
 	e := newWebEnv(t)
 	start := time.Now()
 	_, c := webLogin(t, e)
-	var exp time.Time
-	var client string
-	if err := e.lite.QueryRow(`SELECT expires_at, client FROM refresh_tokens`).Scan(&exp, &client); err != nil {
+	var idleExp, sessionExp time.Time
+	var client, sid string
+	if err := e.lite.QueryRow(`SELECT expires_at, session_expires_at, client, sid FROM refresh_tokens`).Scan(&idleExp, &sessionExp, &client, &sid); err != nil {
 		t.Fatal(err)
 	}
-	ttl := exp.Sub(start)
-	if client != "web" || ttl < 12*time.Hour-time.Minute || ttl > 12*time.Hour+time.Minute {
-		t.Fatalf("client=%q ttl=%v", client, ttl)
+	if client != "web" || sid == "" {
+		t.Fatalf("client=%q sid=%q", client, sid)
 	}
-	if c.MaxAge != 43200 {
+	if idle := idleExp.Sub(start); idle < 19*time.Minute || idle > 21*time.Minute {
+		t.Fatalf("idle ttl=%v", idle)
+	}
+	if abs := sessionExp.Sub(start); abs < 12*time.Hour-time.Minute || abs > 12*time.Hour+time.Minute {
+		t.Fatalf("absolute ttl=%v", abs)
+	}
+	if c.MaxAge != 0 {
 		t.Fatalf("max-age %d", c.MaxAge)
 	}
 }
@@ -197,7 +209,7 @@ func TestWebSession_RefreshByCookieRotates(t *testing.T) {
 		t.Fatalf("refresh %d %s", w.Code, w.Body.String())
 	}
 	fresh := refreshCookie(t, w)
-	if fresh == nil || fresh.Value == "" || fresh.Value == old.Value || fresh.MaxAge != 43200 || !fresh.HttpOnly {
+	if fresh == nil || fresh.Value == "" || fresh.Value == old.Value || fresh.MaxAge != 0 || !fresh.HttpOnly {
 		t.Fatalf("new cookie: %+v", fresh)
 	}
 	data := dataOf(t, w)
@@ -215,10 +227,10 @@ func TestWebSession_RefreshByCookieRotates(t *testing.T) {
 	if c := refreshCookie(t, again); c == nil || c.MaxAge >= 0 {
 		t.Fatalf("old cookie not cleared: %+v", c)
 	}
-
-	next := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
-	if next.Code != http.StatusOK {
-		t.Fatalf("fresh cookie refused: %d", next.Code)
+	// Replaying a used token kills the whole sid — the rotated cookie must also die.
+	killed := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
+	if killed.Code != http.StatusUnauthorized {
+		t.Fatalf("replay must kill session: %d", killed.Code)
 	}
 }
 
@@ -294,7 +306,7 @@ func TestWebSession_SelectPatientSetsCookie(t *testing.T) {
 		t.Fatalf("select %d %s", w.Code, w.Body.String())
 	}
 	c := refreshCookie(t, w)
-	if c == nil || !c.HttpOnly || c.MaxAge != 43200 {
+	if c == nil || !c.HttpOnly || c.MaxAge != 0 {
 		t.Fatalf("cookie %+v", c)
 	}
 	if strings.Contains(w.Body.String(), `"refresh`) {
@@ -306,28 +318,70 @@ func TestWebSession_ForeignOriginForbidden(t *testing.T) {
 	e := newWebEnv(t)
 	_, c := webLogin(t, e)
 	rid := e.otpRequest(t, 11, 12)
-	cases := []webReq{
+	routes := []webReq{
 		{method: http.MethodPost, path: "/api/auth/otp/verify", body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`},
 		{method: http.MethodPost, path: "/api/auth/otp/select-patient", body: `{"request_id":"` + rid + `","patient_id":12}`},
 		{method: http.MethodPost, path: "/api/auth/refresh", cookie: c.Value},
 		{method: http.MethodPost, path: "/api/auth/logout", cookie: c.Value},
 	}
-	for _, origin := range []string{"http://evil.test", ""} {
-		for _, r := range cases {
+	badOrigins := []string{
+		"https://cabinet.test:8083",     // other scheme
+		"http://cabinet.test:9",         // other port
+		"http://evil.test",              // other host
+		"http://cabinet.test.evil.test", // host suffix
+		"",                              // missing Origin
+	}
+	for _, origin := range badOrigins {
+		for _, r := range routes {
 			r.web = true
 			r.origin = origin
 			w := e.do(r)
 			if w.Code != http.StatusForbidden || refreshCookie(t, w) != nil {
-				t.Fatalf("%s origin=%q: %d", r.path, origin, w.Code)
+				t.Fatalf("%s origin=%q: %d cookie=%v", r.path, origin, w.Code, refreshCookie(t, w) != nil)
 			}
-			if got := w.Header().Get("Cache-Control"); got != "no-store" {
-				t.Fatalf("%s 403 cache-control %q", r.path, got)
-			}
+		}
+	}
+	// Referer alone is not enough — Origin is required.
+	for _, r := range routes {
+		req := httptest.NewRequest(r.method, r.path, strings.NewReader(r.body))
+		req.Host = webHost
+		req.Header.Set("X-LK-Client", "web")
+		req.Header.Set("Referer", webOrigin+"/")
+		if r.cookie != "" {
+			req.AddCookie(&http.Cookie{Name: "lk_refresh", Value: r.cookie})
+		}
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden || refreshCookie(t, w) != nil {
+			t.Fatalf("%s referer-only: %d", r.path, w.Code)
 		}
 	}
 	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: c.Value})
 	if w.Code != http.StatusOK {
 		t.Fatalf("token was spent by a forbidden request: %d", w.Code)
+	}
+}
+
+func TestWebSession_EmptyOriginsForbidAll(t *testing.T) {
+	e := newWebEnv(t)
+	_, c := webLogin(t, e)
+	e.cfg.Auth.WebOrigins = nil
+	svc := service.New(nil, nil, e.lite, repo.Repos{}, slog.New(slog.DiscardHandler), 0, e.cfg)
+	e.h = NewRouter(e.cfg, svc, slog.New(slog.DiscardHandler))
+	rid := e.otpRequest(t, 11, 12)
+	routes := []webReq{
+		{method: http.MethodPost, path: "/api/auth/otp/verify", body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`},
+		{method: http.MethodPost, path: "/api/auth/otp/select-patient", body: `{"request_id":"` + rid + `","patient_id":12}`},
+		{method: http.MethodPost, path: "/api/auth/refresh", cookie: c.Value},
+		{method: http.MethodPost, path: "/api/auth/logout", cookie: c.Value},
+	}
+	for _, r := range routes {
+		r.web = true
+		r.origin = webOrigin
+		w := e.do(r)
+		if w.Code != http.StatusForbidden || refreshCookie(t, w) != nil {
+			t.Fatalf("%s empty allowlist: %d cookie=%v", r.path, w.Code, refreshCookie(t, w) != nil)
+		}
 	}
 }
 
@@ -412,5 +466,55 @@ func TestNoStore_AuthAndMeIncludingErrors(t *testing.T) {
 	e.h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/health", nil))
 	if w.Header().Get("Cache-Control") == "no-store" {
 		t.Fatal("no-store leaked to /api/health")
+	}
+}
+
+func TestWebSession_RefreshDoesNotExtendAbsoluteTTL(t *testing.T) {
+	e := newWebEnv(t)
+	_, c := webLogin(t, e)
+	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: c.Value})
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh %d", w.Code)
+	}
+	fresh := refreshCookie(t, w)
+	past := time.Now().Add(-time.Minute).UTC()
+	if _, err := e.lite.Exec(`UPDATE refresh_tokens SET session_expires_at = ?`, past); err != nil {
+		t.Fatal(err)
+	}
+	again := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
+	if again.Code != http.StatusUnauthorized {
+		t.Fatalf("absolute ttl must end session: %d", again.Code)
+	}
+}
+
+func TestWebSession_IdleTimeoutWithoutRefresh(t *testing.T) {
+	e := newWebEnv(t)
+	_, c := webLogin(t, e)
+	past := time.Now().Add(-time.Minute).UTC()
+	if _, err := e.lite.Exec(`UPDATE refresh_tokens SET expires_at = ? WHERE revoked_at IS NULL`, past); err != nil {
+		t.Fatal(err)
+	}
+	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: c.Value})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("idle expiry: %d", w.Code)
+	}
+}
+
+func TestWebSession_LogoutRevokesWholeSid(t *testing.T) {
+	e := newWebEnv(t)
+	_, old := webLogin(t, e)
+	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: old.Value})
+	fresh := refreshCookie(t, w)
+	if w.Code != http.StatusOK || fresh == nil {
+		t.Fatalf("refresh %d", w.Code)
+	}
+	// Logout with the rotated-away token must still kill the new one (same sid).
+	out := e.do(webReq{method: http.MethodPost, path: "/api/auth/logout", web: true, origin: webOrigin, cookie: old.Value})
+	if out.Code != http.StatusNoContent {
+		t.Fatalf("logout %d", out.Code)
+	}
+	again := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
+	if again.Code != http.StatusUnauthorized {
+		t.Fatalf("fresh token after sid logout: %d", again.Code)
 	}
 }

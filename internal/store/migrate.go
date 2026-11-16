@@ -217,6 +217,15 @@ CREATE TABLE IF NOT EXISTS staff_login_log (
 	if err := ensureColumn(ctx, db, "refresh_tokens", "client", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, "refresh_tokens", "sid", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "refresh_tokens", "session_expires_at", "DATETIME"); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_refresh_sid ON refresh_tokens(sid)`); err != nil {
+		return fmt.Errorf("refresh sid index: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS staff_admin_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

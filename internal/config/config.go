@@ -92,6 +92,9 @@ type AuthConfig struct {
 	// Web cabinet session (X-LK-Client: web): refresh token in the lk_refresh cookie.
 	CookieSecure  bool
 	WebRefreshTTL time.Duration
+	WebIdleMin    time.Duration
+	// WebOrigins is the allowlist for Origin on web auth routes (LK_WEB_ORIGINS).
+	WebOrigins []string
 }
 
 type OTPConfig struct {
@@ -173,8 +176,9 @@ func Load() (Config, error) {
 			Mode:           strings.ToLower(strings.TrimSpace(getEnv("AUTH_MODE", "dev"))),
 			PilotWhitelist: splitCSV(getEnv("AUTH_PILOT_WHITELIST", "")),
 			PilotCode:      strings.TrimSpace(os.Getenv("AUTH_PILOT_CODE")),
-			CookieSecure:   boolOr(os.Getenv("LK_COOKIE_SECURE"), true),
-			WebRefreshTTL:  time.Duration(positiveOr(mustInt(getEnv("LK_WEB_REFRESH_TTL_HOURS", "12"), 12), 12)) * time.Hour,
+			CookieSecure:  boolOr(os.Getenv("LK_COOKIE_SECURE"), true),
+			WebRefreshTTL: time.Duration(positiveOr(mustInt(getEnv("LK_WEB_REFRESH_TTL_HOURS", "12"), 12), 12)) * time.Hour,
+			WebIdleMin:    time.Duration(positiveOr(mustInt(getEnv("LK_WEB_IDLE_MIN", "20"), 20), 20)) * time.Minute,
 		},
 		OTP: OTPConfig{
 			TTLSeconds:        mustInt(getEnv("OTP_TTL_SECONDS", "300"), 300),
@@ -210,6 +214,13 @@ func Load() (Config, error) {
 	if len(cfg.WaitlistExamIDs) == 0 {
 		cfg.WaitlistExamIDs = []int64{3118}
 	}
+
+	origins, err := ParseWebOrigins(os.Getenv("LK_WEB_ORIGINS"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return Config{}, err
+	}
+	cfg.Auth.WebOrigins = origins
 
 	if err := cfg.validate(); err != nil {
 		// Avoid leaking secrets; print only which vars are missing.

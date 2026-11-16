@@ -21,6 +21,7 @@ type AuthService interface {
 	WebOTPVerify(ctx context.Context, requestID, code string) (OTPVerifyResult, error)
 	WebOTPSelectPatient(ctx context.Context, requestID string, patientID int64) (Tokens, error)
 	WebRefresh(ctx context.Context, refresh string) (Tokens, error)
+	WebLogout(ctx context.Context, refresh string) error
 }
 
 type AuthHandler struct {
@@ -140,7 +141,7 @@ func (h AuthHandler) OTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if web && res.Refresh != "" {
-		h.setRefreshCookie(w, res.Refresh, res.RefreshExpiresIn)
+		h.setRefreshCookie(w, res.Refresh)
 		res.Refresh = ""
 		res.RefreshExpiresIn = 0
 	}
@@ -239,7 +240,7 @@ func (h AuthHandler) webRefresh(w http.ResponseWriter, r *http.Request) {
 func (h AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	if IsWebClient(r) {
 		if c, err := r.Cookie(RefreshCookie); err == nil && c.Value != "" {
-			_ = h.Svc.Logout(r.Context(), c.Value)
+			_ = h.Svc.WebLogout(r.Context(), c.Value)
 		}
 		h.clearRefreshCookie(w)
 		response.NoContent(w)
@@ -261,16 +262,16 @@ func (h AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h AuthHandler) writeWebTokens(w http.ResponseWriter, tok Tokens) {
-	h.setRefreshCookie(w, tok.Refresh, tok.RefreshExpiresIn)
+	h.setRefreshCookie(w, tok.Refresh)
 	response.OK(w, WebTokens{Access: tok.Access, AccessExpiresIn: tok.AccessExpiresIn})
 }
 
-func (h AuthHandler) setRefreshCookie(w http.ResponseWriter, token string, maxAge int) {
+// setRefreshCookie writes a session cookie (no Max-Age / Expires); browser close ends it.
+func (h AuthHandler) setRefreshCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     RefreshCookie,
 		Value:    token,
 		Path:     refreshCookiePath,
-		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   h.CookieSecure,
 		SameSite: http.SameSiteStrictMode,
