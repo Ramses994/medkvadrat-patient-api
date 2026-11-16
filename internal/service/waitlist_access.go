@@ -658,7 +658,7 @@ func (s *Services) registryItems(ctx context.Context, filter confirmations.Waitl
 			Status: status, Outcome: w.Outcome, BranchID: row.BranchID, Source: "registry",
 			Comment: row.Comment, CreatorName: row.CreatorName,
 			CreatedAt: row.CreatedAt, CreatedAtMSK: row.CreatedAt,
-			UpdatedBy: w.UpdatedBy, UpdatedAt: w.UpdatedAt, Version: version,
+			UpdatedBy: w.AuthorDisplay(), UpdatedAt: w.UpdatedAt, Version: version,
 		}
 		if pii && st.Kind == rowFound {
 			it.PatientID = st.Live.PatientID
@@ -812,6 +812,23 @@ func allowOther(ctx context.Context, f confirmations.WaitlistListFilter) bool {
 	return elevated(p)
 }
 
+func markAuthor(ctx context.Context, login string) confirmations.Author {
+	a := confirmations.LoginOnly(login)
+	p, ok := staff.PrincipalFrom(ctx)
+	if !ok {
+		return a
+	}
+	a.ID = p.ID
+	a.Name = strings.TrimSpace(p.FullName)
+	if a.Name == "" {
+		a.Name = p.Login
+	}
+	if a.Login == "" {
+		a.Login = p.Login
+	}
+	return a
+}
+
 func (s *Services) UpdateWaitlist(ctx context.Context, id int64, status, outcome, updatedBy string) (confirmations.WaitlistRow, error) {
 	wl := confirmations.NewRepo(s.SQLite)
 	snap, err := s.prepareSnapshot(ctx, wl)
@@ -820,7 +837,7 @@ func (s *Services) UpdateWaitlist(ctx context.Context, id int64, status, outcome
 	}
 	lockCtx, cancel := snapshotLockContext(ctx, snap)
 	defer cancel()
-	row, err := wl.UpdateWaitlist(lockCtx, id, status, outcome, updatedBy, time.Now().UTC(), maxWriteGuard(ctx, snap, id, true))
+	row, err := wl.UpdateWaitlist(lockCtx, id, status, outcome, markAuthor(ctx, updatedBy), time.Now().UTC(), maxWriteGuard(ctx, snap, id, true))
 	if snapshotWaitExpired(err) {
 		return confirmations.WaitlistRow{}, confirmations.ErrWaitlistNotFound
 	}
@@ -838,7 +855,7 @@ func (s *Services) UpdateRegistryWaitlist(ctx context.Context, planningID int64,
 	}
 	lockCtx, cancel := snapshotLockContext(ctx, snap)
 	defer cancel()
-	row, err := wl.UpdateMisWork(lockCtx, planningID, status, outcome, updatedBy, time.Now().UTC(), registryWriteGuard(ctx, snap, planningID, true))
+	row, err := wl.UpdateMisWork(lockCtx, planningID, status, outcome, markAuthor(ctx, updatedBy), time.Now().UTC(), registryWriteGuard(ctx, snap, planningID, true))
 	if snapshotWaitExpired(err) {
 		return confirmations.MisWork{}, confirmations.ErrWaitlistNotFound
 	}
@@ -908,7 +925,7 @@ func (s *Services) PatchWaitlist(ctx context.Context, id int64, version int, out
 	lockCtx, cancel := snapshotLockContext(ctx, snap)
 	defer cancel()
 	var view *Snapshot
-	applied, err := wl.ApplyWaitlist(lockCtx, id, version, outcome, action, updatedBy, time.Now().UTC(), func(conn *sql.Conn) error {
+	applied, err := wl.ApplyWaitlist(lockCtx, id, version, outcome, action, markAuthor(ctx, updatedBy), time.Now().UTC(), func(conn *sql.Conn) error {
 		afterWriteLock()
 		view = usableSnapshot(snap, misNow())
 		var branch int
@@ -963,7 +980,7 @@ func (s *Services) PatchRegistryWaitlist(ctx context.Context, planningID int64, 
 	lockCtx, cancel := snapshotLockContext(ctx, snap)
 	defer cancel()
 	var view *Snapshot
-	work, err := wl.ApplyMisWork(lockCtx, planningID, version, outcome, action, updatedBy, time.Now().UTC(), func(conn *sql.Conn) error {
+	work, err := wl.ApplyMisWork(lockCtx, planningID, version, outcome, action, markAuthor(ctx, updatedBy), time.Now().UTC(), func(conn *sql.Conn) error {
 		afterWriteLock()
 		view = usableSnapshot(snap, misNow())
 		if !view.live(misNow()) {
@@ -999,7 +1016,7 @@ func (s *Services) PatchRegistryWaitlist(ctx context.Context, planningID int64, 
 		if t.item.PlanningID == planningID {
 			t.item.Status = work.Status
 			t.item.Outcome = work.Outcome
-			t.item.UpdatedBy = work.UpdatedBy
+			t.item.UpdatedBy = work.AuthorDisplay()
 			t.item.UpdatedAt = work.UpdatedAt
 			t.item.Version = work.Version
 			return t.item, err
@@ -1007,7 +1024,7 @@ func (s *Services) PatchRegistryWaitlist(ctx context.Context, planningID int64, 
 	}
 	item := confirmations.DashboardItem{
 		ID: work.PlanningID, PlanningID: work.PlanningID, Source: "registry",
-		Status: work.Status, Outcome: work.Outcome, UpdatedBy: work.UpdatedBy, UpdatedAt: work.UpdatedAt,
+		Status: work.Status, Outcome: work.Outcome, UpdatedBy: work.AuthorDisplay(), UpdatedAt: work.UpdatedAt,
 		Version: work.Version, Enriched: false,
 	}
 	return item, err

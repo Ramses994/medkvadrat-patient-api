@@ -197,6 +197,7 @@
   .staff-form{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:end}
   .staff-form input,.staff-form select{font:inherit;padding:6px 8px}
   .staff-panel .btn{margin-right:6px}
+  .staff-panel .staff-row-note{display:block;color:var(--no)}
 
   @media (max-width:900px){
     .top,.top-right{flex-wrap:wrap}
@@ -318,6 +319,15 @@
     </div>
   </div>
 </div>
+<div class="modal" id="staffDeleteModal" role="dialog" aria-modal="true" aria-labelledby="staffDeleteText" hidden>
+  <div class="modal-card">
+    <p id="staffDeleteText"></p>
+    <div class="modal-actions">
+      <button class="btn light" id="staffDeleteNo" type="button">Отмена</button>
+      <button class="btn" id="staffDeleteYes" type="button" style="background:var(--brand);color:#fff;border-color:var(--brand)">Удалить</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ─────────── настройки ───────────
@@ -360,6 +370,7 @@ let pollsStopped = false;
 let loggingOut = false;
 let staffVisit = 0;
 let staffNotice = '';
+let staffDeleteAsk = null;
 let dashMe = null;
 let branchChoice = [];
 let activeTab = 'schedule';
@@ -483,6 +494,7 @@ function purgeScreen() {
   if (active && active !== document.body && active.blur) active.blur();
   document.querySelectorAll('#board .list .row').forEach(node => node.remove());
   hideStaffSecret();
+  closeStaffDelete();
   showBanner('Проверка доступа…');
 }
 
@@ -888,7 +900,7 @@ function setTab(name) {
       if (branch && !userScrolled.has(branch)) autoScroll(list, $('date').value === todayISO());
     });
   }
-  if (name !== 'staff') hideStaffSecret();
+  if (name !== 'staff') { hideStaffSecret(); closeStaffDelete(); }
   if (name === 'waitlist') waitlistKey = '';
   if (name === 'staff') {
     if (staffNotice) {
@@ -1789,6 +1801,7 @@ async function loadStaff() {
     const tb = document.createElement('tbody');
     users.forEach(u => {
       const tr = document.createElement('tr');
+      tr.dataset.login = u.login || '';
       tr.appendChild(el('td', '', u.login || ''));
       tr.appendChild(el('td', '', u.full_name || ''));
       const role = document.createElement('select');
@@ -1819,6 +1832,16 @@ async function loadStaff() {
       const actions = el('td');
       actions.appendChild(save);
       actions.appendChild(reset);
+      if (dashMe && dashMe.role === 'admin' && u.login !== dashMe.login) {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn staff-delete';
+        remove.textContent = 'Удалить';
+        const note = el('span', 'wl-saved staff-row-note');
+        remove.addEventListener('click', () => deleteStaff(u.id, u.login, tr, note));
+        actions.appendChild(remove);
+        actions.appendChild(note);
+      }
       tr.appendChild(actions);
       tb.appendChild(tr);
     });
@@ -1848,6 +1871,70 @@ async function updateStaff(id, login, payload) {
     loadStaff();
   } catch (err) {
     $('staffStatus').textContent = err.message;
+  }
+}
+
+function askStaffDelete(login) {
+  closeStaffDelete();
+  const modal = $('staffDeleteModal');
+  $('staffDeleteText').textContent = `Удалить учётную запись ${login}? Сотрудник больше не сможет войти. Отметки в листе ожидания сохранятся.`;
+  modal.hidden = false;
+  return new Promise(resolve => {
+    const yes = $('staffDeleteYes');
+    const no = $('staffDeleteNo');
+    const done = value => {
+      if (staffDeleteAsk !== done) return;
+      staffDeleteAsk = null;
+      modal.hidden = true;
+      yes.removeEventListener('click', onYes);
+      no.removeEventListener('click', onNo);
+      resolve(value);
+    };
+    const onYes = () => done(true);
+    const onNo = () => done(false);
+    staffDeleteAsk = done;
+    yes.addEventListener('click', onYes);
+    no.addEventListener('click', onNo);
+    no.focus();
+  });
+}
+
+function closeStaffDelete() {
+  if (staffDeleteAsk) staffDeleteAsk(false);
+}
+
+const STAFF_DELETE_REFUSED = {
+  CANNOT_DELETE_SELF: 'Нельзя удалить свою учётную запись',
+  LAST_ADMIN: 'Нельзя удалить последнего администратора',
+};
+
+async function deleteStaff(id, login, tr, note) {
+  const visit = staffVisit;
+  if (!(await askStaffDelete(login)) || visit !== staffVisit || loggingOut) return;
+  note.textContent = 'Удаляется…';
+  try {
+    const res = await api(`${CONFIG.API_BASE}/dashboard/staff/${id}`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: {'X-Dashboard-Request': '1'}
+    });
+    if (!res || loggingOut) return;
+    if (authStop(res)) return;
+    const body = res.body || {};
+    if (res.status === 409) {
+      note.textContent = STAFF_DELETE_REFUSED[denialCode(body)] || body.error || 'Удаление отклонено';
+      return;
+    }
+    if (res.status === 404) {
+      tr.remove();
+      if (visit === staffVisit) $('staffStatus').textContent = `Учётная запись ${login} уже удалена`;
+      return;
+    }
+    if (!res.ok || !body.success) throw new Error(body.error || `сервер ответил ${res.status}`);
+    tr.remove();
+    if (visit === staffVisit) $('staffStatus').textContent = `Учётная запись ${login} удалена`;
+  } catch (err) {
+    note.textContent = err.message;
   }
 }
 

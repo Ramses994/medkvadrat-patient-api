@@ -36,10 +36,13 @@ var (
 	ErrLocked          = errors.New("login locked")
 	ErrShortPassword   = errors.New("password too short")
 	ErrLastAdmin       = errors.New("last admin")
+	ErrDeleteSelf      = errors.New("cannot delete self")
 	ErrStale           = errors.New("staff stale")
 	ErrBranchForbidden = errors.New("BRANCH_FORBIDDEN")
 	ErrNoBranches      = errors.New("no branches")
 	ErrJournal         = errors.New("login journal")
+	ErrSessionInvalid  = errors.New("staff session invalid")
+	ErrNotAdmin        = errors.New("staff not admin")
 )
 
 // Dashboard branch ids in display order: Каширка, Куркино, Куркино 2.
@@ -200,7 +203,7 @@ func (s *Store) userByID(ctx context.Context, id int64) (User, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, login, full_name, role, branches, active, must_change_password,
        created_at, updated_at, IFNULL(last_login_at,''), IFNULL(session_version,1)
-FROM staff_users WHERE id = ?`, id)
+FROM staff_users WHERE id = ? AND deleted_at IS NULL`, id)
 	return scanUser(row)
 }
 
@@ -211,7 +214,7 @@ func (s *Store) userByLogin(ctx context.Context, login string) (User, string, er
 	err := s.db.QueryRowContext(ctx, `
 SELECT id, login, full_name, password_hash, role, branches, active, must_change_password,
        created_at, updated_at, IFNULL(last_login_at,''), IFNULL(session_version,1)
-FROM staff_users WHERE login = ?`, login).Scan(
+FROM staff_users WHERE login = ? AND deleted_at IS NULL`, login).Scan(
 		&u.ID, &u.Login, &u.FullName, &hash, &u.Role, &u.Branches, &active, &must,
 		&u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &u.SessionVersion,
 	)
@@ -445,7 +448,7 @@ func userByIDConn(ctx context.Context, conn *sql.Conn, id int64) (User, error) {
 	row := conn.QueryRowContext(ctx, `
 SELECT id, login, full_name, role, branches, active, must_change_password,
        created_at, updated_at, IFNULL(last_login_at,''), IFNULL(session_version,1)
-FROM staff_users WHERE id = ?`, id)
+FROM staff_users WHERE id = ? AND deleted_at IS NULL`, id)
 	return scanUser(row)
 }
 
@@ -467,7 +470,7 @@ func (s *Store) ChangePassword(ctx context.Context, id int64, current, next stri
 	var version int
 	err := s.db.QueryRowContext(ctx, `
 SELECT password_hash, login, IFNULL(session_version,1)
-FROM staff_users WHERE id = ?`, id).Scan(&hash, &login, &version)
+FROM staff_users WHERE id = ? AND deleted_at IS NULL`, id).Scan(&hash, &login, &version)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
@@ -490,7 +493,7 @@ FROM staff_users WHERE id = ?`, id).Scan(&hash, &login, &version)
 		var ver2 int
 		err := conn.QueryRowContext(ctx, `
 SELECT password_hash, IFNULL(session_version,1)
-FROM staff_users WHERE id = ?`, id).Scan(&hash2, &ver2)
+FROM staff_users WHERE id = ? AND deleted_at IS NULL`, id).Scan(&hash2, &ver2)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
 		}
@@ -512,13 +515,14 @@ WHERE id = ?`, string(nextHash), now, id); err != nil {
 }
 
 type CreateUser struct {
-	Login      string
-	FullName   string
-	Role       string
-	Branches   string
-	Password   string
-	ActorID    int64
-	ActorLogin string
+	Login              string
+	FullName           string
+	Role               string
+	Branches           string
+	Password           string
+	ActorID            int64
+	ActorLogin         string
+	ActorSessionVersion int
 }
 
 func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error) {
@@ -561,6 +565,13 @@ func (s *Store) Create(ctx context.Context, in CreateUser) (User, string, error)
 	}
 	var id int64
 	err = s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		actorLogin, err := requireActorAdmin(ctx, conn, in.ActorID, in.ActorSessionVersion)
+		if err != nil {
+			return err
+		}
+		if actorLogin == "" {
+			actorLogin = in.ActorLogin
+		}
 		res, err := conn.ExecContext(ctx, `
 INSERT INTO staff_users (
   login, full_name, password_hash, role, branches, active, must_change_password, created_at, updated_at
@@ -574,7 +585,7 @@ INSERT INTO staff_users (
 			return err
 		}
 		change := fmt.Sprintf("create;role=%s;branches=%s", strings.ToLower(in.Role), strings.TrimSpace(in.Branches))
-		return insertAdminLog(ctx, conn, in.ActorID, in.ActorLogin, id, change, now)
+		return insertAdminLog(ctx, conn, in.ActorID, actorLogin, id, change, now)
 	})
 	if err != nil {
 		return User{}, "", err
@@ -584,10 +595,11 @@ INSERT INTO staff_users (
 }
 
 type UpdateUser struct {
-	Role          string
-	Branches      string
-	Active        *bool
-	ResetPassword bool
+	Role                string
+	Branches            string
+	Active              *bool
+	ResetPassword       bool
+	ActorSessionVersion int
 }
 
 func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (User, string, error) {
@@ -610,13 +622,11 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 			return User{}, "", err
 		}
 	}
-	actorLogin := ""
-	if actorID != 0 {
-		if actor, err := s.userByID(ctx, actorID); err == nil {
-			actorLogin = actor.Login
-		}
-	}
 	err := s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		actorLogin, err := requireActorAdmin(ctx, conn, actorID, in.ActorSessionVersion)
+		if err != nil {
+			return err
+		}
 		u, err := userByIDConn(ctx, conn, id)
 		if err != nil {
 			return err
@@ -659,7 +669,7 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 		query += ` WHERE id = ?`
 		args = append(args, id)
 		if demote {
-			query += ` AND (SELECT COUNT(*) FROM staff_users WHERE role = 'admin' AND active = 1 AND id <> ?) >= 1`
+			query += ` AND (SELECT COUNT(*) FROM staff_users WHERE role = 'admin' AND active = 1 AND deleted_at IS NULL AND id <> ?) >= 1`
 			args = append(args, id)
 		}
 		res, err := conn.ExecContext(ctx, query, args...)
@@ -682,6 +692,71 @@ func (s *Store) Update(ctx context.Context, actorID, id int64, in UpdateUser) (U
 	}
 	u, err := s.userByID(ctx, id)
 	return u, temp, err
+}
+
+// Delete marks the employee deleted: login refused, every cookie dead, row kept
+// for waitlist marks and the journal, login free for a new account.
+func (s *Store) Delete(ctx context.Context, actorID int64, actorSessionVersion int, id int64) error {
+	if actorID == id {
+		return ErrDeleteSelf
+	}
+	return s.withImmediate(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		actorLogin, err := requireActorAdmin(ctx, conn, actorID, actorSessionVersion)
+		if err != nil {
+			return err
+		}
+		u, err := userByIDConn(ctx, conn, id)
+		if err != nil {
+			return err
+		}
+		if u.Role == RoleAdmin && u.Active {
+			var others int
+			if err := conn.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM staff_users
+WHERE role = 'admin' AND active = 1 AND deleted_at IS NULL AND id <> ?`, id).Scan(&others); err != nil {
+				return err
+			}
+			if others == 0 {
+				return ErrLastAdmin
+			}
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		res, err := conn.ExecContext(ctx, `
+UPDATE staff_users
+SET deleted_at = ?, active = 0, session_version = IFNULL(session_version,1) + 1, updated_at = ?
+WHERE id = ? AND deleted_at IS NULL`, now, now, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return insertAdminLog(ctx, conn, actorID, actorLogin, id, "delete;login="+u.Login, now)
+	})
+}
+
+// requireActorAdmin re-reads the author inside the mutating transaction.
+// Missing, deleted, inactive or bumped session → ErrSessionInvalid (401).
+// Role no longer admin → ErrNotAdmin (403). Target must stay untouched.
+// ActorID 0 skips the check (unit-test helpers that seed rows without a staff session).
+func requireActorAdmin(ctx context.Context, conn *sql.Conn, actorID int64, sessionVersion int) (string, error) {
+	if actorID <= 0 {
+		return "", nil
+	}
+	u, err := userByIDConn(ctx, conn, actorID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return "", ErrSessionInvalid
+		}
+		return "", err
+	}
+	if !u.Active || u.SessionVersion != sessionVersion {
+		return "", ErrSessionInvalid
+	}
+	if u.Role != RoleAdmin {
+		return "", ErrNotAdmin
+	}
+	return u.Login, nil
 }
 
 func insertAdminLog(ctx context.Context, conn *sql.Conn, actorID int64, actorLogin string, targetID int64, change, now string) error {
@@ -715,7 +790,7 @@ func (s *Store) List(ctx context.Context) ([]User, error) {
 	rs, err := s.db.QueryContext(ctx, `
 SELECT id, login, full_name, role, branches, active, must_change_password,
        created_at, updated_at, IFNULL(last_login_at,''), IFNULL(session_version,1)
-FROM staff_users ORDER BY login`)
+FROM staff_users WHERE deleted_at IS NULL ORDER BY login`)
 	if err != nil {
 		return nil, err
 	}

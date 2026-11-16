@@ -121,7 +121,7 @@ func TestUpdate_TwoAdminsCannotDisableThemselvesTogether(t *testing.T) {
 		go func(i int, id int64) {
 			defer wg.Done()
 			active := false
-			_, _, errs[i] = s.Update(ctx, id, id, UpdateUser{Active: &active})
+			_, _, errs[i] = s.Update(ctx, id, id, UpdateUser{Active: &active, ActorSessionVersion: 1})
 		}(i, id)
 	}
 	wg.Wait()

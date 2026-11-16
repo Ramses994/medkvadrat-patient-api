@@ -16,6 +16,9 @@ import (
 type StaffHandler struct {
 	Store  *staff.Store
 	Logger *slog.Logger
+	// AfterAuthz runs after the HTTP admin check and before the store
+	// transaction. Tests use it to change the author mid-request.
+	AfterAuthz func()
 }
 
 type staffPublic struct {
@@ -89,6 +92,9 @@ func (h StaffHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.AfterAuthz != nil {
+		h.AfterAuthz()
+	}
 	var body struct {
 		Login    string `json:"login"`
 		FullName string `json:"full_name"`
@@ -102,7 +108,7 @@ func (h StaffHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	user, temp, err := h.Store.Create(r.Context(), staff.CreateUser{
 		Login: body.Login, FullName: body.FullName, Role: body.Role, Branches: body.Branches, Password: body.Password,
-		ActorID: actor.ID, ActorLogin: actor.Login,
+		ActorID: actor.ID, ActorLogin: actor.Login, ActorSessionVersion: actor.SessionVersion,
 	})
 	if err != nil {
 		h.writeStaffErr(w, err)
@@ -124,6 +130,9 @@ func (h StaffHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.AfterAuthz != nil {
+		h.AfterAuthz()
+	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		response.Error(w, http.StatusBadRequest, "VALIDATION", "id")
@@ -141,6 +150,7 @@ func (h StaffHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	user, temp, err := h.Store.Update(r.Context(), actor.ID, id, staff.UpdateUser{
 		Role: body.Role, Branches: body.Branches, Active: body.Active, ResetPassword: body.ResetPassword,
+		ActorSessionVersion: actor.SessionVersion,
 	})
 	if err != nil {
 		h.writeStaffErr(w, err)
@@ -156,8 +166,54 @@ func (h StaffHandler) Update(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, payload)
 }
 
+func (h StaffHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	actor, ok := requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	if h.AfterAuthz != nil {
+		h.AfterAuthz()
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(w, http.StatusBadRequest, "VALIDATION", "id")
+		return
+	}
+	err = h.Store.Delete(r.Context(), actor.ID, actor.SessionVersion, id)
+	switch {
+	case err == nil:
+	case errors.Is(err, staff.ErrDeleteSelf):
+		response.Error(w, http.StatusConflict, "CANNOT_DELETE_SELF", "Нельзя удалить свою учётную запись")
+		return
+	case errors.Is(err, staff.ErrLastAdmin):
+		response.Error(w, http.StatusConflict, "LAST_ADMIN", "Нельзя удалить последнего администратора")
+		return
+	case errors.Is(err, staff.ErrNotFound):
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "Сотрудник не найден")
+		return
+	case errors.Is(err, staff.ErrSessionInvalid):
+		response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
+		return
+	case errors.Is(err, staff.ErrNotAdmin):
+		response.Error(w, http.StatusForbidden, "FORBIDDEN", "Только для администратора")
+		return
+	default:
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
+		return
+	}
+	if h.Logger != nil {
+		h.Logger.Info("staff deleted", "staff_id", id)
+	}
+	response.OK(w, map[string]any{"id": id})
+}
+
 func (h StaffHandler) writeStaffErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, staff.ErrSessionInvalid):
+		response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется вход")
+	case errors.Is(err, staff.ErrNotAdmin):
+		response.Error(w, http.StatusForbidden, "FORBIDDEN", "Только для администратора")
 	case errors.Is(err, staff.ErrShortPassword):
 		response.Error(w, http.StatusUnprocessableEntity, "VALIDATION", "Пароль не короче 10 символов")
 	case errors.Is(err, staff.ErrBadRole):
