@@ -87,12 +87,20 @@ VALUES(@jti, @pid, @hash, @exp, @mode, @client, @sid, @sexp)`,
 	return nil
 }
 
+type rowQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (s *RefreshStore) Get(ctx context.Context, jti string) (RefreshRow, error) {
+	return GetRefresh(ctx, s.db, jti)
+}
+
+func GetRefresh(ctx context.Context, q rowQuerier, jti string) (RefreshRow, error) {
 	var row RefreshRow
 	var client string
 	var sid sql.NullString
 	var sexp sql.NullTime
-	err := s.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 SELECT patient_id, token_hash, expires_at, revoked_at, issued_mode, client, sid, session_expires_at
 FROM refresh_tokens
 WHERE jti=@jti`,
@@ -141,4 +149,18 @@ WHERE sid=@sid AND revoked_at IS NULL`,
 		sql.Named("sid", sid),
 	)
 	return err
+}
+
+// SidHasLive reports whether any non-revoked refresh token still exists for sid.
+func SidHasLive(ctx context.Context, q rowQuerier, sid string) (bool, error) {
+	if sid == "" {
+		return false, nil
+	}
+	var n int
+	err := q.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM refresh_tokens
+WHERE sid=@sid AND revoked_at IS NULL`,
+		sql.Named("sid", sid),
+	).Scan(&n)
+	return n > 0, err
 }

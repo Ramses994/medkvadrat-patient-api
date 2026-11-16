@@ -163,6 +163,9 @@ func TestWebSession_VerifySetsHttpOnlyCookieAndHidesRefresh(t *testing.T) {
 	if data["access"] == "" || data["access"] == nil {
 		t.Fatal("no access token in body")
 	}
+	if sess, _ := data["session"].(string); sess == "" {
+		t.Fatal("missing opaque session id")
+	}
 	if _, ok := data["refresh"]; ok {
 		t.Fatal("refresh in body")
 	}
@@ -220,17 +223,17 @@ func TestWebSession_RefreshByCookieRotates(t *testing.T) {
 		t.Fatal("refresh in body")
 	}
 
+	// Immediate replay is a race (Ц3): 409, session stays alive.
 	again := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: old.Value})
-	if again.Code != http.StatusUnauthorized {
-		t.Fatalf("old cookie accepted: %d", again.Code)
+	if again.Code != http.StatusConflict {
+		t.Fatalf("old cookie race: %d %s", again.Code, again.Body.String())
 	}
-	if c := refreshCookie(t, again); c == nil || c.MaxAge >= 0 {
-		t.Fatalf("old cookie not cleared: %+v", c)
+	if refreshCookie(t, again) != nil {
+		t.Fatal("409 must not touch cookie")
 	}
-	// Replaying a used token kills the whole sid — the rotated cookie must also die.
-	killed := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
-	if killed.Code != http.StatusUnauthorized {
-		t.Fatalf("replay must kill session: %d", killed.Code)
+	alive := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
+	if alive.Code != http.StatusOK {
+		t.Fatalf("session must survive race: %d", alive.Code)
 	}
 }
 
@@ -516,5 +519,153 @@ func TestWebSession_LogoutRevokesWholeSid(t *testing.T) {
 	again := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
 	if again.Code != http.StatusUnauthorized {
 		t.Fatalf("fresh token after sid logout: %d", again.Code)
+	}
+}
+
+func TestWebSession_AccessTTLCappedByAbsolute(t *testing.T) {
+	e := newWebEnv(t)
+	_, c := webLogin(t, e)
+	end := time.Now().UTC().Add(5 * time.Minute)
+	if _, err := e.lite.Exec(`UPDATE refresh_tokens SET session_expires_at = ? WHERE revoked_at IS NULL`, end); err != nil {
+		t.Fatal(err)
+	}
+	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: c.Value})
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh %d %s", w.Code, w.Body.String())
+	}
+	data := dataOf(t, w)
+	expIn, _ := data["access_expires_in"].(float64)
+	if expIn <= 0 || expIn > 300 {
+		t.Fatalf("access_expires_in=%v want ≤300", expIn)
+	}
+	access, _ := data["access"].(string)
+	// Six minutes after the absolute remaining window the access JWT is dead.
+	expired, err := auth.IssueAccess([]byte(e.cfg.JWT.Secret), e.cfg.JWT.Issuer, 11, "", e.cfg.Auth.Mode, 5*time.Minute, time.Now().Add(-6*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = access
+	req := httptest.NewRequest(http.MethodGet, "/api/me/profile", nil)
+	req.Header.Set("Authorization", "Bearer "+expired)
+	pw := httptest.NewRecorder()
+	e.h.ServeHTTP(pw, req)
+	if pw.Code != http.StatusUnauthorized {
+		t.Fatalf("expired access after absolute window: %d", pw.Code)
+	}
+}
+
+func TestWebSession_LoginRevokesPreviousCookieSession(t *testing.T) {
+	e := newWebEnv(t)
+	wA, cA := webLogin(t, e)
+	sidA, _ := dataOf(t, wA)["session"].(string)
+	if sidA == "" {
+		t.Fatal("no session A")
+	}
+	rid := e.otpRequest(t, 11)
+	wB := e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify", web: true, origin: webOrigin,
+		cookie: cA.Value, body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`})
+	if wB.Code != http.StatusOK {
+		t.Fatalf("login B %d %s", wB.Code, wB.Body.String())
+	}
+	cB := refreshCookie(t, wB)
+	sidB, _ := dataOf(t, wB)["session"].(string)
+	if cB == nil || sidB == "" || sidB == sidA {
+		t.Fatalf("session B cookie=%v sid=%q", cB != nil, sidB)
+	}
+	old := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: cA.Value})
+	if old.Code != http.StatusUnauthorized && old.Code != http.StatusConflict {
+		t.Fatalf("session A must be dead: %d", old.Code)
+	}
+	ok := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: cB.Value})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("session B: %d", ok.Code)
+	}
+}
+
+func TestWebSession_RefreshSessionMismatchConflict(t *testing.T) {
+	e := newWebEnv(t)
+	wA, cA := webLogin(t, e)
+	sidA, _ := dataOf(t, wA)["session"].(string)
+	rid := e.otpRequest(t, 11)
+	wB := e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify", web: true, origin: webOrigin,
+		cookie: cA.Value, body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`})
+	cB := refreshCookie(t, wB)
+	sidB, _ := dataOf(t, wB)["session"].(string)
+	if wB.Code != http.StatusOK || cB == nil || sidB == "" {
+		t.Fatalf("login B %d", wB.Code)
+	}
+	before := cB.Value
+	conflict := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin,
+		cookie: cB.Value, body: `{"session":"` + sidA + `"}`})
+	if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), "SESSION_CHANGED") {
+		t.Fatalf("mismatch: %d %s", conflict.Code, conflict.Body.String())
+	}
+	if refreshCookie(t, conflict) != nil {
+		t.Fatal("409 must not set cookie")
+	}
+	ok := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin,
+		cookie: before, body: `{"session":"` + sidB + `"}`})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("B still works: %d", ok.Code)
+	}
+}
+
+func TestWebSession_LogoutSessionMismatchLeavesCookie(t *testing.T) {
+	e := newWebEnv(t)
+	wA, cA := webLogin(t, e)
+	sidA, _ := dataOf(t, wA)["session"].(string)
+	rid := e.otpRequest(t, 11)
+	wB := e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify", web: true, origin: webOrigin,
+		cookie: cA.Value, body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`})
+	cB := refreshCookie(t, wB)
+	if wB.Code != http.StatusOK || cB == nil {
+		t.Fatalf("login B %d", wB.Code)
+	}
+	out := e.do(webReq{method: http.MethodPost, path: "/api/auth/logout", web: true, origin: webOrigin,
+		cookie: cB.Value, body: `{"session":"` + sidA + `"}`})
+	if out.Code != http.StatusNoContent {
+		t.Fatalf("logout %d", out.Code)
+	}
+	if refreshCookie(t, out) != nil {
+		t.Fatal("mismatch logout must not clear cookie")
+	}
+	ok := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: cB.Value})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("B after stale logout: %d", ok.Code)
+	}
+}
+
+func TestWebSession_RefreshRaceWindow(t *testing.T) {
+	e := newWebEnv(t)
+	_, old := webLogin(t, e)
+	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: old.Value})
+	fresh := refreshCookie(t, w)
+	if w.Code != http.StatusOK || fresh == nil {
+		t.Fatalf("refresh %d", w.Code)
+	}
+	race := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: old.Value})
+	if race.Code != http.StatusConflict || !strings.Contains(race.Body.String(), "REFRESH_RACE") {
+		t.Fatalf("inside window: %d %s", race.Code, race.Body.String())
+	}
+	alive := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
+	fresh2 := refreshCookie(t, alive)
+	if alive.Code != http.StatusOK || fresh2 == nil {
+		t.Fatalf("alive after race: %d", alive.Code)
+	}
+	// Older than 10s: backdate revoked_at on the superseded token (fresh) only, then replay it.
+	past := time.Now().UTC().Add(-11 * time.Second).Format("2006-01-02 15:04:05")
+	if _, err := e.lite.Exec(
+		`UPDATE refresh_tokens SET revoked_at = ? WHERE token_hash = ?`,
+		past, auth.HashToken(fresh.Value),
+	); err != nil {
+		t.Fatal(err)
+	}
+	kill := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh.Value})
+	if kill.Code != http.StatusUnauthorized {
+		t.Fatalf("outside window: %d %s", kill.Code, kill.Body.String())
+	}
+	dead := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: fresh2.Value})
+	if dead.Code != http.StatusUnauthorized {
+		t.Fatalf("session must die outside window: %d", dead.Code)
 	}
 }

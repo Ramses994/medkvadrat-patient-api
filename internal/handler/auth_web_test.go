@@ -33,21 +33,21 @@ func (f *fakeAuth) Logout(_ context.Context, refresh string) error {
 	f.calls = append(f.calls, "logout:"+refresh)
 	return nil
 }
-func (f *fakeAuth) WebOTPVerify(context.Context, string, string) (OTPVerifyResult, error) {
-	f.calls = append(f.calls, "web-verify")
-	return OTPVerifyResult{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 43200}, nil
+func (f *fakeAuth) WebOTPVerify(_ context.Context, _, _, prev string) (OTPVerifyResult, error) {
+	f.calls = append(f.calls, "web-verify:"+prev)
+	return OTPVerifyResult{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 43200, Session: "sid-1"}, nil
 }
-func (f *fakeAuth) WebOTPSelectPatient(context.Context, string, int64) (Tokens, error) {
-	f.calls = append(f.calls, "web-select")
-	return Tokens{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 43200}, nil
+func (f *fakeAuth) WebOTPSelectPatient(_ context.Context, _ string, _ int64, prev string) (Tokens, error) {
+	f.calls = append(f.calls, "web-select:"+prev)
+	return Tokens{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 43200, Session: "sid-1"}, nil
 }
-func (f *fakeAuth) WebRefresh(_ context.Context, refresh string) (Tokens, error) {
-	f.calls = append(f.calls, "web-refresh:"+refresh)
-	return Tokens{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 1200}, nil
+func (f *fakeAuth) WebRefresh(_ context.Context, refresh, session string) (Tokens, error) {
+	f.calls = append(f.calls, "web-refresh:"+refresh+":"+session)
+	return Tokens{Access: "acc", Refresh: "webref", AccessExpiresIn: 900, RefreshExpiresIn: 1200, Session: "sid-1"}, nil
 }
-func (f *fakeAuth) WebLogout(_ context.Context, refresh string) error {
-	f.calls = append(f.calls, "web-logout:"+refresh)
-	return nil
+func (f *fakeAuth) WebLogout(_ context.Context, refresh, session string) (bool, error) {
+	f.calls = append(f.calls, "web-logout:"+refresh+":"+session)
+	return true, nil
 }
 
 // TestAuth_WithoutWebHeaderBytesUnchanged pins the mobile contract: same status, headers and body bytes
@@ -102,15 +102,16 @@ func TestAuth_WithoutWebHeaderBytesUnchanged(t *testing.T) {
 func TestAuth_WebHeaderUsesCookie(t *testing.T) {
 	f := &fakeAuth{}
 	h := AuthHandler{Svc: f}
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh":"body-token"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh":"body-token","session":"sid-1"}`))
 	req.Header.Set(LKClientHeader, "Web")
 	req.AddCookie(&http.Cookie{Name: RefreshCookie, Value: "cookie-token"})
 	w := httptest.NewRecorder()
 	h.Refresh(w, req)
-	if w.Code != 200 || w.Body.String() != `{"success":true,"data":{"access":"acc","access_expires_in":900}}`+"\n" {
+	want := `{"success":true,"data":{"access":"acc","access_expires_in":900,"session":"sid-1"}}` + "\n"
+	if w.Code != 200 || w.Body.String() != want {
 		t.Fatalf("%d %q", w.Code, w.Body.String())
 	}
-	if got := strings.Join(f.calls, ","); got != "web-refresh:cookie-token" {
+	if got := strings.Join(f.calls, ","); got != "web-refresh:cookie-token:sid-1" {
 		t.Fatalf("calls %q", got)
 	}
 	sc := w.Header().Get("Set-Cookie")
