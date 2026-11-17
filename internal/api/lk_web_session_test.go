@@ -539,18 +539,70 @@ func TestWebSession_AccessTTLCappedByAbsolute(t *testing.T) {
 		t.Fatalf("access_expires_in=%v want ≤300", expIn)
 	}
 	access, _ := data["access"].(string)
-	// Six minutes after the absolute remaining window the access JWT is dead.
-	expired, err := auth.IssueAccess([]byte(e.cfg.JWT.Secret), e.cfg.JWT.Issuer, 11, "", e.cfg.Auth.Mode, 5*time.Minute, time.Now().Add(-6*time.Minute))
-	if err != nil {
-		t.Fatal(err)
+	if access == "" {
+		t.Fatal("no access from refresh")
 	}
-	_ = access
+	// Same token must still parse at issue time.
+	if _, err := auth.ParseAccess([]byte(e.cfg.JWT.Secret), access); err != nil {
+		t.Fatalf("access at issue: %v", err)
+	}
+	// Controllable clock +6 minutes → that same token is refused on /api/me/profile.
+	base := time.Now()
+	auth.Now = func() time.Time { return base.Add(6 * time.Minute) }
+	t.Cleanup(func() { auth.Now = time.Now })
 	req := httptest.NewRequest(http.MethodGet, "/api/me/profile", nil)
-	req.Header.Set("Authorization", "Bearer "+expired)
+	req.Header.Set("Authorization", "Bearer "+access)
 	pw := httptest.NewRecorder()
 	e.h.ServeHTTP(pw, req)
 	if pw.Code != http.StatusUnauthorized {
-		t.Fatalf("expired access after absolute window: %d", pw.Code)
+		t.Fatalf("same access after +6m: %d %s", pw.Code, pw.Body.String())
+	}
+}
+
+func TestWebSession_LoginRevokesRotatedCookieSession(t *testing.T) {
+	e := newWebEnv(t)
+	_, r0 := webLogin(t, e)
+	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: r0.Value})
+	r1 := refreshCookie(t, w)
+	if w.Code != http.StatusOK || r1 == nil {
+		t.Fatalf("refresh A %d", w.Code)
+	}
+	// Login B with rotated-away cookie R0 must still kill sid A (R1 dies).
+	rid := e.otpRequest(t, 11)
+	wB := e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify", web: true, origin: webOrigin,
+		cookie: r0.Value, body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`})
+	cB := refreshCookie(t, wB)
+	if wB.Code != http.StatusOK || cB == nil {
+		t.Fatalf("login B with R0: %d %s", wB.Code, wB.Body.String())
+	}
+	dead := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: r1.Value})
+	if dead.Code != http.StatusUnauthorized && dead.Code != http.StatusConflict {
+		t.Fatalf("R1 after login with R0: %d", dead.Code)
+	}
+	ok := e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: cB.Value})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("B alive: %d", ok.Code)
+	}
+
+	// Reverse: login B with current R1, then replay R0 → 401, B still alive.
+	e2 := newWebEnv(t)
+	_, r0b := webLogin(t, e2)
+	w2 := e2.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: r0b.Value})
+	r1b := refreshCookie(t, w2)
+	rid2 := e2.otpRequest(t, 11)
+	wB2 := e2.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify", web: true, origin: webOrigin,
+		cookie: r1b.Value, body: `{"request_id":"` + rid2 + `","code":"` + webCode + `"}`})
+	cB2 := refreshCookie(t, wB2)
+	if wB2.Code != http.StatusOK || cB2 == nil {
+		t.Fatalf("login B with R1: %d", wB2.Code)
+	}
+	old := e2.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: r0b.Value})
+	if old.Code != http.StatusUnauthorized && old.Code != http.StatusConflict {
+		t.Fatalf("R0 after login with R1: %d", old.Code)
+	}
+	alive := e2.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: cB2.Value})
+	if alive.Code != http.StatusOK {
+		t.Fatalf("B after R0 replay: %d", alive.Code)
 	}
 }
 

@@ -84,6 +84,9 @@ func ParseRefresh(secret []byte, tokenStr string) (RefreshClaims, error) {
 	return claims, nil
 }
 
+// Now is the clock for JWT validation; tests may replace it.
+var Now = time.Now
+
 func ParseAccess(secret []byte, tokenStr string) (AccessClaims, error) {
 	var claims AccessClaims
 	_, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (interface{}, error) {
@@ -91,7 +94,7 @@ func ParseAccess(secret []byte, tokenStr string) (AccessClaims, error) {
 			return nil, fmt.Errorf("unexpected alg")
 		}
 		return secret, nil
-	})
+	}, jwt.WithTimeFunc(Now))
 	if err != nil {
 		return AccessClaims{}, err
 	}

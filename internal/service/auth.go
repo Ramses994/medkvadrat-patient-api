@@ -645,7 +645,8 @@ func (s *Services) refreshRace(ctx context.Context, q interface {
 	return err == nil && live
 }
 
-// revokeLiveWebCookie revokes the whole prior web session carried by previousRefresh, if still live.
+// revokeLiveWebCookie revokes the whole prior web session carried by previousRefresh.
+// The sid is taken from the token row even when that token was already rotated (Щ1).
 func (s *Services) revokeLiveWebCookie(ctx context.Context, exec auth.Execer, previousRefresh string, now time.Time) error {
 	if previousRefresh == "" {
 		return nil
@@ -668,13 +669,7 @@ func (s *Services) revokeLiveWebCookie(ctx context.Context, exec auth.Execer, pr
 	if err != nil || row.TokenHash != auth.HashToken(previousRefresh) {
 		return nil
 	}
-	if row.Client != auth.ClientWeb || row.Sid == "" || row.RevokedAt.Valid {
-		return nil
-	}
-	if now.After(row.ExpiresAt) {
-		return nil
-	}
-	if !row.SessionExpiresAt.IsZero() && !now.Before(row.SessionExpiresAt) {
+	if row.Client != auth.ClientWeb || row.Sid == "" {
 		return nil
 	}
 	return auth.RevokeSid(ctx, exec, row.Sid, now)
