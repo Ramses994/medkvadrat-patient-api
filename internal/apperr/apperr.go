@@ -15,5 +15,7 @@ func New(status int, code, msg string) *AppError {
 }
 
 var (
-	ErrUnauthorized = New(http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized")
+	ErrUnauthorized   = New(http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized")
+	ErrSessionChanged = New(http.StatusConflict, "SESSION_CHANGED", "Сессия изменилась")
+	ErrRefreshRace    = New(http.StatusConflict, "REFRESH_RACE", "Повторный refresh")
 )
