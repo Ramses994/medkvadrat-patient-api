@@ -50,6 +50,7 @@ type OTPRequestResult struct {
 	RequestID string `json:"request_id"`
 	TTL       int    `json:"ttl"`
 	Message   string `json:"message"`
+	Delivery  string `json:"delivery"`
 	DevCode   string `json:"dev_code,omitempty"`
 }
 

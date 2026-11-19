@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/medkvadrat/medkvadrat-patient-api/internal/repo"
 )
 
 type Config struct {
@@ -173,9 +174,8 @@ func Load() (Config, error) {
 			TrustServerCertificate: mustBool(getEnv("DB_TRUST_SERVER_CERT", "false")),
 		},
 		Auth: AuthConfig{
-			Mode:           strings.ToLower(strings.TrimSpace(getEnv("AUTH_MODE", "dev"))),
-			PilotWhitelist: splitCSV(getEnv("AUTH_PILOT_WHITELIST", "")),
-			PilotCode:      strings.TrimSpace(os.Getenv("AUTH_PILOT_CODE")),
+			Mode:          strings.ToLower(strings.TrimSpace(getEnv("AUTH_MODE", "dev"))),
+			PilotCode:     strings.TrimSpace(os.Getenv("AUTH_PILOT_CODE")),
 			CookieSecure:  boolOr(os.Getenv("LK_COOKIE_SECURE"), true),
 			WebRefreshTTL: time.Duration(positiveOr(mustInt(getEnv("LK_WEB_REFRESH_TTL_HOURS", "12"), 12), 12)) * time.Hour,
 			WebIdleMin:    time.Duration(positiveOr(mustInt(getEnv("LK_WEB_IDLE_MIN", "20"), 20), 20)) * time.Minute,
@@ -222,12 +222,36 @@ func Load() (Config, error) {
 	}
 	cfg.Auth.WebOrigins = origins
 
+	whitelist, err := normalizePilotWhitelist(splitCSV(getEnv("AUTH_PILOT_WHITELIST", "")))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return Config{}, err
+	}
+	cfg.Auth.PilotWhitelist = whitelist
+
 	if err := cfg.validate(); err != nil {
 		// Avoid leaking secrets; print only which vars are missing.
 		fmt.Fprintln(os.Stderr, err.Error())
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// normalizePilotWhitelist applies NormalizePhone to each AUTH_PILOT_WHITELIST entry.
+// Unnormalizable entries fail startup without echoing the raw value.
+func normalizePilotWhitelist(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(raw))
+	for i, entry := range raw {
+		n := repo.NormalizePhone(entry)
+		if n == "" {
+			return nil, fmt.Errorf("AUTH_PILOT_WHITELIST: запись %d не является номером", i+1)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 func (c Config) validate() error {

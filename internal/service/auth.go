@@ -76,6 +76,7 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		s.Logger.Error("otp patients query failed", "err", err)
 		return handler.OTPRequestResult{}, apperr.New(http.StatusBadGateway, "INTERNAL", "Не получилось связаться с клиникой, попробуйте ещё раз через минуту")
 	}
+	pats = repo.FilterAdultOTPPatients(pats, now)
 	groups := groupOTPProfiles(pats, pilot)
 	for _, p := range pats {
 		if strings.TrimSpace(p.Email) == "" {
@@ -173,6 +174,7 @@ func (s *Services) OTPRequest(ctx context.Context, phoneRaw string, ipRaw string
 		RequestID: reqID,
 		TTL:       ttl,
 		Message:   otpSentMessage,
+		Delivery:  otpDelivery(s.Config.Auth.Mode),
 	}
 	if pilot {
 		res.Message = otpPilotMessage
@@ -703,6 +705,13 @@ const (
 	otpSentMessage  = "Если номер зарегистрирован в клинике, код отправлен на e-mail из карточки"
 	otpPilotMessage = "Введите код доступа пилота"
 )
+
+func otpDelivery(mode string) string {
+	if mode == "pilot" {
+		return "pilot"
+	}
+	return "email"
+}
 
 // staleOTPRow is true for a row written before per-address codes or in another AUTH_MODE.
 func (s *Services) staleOTPRow(row otp.RequestRow) bool {

@@ -162,6 +162,9 @@ func TestOTP_PilotWhitelistAnswersAlike(t *testing.T) {
 			if len(sent) != 0 {
 				t.Fatalf("mails=%d", len(sent))
 			}
+			if !strings.Contains(body, `"delivery":"pilot"`) {
+				t.Fatalf("body=%s", body)
+			}
 			bodies[name] = body
 
 			_, err := s.OTPVerify(context.Background(), id, testPilotCode)

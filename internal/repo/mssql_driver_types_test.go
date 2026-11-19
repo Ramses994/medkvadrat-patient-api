@@ -12,7 +12,7 @@ import (
 
 func reminderCols() []string {
 	return []string{
-		"PLANNING_ID", "PATIENTS_ID", "PHONE", "FULL_NAME", "DOCTOR_NAME",
+		"PLANNING_ID", "PATIENTS_ID", "PHONE", "FULL_NAME", "DOCTOR_NOM", "DOCTOR_PRENOM", "DOCTOR_PATRONYME",
 		"EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST", "NO_SMS_NOTIFY", "MESSENGER_NOTIFY",
 		"PL_SUBJ_ID", "PL_EXAM_ID", "DATE_START_FULL", "BRANCH_ID", "BRANCH_CODE",
 		"DATE_CONSULTATION", "STATUS",
@@ -25,7 +25,9 @@ func reminderDriverRow(planningID int64, createdSuffix bool) []driver.Value {
 		int64(1),
 		[]byte(""),
 		[]byte("Пациент"),
-		[]byte("Иванов И."),
+		[]byte("Иванов"),
+		[]byte("И."),
+		[]byte(""),
 		[]byte("#rus#Прием врачом-терапевтом"),
 		[]byte("Прием"),
 		false,       // IS_WAITLIST bit

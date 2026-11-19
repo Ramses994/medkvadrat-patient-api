@@ -50,7 +50,7 @@ func (r *pairRows) Next(dest []driver.Value) error {
 }
 
 var pairCols = []string{
-	"web", "archive", "accept", "branch", "code", "med", "doctor",
+	"web", "archive", "accept", "branch", "code", "med", "nom", "prenom", "patronyme",
 	"on_line", "exam_web", "tele", "exam_arch", "duree", "web_name", "name",
 }
 
@@ -58,7 +58,7 @@ func init() { sql.Register(pairDriverName, pairDrv{}) }
 
 func activePairVals() []driver.Value {
 	return []driver.Value{
-		int64(1), int64(0), nil, int64(496), "Куркино 2", int64(160), "Тестовый Врач",
+		int64(1), int64(0), nil, int64(496), "Куркино 2", int64(160), "Тестовый", "Врач", "",
 		int64(1), int64(1), int64(0), int64(0), "30", "#rus#Тест", "ТЕСТ ЛК",
 	}
 }
@@ -91,12 +91,12 @@ func TestLoadBookingPair_EachInactiveReason(t *testing.T) {
 		{"archive", func(v []driver.Value) { v[1] = int64(1) }, false, "archive"},
 		{"web_accept", func(v []driver.Value) { v[2] = int64(1) }, false, "web_accept"},
 		{"web_accept_2", func(v []driver.Value) { v[2] = int64(2) }, false, "web_accept"},
-		{"exam_not_on_line", func(v []driver.Value) { v[7] = int64(0) }, false, "exam_not_on_line"},
+		{"exam_not_on_line", func(v []driver.Value) { v[9] = int64(0) }, false, "exam_not_on_line"},
 		{"waitlist_exam", nil, false, "waitlist_exam"},
-		{"exam_not_web", func(v []driver.Value) { v[8] = int64(0); v[9] = int64(0) }, false, "exam_not_web"},
-		{"exam_tele_ok", func(v []driver.Value) { v[8] = int64(0); v[9] = int64(1) }, false, ""},
-		{"exam_archive", func(v []driver.Value) { v[10] = int64(1) }, false, "exam_archive"},
-		{"duration", func(v []driver.Value) { v[11] = "bad" }, false, "duration"},
+		{"exam_not_web", func(v []driver.Value) { v[10] = int64(0); v[11] = int64(0) }, false, "exam_not_web"},
+		{"exam_tele_ok", func(v []driver.Value) { v[10] = int64(0); v[11] = int64(1) }, false, ""},
+		{"exam_archive", func(v []driver.Value) { v[12] = int64(1) }, false, "exam_archive"},
+		{"duration", func(v []driver.Value) { v[13] = "bad" }, false, "duration"},
 		{"branch", func(v []driver.Value) { v[3] = int64(7) }, false, "branch"},
 	}
 	for _, tc := range cases {

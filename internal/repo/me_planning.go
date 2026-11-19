@@ -38,7 +38,9 @@ SELECT TOP (%d)
   ISNULL(o.FM_ORG_ID, 0) AS BRANCH_ID,
   ISNULL(o.CODE, '') AS BRANCH_CODE,
   ps.MEDECINS_ID,
-  LTRIM(RTRIM(ISNULL(m.NOM,'') + ' ' + ISNULL(m.PRENOM,'') + ' ' + ISNULL(m.PATRONYME,''))) AS DOCTOR_NAME,
+  ISNULL(m.NOM,''),
+  ISNULL(m.PRENOM,''),
+  ISNULL(m.PATRONYME,''),
   ISNULL(p.PL_SUBJ_ID, 0) AS PL_SUBJ_ID,
   ISNULL(p.PL_EXAM_ID, 0) AS PL_EXAM_ID,
   ISNULL(ex.NAME, '') AS EXAM_NAME
@@ -98,16 +100,16 @@ func scanPlanningVisits(ctx context.Context, db *sql.DB, q string, args ...any) 
 	for rows.Next() {
 		var v PlanningVisit
 		var cancelled, arrived bitInt
-		var doctor, exam sql.NullString
+		var nom, prenom, patronyme, exam sql.NullString
 		if err := rows.Scan(
 			&v.PlanningID, &v.StartsAt, &v.StartsAtFull, &v.DurationMin, &cancelled, &arrived,
-			&v.BranchID, &v.BranchCode, &v.MedecinsID, &doctor, &v.PlSubjID, &v.PlExamID, &exam,
+			&v.BranchID, &v.BranchCode, &v.MedecinsID, &nom, &prenom, &patronyme, &v.PlSubjID, &v.PlExamID, &exam,
 		); err != nil {
 			return nil, fmt.Errorf("scan planning visit: %w", err)
 		}
 		v.Cancelled = int(cancelled)
 		v.Arrived = int(arrived)
-		v.DoctorName = strings.Join(strings.Fields(doctor.String), " ")
+		v.DoctorName = DoctorDisplayName(nom.String, prenom.String, patronyme.String)
 		v.ExamName = strings.TrimSpace(exam.String)
 		out = append(out, v)
 	}

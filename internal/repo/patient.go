@@ -20,6 +20,7 @@ func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, normalized string)
 			PATIENTS_ID,
 			ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
 			ISNULL(EMAIL,'') AS EMAIL,
+			NE_LE AS BIRTH_DATE,
 			CAST(ISNULL(NOT_SEND_MAILING_SMS,0) AS int) AS NOT_SEND_MAILING_SMS,
 			CAST(ISNULL(SEND_AUTO_EMAIL,0) AS int) AS SEND_AUTO_EMAIL,
 			ISNULL(MOBIL_TELEFON,'') AS MOBIL_TELEFON,
@@ -40,11 +41,19 @@ func (r *PatientRepo) OTPPatientsByPhone(ctx context.Context, normalized string)
 		var p OTPPatient
 		var notSend, sendAuto bitInt
 		var mobile, tel, work string
-		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Email, &notSend, &sendAuto, &mobile, &tel, &work); err != nil {
+		var bd sql.NullTime
+		if err := rows.Scan(&p.PatientID, &p.FullName, &p.Email, &bd, &notSend, &sendAuto, &mobile, &tel, &work); err != nil {
 			return nil, fmt.Errorf("scan otp patients: %w", err)
 		}
 		if !HasPhone(mobile, tel, work, normalized) {
 			continue
+		}
+		if bd.Valid {
+			t := bd.Time
+			if y := t.Year(); y >= 1800 && y <= 2200 {
+				tt := time.Date(y, t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+				p.BirthDate = &tt
+			}
 		}
 		p.NotSendMailingSMS = notSend != 0
 		p.SendAutoEmail = sendAuto != 0

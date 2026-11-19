@@ -13,7 +13,9 @@ type DoctorRepo struct {
 func (r *DoctorRepo) List(ctx context.Context) ([]Doctor, error) {
 	query := `
 		SELECT MEDECINS_ID,
-			ISNULL(NOM,'') + ' ' + ISNULL(PRENOM,'') AS FULL_NAME,
+			ISNULL(NOM,''),
+			ISNULL(PRENOM,''),
+			ISNULL(PATRONYME,''),
 			'' AS SPECIALTY
 		FROM MEDECINS
 		WHERE ISNULL(NOM,'') != ''
@@ -28,9 +30,11 @@ func (r *DoctorRepo) List(ctx context.Context) ([]Doctor, error) {
 	var doctors []Doctor
 	for rows.Next() {
 		var d Doctor
-		if err := rows.Scan(&d.DoctorID, &d.FullName, &d.Specialty); err != nil {
+		var nom, prenom, patronyme string
+		if err := rows.Scan(&d.DoctorID, &nom, &prenom, &patronyme, &d.Specialty); err != nil {
 			return nil, fmt.Errorf("scan doctors: %w", err)
 		}
+		d.FullName = DoctorDisplayName(nom, prenom, patronyme)
 		doctors = append(doctors, d)
 	}
 	if err := rows.Err(); err != nil {

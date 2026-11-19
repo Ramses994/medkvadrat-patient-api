@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/medkvadrat/medkvadrat-patient-api/internal/apperr"
@@ -206,8 +207,10 @@ func pilotMode(s *Services) {
 }
 
 type otpRow struct {
-	id    int64
-	email string
+	id        int64
+	email     string
+	birth     any // time.Time or nil; empty means adult default for fixtures
+	noDefault bool
 }
 
 func otpService(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string]string) {
@@ -228,10 +231,17 @@ func otpServiceMock(t *testing.T, rows []otpRow) (*Services, *sql.DB, map[string
 	t.Cleanup(func() { _ = mssql.Close() })
 	if rows != nil {
 		rr := sqlmock.NewRows([]string{
-			"PATIENTS_ID", "FULL_NAME", "EMAIL", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
+			"PATIENTS_ID", "FULL_NAME", "EMAIL", "BIRTH_DATE", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
 		})
+		adultBirth := time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC)
 		for _, row := range rows {
-			rr.AddRow(row.id, "Profile", row.email, 0, 0, "79990000000", "", "")
+			birth := any(adultBirth)
+			if row.noDefault {
+				birth = row.birth
+			} else if row.birth != nil {
+				birth = row.birth
+			}
+			rr.AddRow(row.id, "Profile", row.email, birth, 0, 0, "79990000000", "", "")
 		}
 		mock.ExpectQuery("PATIENTS").WillReturnRows(rr)
 	}

@@ -30,6 +30,7 @@ func main() {
 	}
 
 	logger := logging.New(cfg.LogLevel)
+	logger.Info("AUTH_PILOT_WHITELIST loaded", "count", len(cfg.Auth.PilotWhitelist))
 	if msg := config.AuthModeWarning(cfg.Auth.Mode); msg != "" {
 		logger.Warn(msg)
 	}

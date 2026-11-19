@@ -39,8 +39,8 @@ func TestPhoneSearch_ForeignCountryCodeDoesNotMatch(t *testing.T) {
 			}
 		} else {
 			mock.ExpectQuery("PATIENTS").WillReturnRows(sqlmock.NewRows([]string{
-				"PATIENTS_ID", "FULL_NAME", "EMAIL", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
-			}).AddRow(1, "Чужой", "", 0, 0, "+47 1234 5678", "", ""))
+				"PATIENTS_ID", "FULL_NAME", "EMAIL", "BIRTH_DATE", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
+			}).AddRow(1, "Чужой", "", nil, 0, 0, "+47 1234 5678", "", ""))
 			got, err := r.OTPPatientsByPhone(context.Background(), "74712345678")
 			if err != nil || len(got) != 0 {
 				t.Fatalf("otp %+v err=%v", got, err)
@@ -114,11 +114,11 @@ func assertFiltered(t *testing.T, search bool) {
 		}
 	} else {
 		mock.ExpectQuery("PATIENTS").WillReturnRows(sqlmock.NewRows([]string{
-			"PATIENTS_ID", "FULL_NAME", "EMAIL", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
-		}).AddRow(1, "Чужой", "", 0, 0, "+1 926 590-69-94", "", "").
-			AddRow(2, "Скобки", "", 0, 0, "8 (926) 590-69-94", "", "").
-			AddRow(3, "Список", "", 0, 0, "", "89265906994, 84951234567", "").
-			AddRow(4, "Длинный", "", 0, 0, "792659069941", "", ""))
+			"PATIENTS_ID", "FULL_NAME", "EMAIL", "BIRTH_DATE", "NOT_SEND_MAILING_SMS", "SEND_AUTO_EMAIL", "MOBIL_TELEFON", "TEL", "RAB_TEL",
+		}).AddRow(1, "Чужой", "", nil, 0, 0, "+1 926 590-69-94", "", "").
+			AddRow(2, "Скобки", "", nil, 0, 0, "8 (926) 590-69-94", "", "").
+			AddRow(3, "Список", "", nil, 0, 0, "", "89265906994, 84951234567", "").
+			AddRow(4, "Длинный", "", nil, 0, 0, "792659069941", "", ""))
 		got, err := r.OTPPatientsByPhone(context.Background(), "79265906994")
 		if err != nil {
 			t.Fatal(err)

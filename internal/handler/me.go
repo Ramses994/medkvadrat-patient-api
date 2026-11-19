@@ -57,7 +57,12 @@ func (h MeHandler) Profile(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "Внутренняя ошибка")
 		return
 	}
-	out := meProfileDTO{PatientID: p.PatientID, FullName: p.FullName, Phone: p.Phone, Email: p.Email}
+	out := meProfileDTO{
+		PatientID: p.PatientID,
+		FullName:  p.FullName,
+		Phone:     repo.MaskPhoneDisplay(p.Phone),
+		Email:     repo.MaskEmailDisplay(p.Email),
+	}
 	if p.BirthDate != nil {
 		s := p.BirthDate.UTC().Format("2006-01-02")
 		out.BirthDate = &s

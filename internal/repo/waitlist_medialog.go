@@ -67,7 +67,7 @@ SELECT
   CAST(ISNULL(p.CANCELLED,0) AS int) AS CANCELLED,
   CAST(ISNULL(p.STATUS,0) AS int) AS STATUS,
   ISNULL(ps.FM_INTORG_ID, 0) AS BRANCH_ID,
-` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
+` + doctorNamePartsExprs("ps") + `,
 ` + examSQL + `
 FROM PLANNING p
 JOIN PATIENTS pt ON pt.PATIENTS_ID = p.PATIENTS_ID
@@ -87,7 +87,7 @@ SELECT
   CONVERT(varchar(19), p.CREATE_DATE_TIME, 120) AS CREATED_AT,
   CONVERT(varchar(19), p.DATE_START, 120) AS DATE_START,
   ISNULL(ps.FM_INTORG_ID, 0) AS BRANCH_ID,
-` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
+` + doctorNamePartsExprs("ps") + `,
 ` + examSQL + `
 FROM PLANNING p
 LEFT JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
@@ -116,11 +116,11 @@ func WaitlistOriginals(ctx context.Context, db *sql.DB, planningIDs []int64, wai
 	for rs.Next() {
 		var row WaitlistPlanningLive
 		var cancelled, status, isWL bitInt
-		var name, phone, dob, dateStart, doctor sql.NullString
+		var name, phone, dob, dateStart, nom, prenom, patronyme sql.NullString
 		var webName, examName sql.NullString
 		if err := rs.Scan(
 			&row.PlanningID, &row.PatientID, &name, &phone, &dob,
-			&dateStart, &cancelled, &status, &row.BranchID, &doctor,
+			&dateStart, &cancelled, &status, &row.BranchID, &nom, &prenom, &patronyme,
 			&webName, &examName, &isWL,
 		); err != nil {
 			return nil, err
@@ -131,7 +131,7 @@ func WaitlistOriginals(ctx context.Context, db *sql.DB, planningIDs []int64, wai
 		row.DateStart = dateStart.String
 		row.Cancelled = int(cancelled)
 		row.Status = int(status)
-		row.DoctorName = trimDoctorName(doctor.String)
+		row.DoctorName = DoctorDisplayName(nom.String, prenom.String, patronyme.String)
 		row.Service = DisplayService(webName.String, examName.String)
 		row.IsWaitlist = isWL != 0
 		out[row.PlanningID] = row
@@ -155,16 +155,16 @@ func WaitlistFutures(ctx context.Context, db *sql.DB, patientIDs []int64, now ti
 	for rs.Next() {
 		var row WaitlistFutureVisit
 		var isWL bitInt
-		var created, dateStart, doctor, webName, examName sql.NullString
+		var created, dateStart, nom, prenom, patronyme, webName, examName sql.NullString
 		if err := rs.Scan(
 			&row.PlanningID, &row.PatientID, &created, &dateStart, &row.BranchID,
-			&doctor, &webName, &examName, &isWL,
+			&nom, &prenom, &patronyme, &webName, &examName, &isWL,
 		); err != nil {
 			return nil, err
 		}
 		row.CreatedAt = created.String
 		row.DateStart = dateStart.String
-		row.DoctorName = trimDoctorName(doctor.String)
+		row.DoctorName = DoctorDisplayName(nom.String, prenom.String, patronyme.String)
 		row.Service = DisplayService(webName.String, examName.String)
 		row.IsWaitlist = isWL != 0
 		out = append(out, row)
@@ -273,16 +273,16 @@ func waitlistPageEnrichChunk(ctx context.Context, db *sql.DB, planningIDs, waitl
 	for rs.Next() {
 		var row WaitlistPlanningLive
 		var cancelled, status, isWL bitInt
-		var name, phone, dob, dateStart, doctor, webName, examName sql.NullString
+		var name, phone, dob, dateStart, nom, prenom, patronyme, webName, examName sql.NullString
 		var futID sql.NullInt64
-		var futCreated, futDate, futDoctor, futWeb, futExam sql.NullString
+		var futCreated, futDate, futNom, futPrenom, futPatronym, futWeb, futExam sql.NullString
 		var futBranch sql.NullInt64
 		var futWL bitInt
 		if err := rs.Scan(
 			&row.PlanningID, &row.PatientID, &name, &phone, &dob,
-			&dateStart, &cancelled, &status, &row.BranchID, &doctor,
+			&dateStart, &cancelled, &status, &row.BranchID, &nom, &prenom, &patronyme,
 			&webName, &examName, &isWL,
-			&futID, &futCreated, &futDate, &futBranch, &futDoctor, &futWeb, &futExam, &futWL,
+			&futID, &futCreated, &futDate, &futBranch, &futNom, &futPrenom, &futPatronym, &futWeb, &futExam, &futWL,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -292,7 +292,7 @@ func waitlistPageEnrichChunk(ctx context.Context, db *sql.DB, planningIDs, waitl
 		row.DateStart = dateStart.String
 		row.Cancelled = int(cancelled)
 		row.Status = int(status)
-		row.DoctorName = trimDoctorName(doctor.String)
+		row.DoctorName = DoctorDisplayName(nom.String, prenom.String, patronyme.String)
 		row.Service = DisplayService(webName.String, examName.String)
 		row.IsWaitlist = isWL != 0
 		live[row.PlanningID] = row
@@ -304,7 +304,7 @@ func waitlistPageEnrichChunk(ctx context.Context, db *sql.DB, planningIDs, waitl
 				CreatedAt:  futCreated.String,
 				DateStart:  futDate.String,
 				BranchID:   int(futBranch.Int64),
-				DoctorName: trimDoctorName(futDoctor.String),
+				DoctorName: DoctorDisplayName(futNom.String, futPrenom.String, futPatronym.String),
 				Service:    DisplayService(futWeb.String, futExam.String),
 				IsWaitlist: futWL != 0,
 			})
@@ -391,7 +391,6 @@ func waitlistPageSQL(planningIDs, waitlistIDs []int64, now time.Time, answered m
 	futExam, futArgs := examSelectAliased("ex2", "fwl", waitlistIDs)
 	waitlistMatch, matchArgs := waitlistExamMatchSQL("ex2.NAME", "p2.PL_EXAM_ID", "nex", waitlistIDs)
 	answerSQL, answerArgs := futureAnswerSQL(planningIDs, answered)
-	doctor2 := strings.ReplaceAll(doctorNameSelectSQL, "ps.", "ps2.")
 	q := `
 SELECT
   p.PLANNING_ID,
@@ -403,13 +402,15 @@ SELECT
   CAST(ISNULL(p.CANCELLED,0) AS int) AS CANCELLED,
   CAST(ISNULL(p.STATUS,0) AS int) AS STATUS,
   ISNULL(ps.FM_INTORG_ID, 0) AS BRANCH_ID,
-` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
+` + doctorNamePartsExprs("ps") + `,
 ` + examSQL + `,
   fut.FUT_PLANNING_ID,
   fut.FUT_CREATED,
   fut.FUT_DATE,
   fut.FUT_BRANCH,
-  fut.FUT_DOCTOR,
+  fut.FUT_NOM,
+  fut.FUT_PRENOM,
+  fut.FUT_PATRONYME,
   fut.FUT_WEB,
   fut.FUT_EXAM,
   fut.FUT_WAITLIST
@@ -423,7 +424,7 @@ OUTER APPLY (
     CONVERT(varchar(19), p2.CREATE_DATE_TIME, 120) AS FUT_CREATED,
     CONVERT(varchar(19), p2.DATE_START, 120) AS FUT_DATE,
     ISNULL(ps2.FM_INTORG_ID, 0) AS FUT_BRANCH,
-` + doctor2 + ` AS FUT_DOCTOR,
+` + doctorNamePartsAliased("ps2", "FUT_") + `,
 ` + futExam + `
   FROM PLANNING p2
   LEFT JOIN PL_SUBJ ps2 ON ps2.PL_SUBJ_ID = p2.PL_SUBJ_ID
