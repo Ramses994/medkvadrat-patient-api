@@ -88,7 +88,7 @@ SELECT TOP %d
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
-%s AS DOCTOR_NAME,
+%s,
 %s,
   CAST(ISNULL(ex.NO_SMS_NOTIFY, 0) AS int) AS NO_SMS_NOTIFY,
   CAST(r.MESSENGER_NOTIFY AS int) AS MESSENGER_NOTIFY,
@@ -114,7 +114,7 @@ WHERE p.PATIENTS_ID IN (%s)
     p.CREATE_DATE_TIME > CONVERT(datetime, @ts, 121)
     OR (p.CREATE_DATE_TIME = CONVERT(datetime, @ts, 121) AND p.PLANNING_ID > @pid)
   )
-ORDER BY p.CREATE_DATE_TIME, p.PLANNING_ID`, limit+1, doctorNameSelectSQL, examSQL, in.String())
+ORDER BY p.CREATE_DATE_TIME, p.PLANNING_ID`, limit+1, doctorNamePartsExprs("ps"), examSQL, in.String())
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -125,17 +125,18 @@ ORDER BY p.CREATE_DATE_TIME, p.PLANNING_ID`, limit+1, doctorNameSelectSQL, examS
 	var out []NewBooking
 	for rows.Next() {
 		var r NewBooking
-		var dateConsStr, webName, examName, dateStart string
+		var dateConsStr, webName, examName, dateStart, nom, prenom, patronyme string
 		var isWaitlist, noSMS, status bitInt
 		var notify nullBitInt
 		var plSubj, plExam int64
 		if err := rows.Scan(
-			&r.PlanningID, &r.PatientID, &r.PatientPhone, &r.PatientName, &r.DoctorName,
+			&r.PlanningID, &r.PatientID, &r.PatientPhone, &r.PatientName, &nom, &prenom, &patronyme,
 			&webName, &examName, &isWaitlist, &noSMS, &notify, &plSubj, &plExam, &dateStart,
 			&r.BranchID, &r.BranchCode, &dateConsStr, &status, &r.CreatedAt,
 		); err != nil {
 			return NewBookingsPage{}, fmt.Errorf("scan new bookings: %w", err)
 		}
+		r.DoctorName = DoctorDisplayName(nom, prenom, patronyme)
 		r.DateConsultation, err = ParseConsultationWallClock(dateConsStr)
 		if err != nil {
 			return NewBookingsPage{}, err
@@ -177,7 +178,7 @@ SELECT
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
-%s AS DOCTOR_NAME,
+%s,
 %s,
   CAST(ISNULL(ex.NO_SMS_NOTIFY, 0) AS int) AS NO_SMS_NOTIFY,
   CAST(r.MESSENGER_NOTIFY AS int) AS MESSENGER_NOTIFY,
@@ -196,7 +197,7 @@ JOIN PL_SUBJ ps ON ps.PL_SUBJ_ID = p.PL_SUBJ_ID
 LEFT JOIN PL_EXAM ex ON ex.PL_EXAM_ID = p.PL_EXAM_ID
 LEFT JOIN DATA_W3_RASSYLKA r ON r.PATIENTS_ID = p.PATIENTS_ID
 LEFT JOIN FM_ORG o ON o.FM_ORG_ID = ps.FM_INTORG_ID
-WHERE p.PLANNING_ID = @id`, doctorNameSelectSQL, examSQL)
+WHERE p.PLANNING_ID = @id`, doctorNamePartsExprs("ps"), examSQL)
 
 	args := append([]any{sql.Named("id", planningID)}, examArgs...)
 	row := db.QueryRowContext(ctx, query, args...)
@@ -205,8 +206,9 @@ WHERE p.PLANNING_ID = @id`, doctorNameSelectSQL, examSQL)
 	var isWaitlist, noSMS, status, cancelled bitInt
 	var notify nullBitInt
 	var plSubj, plExam int64
+	var nom, prenom, patronyme string
 	err := row.Scan(
-		&r.PlanningID, &r.PatientID, &r.PatientPhone, &r.PatientName, &r.DoctorName,
+		&r.PlanningID, &r.PatientID, &r.PatientPhone, &r.PatientName, &nom, &prenom, &patronyme,
 		&webName, &examName, &isWaitlist, &noSMS, &notify, &plSubj, &plExam, &dateStart,
 		&r.BranchID, &r.BranchCode, &dateConsStr, &status, &r.CreatedAt, &cancelled,
 	)
@@ -216,6 +218,7 @@ WHERE p.PLANNING_ID = @id`, doctorNameSelectSQL, examSQL)
 	if err != nil {
 		return BookingNotice{}, fmt.Errorf("scan booking: %w", err)
 	}
+	r.DoctorName = DoctorDisplayName(nom, prenom, patronyme)
 	if strings.TrimSpace(dateConsStr) != "" {
 		r.DateConsultation, err = ParseConsultationWallClock(dateConsStr)
 		if err != nil {

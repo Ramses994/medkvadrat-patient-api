@@ -61,13 +61,11 @@ SELECT
   ISNULL(CONVERT(varchar(10), pt.NE_LE, 23), '') AS DOB,
   CONVERT(varchar(19), p.DATE_START, 126) AS DATE_START,
   ISNULL(ps.FM_INTORG_ID, 0) AS BRANCH_ID,
-` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
+` + doctorNamePartsExprs("ps") + `,
   SUBSTRING(ISNULL(p.COMMENTAIRE, ''), 1, 200) AS COMMENTAIRE,
-  ISNULL((
-    SELECT ISNULL(cr.NOM, '') + ' ' + ISNULL(cr.PRENOM, '')
-    FROM MEDECINS cr
-    WHERE cr.MEDECINS_ID = p.MEDECINS_CREATOR_ID
-  ), '') AS CREATOR_NAME,
+  ISNULL((SELECT ISNULL(cr.NOM,'') FROM MEDECINS cr WHERE cr.MEDECINS_ID = p.MEDECINS_CREATOR_ID), ''),
+  ISNULL((SELECT ISNULL(cr.PRENOM,'') FROM MEDECINS cr WHERE cr.MEDECINS_ID = p.MEDECINS_CREATOR_ID), ''),
+  ISNULL((SELECT ISNULL(cr.PATRONYME,'') FROM MEDECINS cr WHERE cr.MEDECINS_ID = p.MEDECINS_CREATOR_ID), ''),
   CONVERT(varchar(19), p.CREATE_DATE_TIME, 126) AS CREATED_AT
 FROM PLANNING p
 JOIN PATIENTS pt ON pt.PATIENTS_ID = p.PATIENTS_ID
@@ -95,10 +93,11 @@ func ListWaitlistMis(ctx context.Context, db *sql.DB, now time.Time, back, ahead
 	var out []WaitlistMisRow
 	for rs.Next() {
 		var row WaitlistMisRow
-		var name, phone, dob, dateStart, doctor, comment, creator, created sql.NullString
+		var name, phone, dob, dateStart, nom, prenom, patronyme, comment sql.NullString
+		var cNom, cPrenom, cPatronym, created sql.NullString
 		if err := rs.Scan(
 			&row.PlanningID, &row.PatientID, &name, &phone, &dob, &dateStart,
-			&row.BranchID, &doctor, &comment, &creator, &created,
+			&row.BranchID, &nom, &prenom, &patronyme, &comment, &cNom, &cPrenom, &cPatronym, &created,
 		); err != nil {
 			return nil, err
 		}
@@ -106,9 +105,9 @@ func ListWaitlistMis(ctx context.Context, db *sql.DB, now time.Time, back, ahead
 		row.Phone = phone.String
 		row.BirthDate = dob.String
 		row.DateStart = dateStart.String
-		row.DoctorName = trimDoctorName(doctor.String)
+		row.DoctorName = DoctorDisplayName(nom.String, prenom.String, patronyme.String)
 		row.Comment = strings.TrimSpace(comment.String)
-		row.CreatorName = trimDoctorName(creator.String)
+		row.CreatorName = DoctorDisplayName(cNom.String, cPrenom.String, cPatronym.String)
 		row.CreatedAt = created.String
 		out = append(out, row)
 	}

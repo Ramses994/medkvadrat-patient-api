@@ -43,7 +43,9 @@ SELECT
   ISNULL(ps.FM_INTORG_ID, 0),
   ISNULL(o.CODE, ''),
   ps.MEDECINS_ID,
-  LTRIM(RTRIM(ISNULL(m.NOM,'') + ' ' + ISNULL(m.PRENOM,'') + ' ' + ISNULL(m.PATRONYME,''))),
+  ISNULL(m.NOM,''),
+  ISNULL(m.PRENOM,''),
+  ISNULL(m.PATRONYME,''),
   CASE WHEN pse.PL_SUBJ_ID IS NULL THEN 0 ELSE 1 END,
   CAST(ISNULL(ex.WEB_ACCESS, 0) AS int),
   CAST(ISNULL(ex.isTeleExam, 0) AS int),
@@ -67,10 +69,10 @@ WHERE ps.PL_SUBJ_ID = @subj`
 		webAccess, archive, examOnLine, examWeb, examTele, examArchive int
 		webAccept, medecins                                            sql.NullInt64
 		branchID                                                       int
-		branchCode, doctor, duree, webName, examName                   string
+		branchCode, nom, prenom, patronyme, duree, webName, examName   string
 	)
 	err := db.QueryRowContext(ctx, q, sql.Named("subj", plSubjID), sql.Named("exam", plExamID)).Scan(
-		&webAccess, &archive, &webAccept, &branchID, &branchCode, &medecins, &doctor,
+		&webAccess, &archive, &webAccept, &branchID, &branchCode, &medecins, &nom, &prenom, &patronyme,
 		&examOnLine, &examWeb, &examTele, &examArchive, &duree, &webName, &examName,
 	)
 	if err == sql.ErrNoRows {
@@ -79,6 +81,7 @@ WHERE ps.PL_SUBJ_ID = @subj`
 	if err != nil {
 		return BookingOption{}, fmt.Errorf("query booking pair: %w", err)
 	}
+	doctor := DoctorDisplayName(nom, prenom, patronyme)
 	opt, reason := classifyBookingPair(plSubjID, plExamID, webAccess, archive, webAccept, branchID, branchCode, medecins, doctor, examOnLine, examWeb, examTele, examArchive, duree, webName, examName)
 	if reason != "" {
 		return BookingOption{}, InactivePairError{Reason: reason}
@@ -125,7 +128,7 @@ func classifyBookingPair(plSubjID, plExamID int64, webAccess, archive int, webAc
 		BranchID:    branchID,
 		BranchCode:  strings.TrimSpace(branchCode),
 		MedecinsID:  medID,
-		DoctorName:  strings.Join(strings.Fields(doctor), " "),
+		DoctorName:  doctor,
 		Service:     DisplayService(webName, examName),
 		DurationMin: minutes,
 	}, ""

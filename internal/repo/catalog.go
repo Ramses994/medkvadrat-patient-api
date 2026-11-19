@@ -64,7 +64,9 @@ func (r *CatalogRepo) Doctors(ctx context.Context, specialtyID *int, meddepID *i
 	q := `
 SELECT DISTINCT
   m.MEDECINS_ID,
-  ISNULL(m.NOM,'') + ' ' + ISNULL(m.PRENOM,'') AS FULL_NAME,
+  ISNULL(m.NOM,''),
+  ISNULL(m.PRENOM,''),
+  ISNULL(m.PATRONYME,''),
   ISNULL(md.FM_DEP_PROF_ID,0) AS FM_DEP_PROF_ID,
   ISNULL(fp.LABEL,'') AS SPEC_LABEL,
   ISNULL(md.MEDDEP_ID,0) AS MEDDEP_ID
@@ -82,7 +84,7 @@ WHERE ISNULL(m.NOM,'') != ''
 		q += " AND md.MEDDEP_ID = @meddep"
 		args = append(args, sql.Named("meddep", *meddepID))
 	}
-	q += " ORDER BY FULL_NAME"
+	q += " ORDER BY ISNULL(m.NOM,''), ISNULL(m.PRENOM,''), ISNULL(m.PATRONYME,'')"
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -93,9 +95,11 @@ WHERE ISNULL(m.NOM,'') != ''
 	var out []CatalogDoctor
 	for rows.Next() {
 		var d CatalogDoctor
-		if err := rows.Scan(&d.DoctorID, &d.FullName, &d.SpecialtyID, &d.Specialty, &d.MeddepID); err != nil {
+		var nom, prenom, patronyme string
+		if err := rows.Scan(&d.DoctorID, &nom, &prenom, &patronyme, &d.SpecialtyID, &d.Specialty, &d.MeddepID); err != nil {
 			return nil, fmt.Errorf("scan doctors: %w", err)
 		}
+		d.FullName = DoctorDisplayName(nom, prenom, patronyme)
 		out = append(out, d)
 	}
 	if err := rows.Err(); err != nil {

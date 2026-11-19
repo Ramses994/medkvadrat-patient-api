@@ -31,7 +31,7 @@ SELECT
   p.PLANNING_ID,
   p.PATIENTS_ID,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS PATIENT_NAME,
-` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
+` + doctorNamePartsExprs("ps") + `,
 ` + examSQL + `,
   o.FM_ORG_ID AS BRANCH_ID,
   ISNULL(o.CODE,'') AS BRANCH_CODE,
@@ -68,14 +68,14 @@ func DashboardPlanningRows(ctx context.Context, db *sql.DB, date time.Time, wait
 	var out []DashboardPlanningRow
 	for rows.Next() {
 		var r DashboardPlanningRow
-		var timeRaw, dateStart, webName, examName string
+		var timeRaw, dateStart, webName, examName, nom, prenom, patronyme string
 		var isWaitlist, status bitInt
 		var plSubj, plExam int64
 		if err := rows.Scan(
 			&r.PlanningID,
 			new(sql.NullInt64), // PATIENTS_ID — not exposed in dashboard DTO
 			&r.PatientName,
-			&r.DoctorName,
+			&nom, &prenom, &patronyme,
 			&webName,
 			&examName,
 			&isWaitlist,
@@ -94,7 +94,7 @@ func DashboardPlanningRows(ctx context.Context, db *sql.DB, date time.Time, wait
 		r.IsWaitlist = isWaitlist != 0
 		r.Status = int(status)
 		r.Time = normalizeHHMM(timeRaw)
-		r.DoctorName = trimDoctorName(r.DoctorName)
+		r.DoctorName = DoctorDisplayName(nom, prenom, patronyme)
 		r.ApptVersion = ApptVersion(dateStart, plSubj, plExam)
 		out = append(out, r)
 	}

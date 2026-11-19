@@ -33,7 +33,9 @@ func (r *MotconsuRepo) ChangesSince(ctx context.Context, since time.Time) ([]Sch
 		SELECT m.MOTCONSU_ID, m.PATIENTS_ID, m.MEDECINS_ID,
 			m.DATE_CONSULTATION, m.KRN_MODIFY_DATE,
 			ISNULL(p.NOM,'') + ' ' + ISNULL(p.PRENOM,'') AS PAT_NAME,
-			ISNULL(d.NOM,'') + ' ' + ISNULL(d.PRENOM,'') AS DOC_NAME
+			ISNULL(d.NOM,''),
+			ISNULL(d.PRENOM,''),
+			ISNULL(d.PATRONYME,'')
 		FROM MOTCONSU m
 		LEFT JOIN PATIENTS p ON p.PATIENTS_ID = m.PATIENTS_ID
 		LEFT JOIN MEDECINS d ON d.MEDECINS_ID = m.MEDECINS_ID
@@ -51,9 +53,11 @@ func (r *MotconsuRepo) ChangesSince(ctx context.Context, since time.Time) ([]Sch
 	var changes []ScheduleChange
 	for rows.Next() {
 		var c ScheduleChange
-		if err := rows.Scan(&c.MotconsuID, &c.PatientID, &c.DoctorID, &c.DateConsult, &c.ModifyDate, &c.PatientName, &c.DoctorName); err != nil {
+		var nom, prenom, patronyme string
+		if err := rows.Scan(&c.MotconsuID, &c.PatientID, &c.DoctorID, &c.DateConsult, &c.ModifyDate, &c.PatientName, &nom, &prenom, &patronyme); err != nil {
 			return nil, fmt.Errorf("scan changes: %w", err)
 		}
+		c.DoctorName = DoctorDisplayName(nom, prenom, patronyme)
 		changes = append(changes, c)
 	}
 	if err := rows.Err(); err != nil {

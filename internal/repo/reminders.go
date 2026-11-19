@@ -37,7 +37,7 @@ SELECT
   p.PATIENTS_ID,
   REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(pt.MOBIL_TELEFON, ISNULL(pt.TEL, ISNULL(pt.RAB_TEL,''))),'+',''),'-',''),' ',''),'(','') AS PHONE,
   ISNULL(pt.NOM,'') + ' ' + ISNULL(pt.PRENOM,'') AS FULL_NAME,
-` + doctorNameSelectSQL + ` AS DOCTOR_NAME,
+` + doctorNamePartsExprs("ps") + `,
 ` + examSQL + `,
   CAST(ISNULL(ex.NO_SMS_NOTIFY, 0) AS int) AS NO_SMS_NOTIFY,
   CAST(r.MESSENGER_NOTIFY AS int) AS MESSENGER_NOTIFY,
@@ -149,7 +149,7 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 	var out []DueReminder
 	for rows.Next() {
 		var r DueReminder
-		var dateConsStr, webName, examName, dateStart string
+		var dateConsStr, webName, examName, dateStart, nom, prenom, patronyme string
 		var isWaitlist, noSMS, status bitInt
 		var notify nullBitInt
 		var plSubj, plExam int64
@@ -158,7 +158,7 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 			&r.PatientID,
 			&r.PatientPhone,
 			&r.PatientName,
-			&r.DoctorName,
+			&nom, &prenom, &patronyme,
 			&webName,
 			&examName,
 			&isWaitlist,
@@ -174,6 +174,7 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 		); err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
 		}
+		r.DoctorName = DoctorDisplayName(nom, prenom, patronyme)
 		r.DateConsultation, err = ParseConsultationWallClock(dateConsStr)
 		if err != nil {
 			return nil, fmt.Errorf("scan due reminders: %w", err)
@@ -189,7 +190,6 @@ ORDER BY DATEADD(MINUTE,(p.HEURE/100)*60+(p.HEURE%100), p.DATE_CONS)`
 }
 
 func fillReminderDerived(r *DueReminder, webName, examName string, isWaitlist, noSMS int, notify nullBitInt, plSubj, plExam int64, dateStart string) {
-	r.DoctorName = trimDoctorName(r.DoctorName)
 	r.Service = DisplayService(webName, examName)
 	r.IsWaitlist = isWaitlist != 0
 	r.NoSMSNotify = noSMS != 0

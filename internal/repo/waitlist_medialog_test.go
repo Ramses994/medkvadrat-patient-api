@@ -41,9 +41,9 @@ func TestWaitlistOriginals_NullCancelledAsZero(t *testing.T) {
 	defer db.Close()
 	cols := []string{
 		"PLANNING_ID", "PATIENTS_ID", "PATIENT_NAME", "PHONE", "DOB", "DATE_START",
-		"CANCELLED", "STATUS", "BRANCH_ID", "DOCTOR_NAME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST",
+		"CANCELLED", "STATUS", "BRANCH_ID", "DOCTOR_NOM", "DOCTOR_PRENOM", "DOCTOR_PATRONYME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST",
 	}
-	row := []driver.Value{int64(1), int64(20), "Иванов", "7900", "1980-01-01", "2026-10-22 10:00:00", nil, nil, int64(106), "Петров", "", "Приём", 0}
+	row := []driver.Value{int64(1), int64(20), "Иванов", "7900", "1980-01-01", "2026-10-22 10:00:00", nil, nil, int64(106), "Петров", "", "", "", "Приём", 0}
 	mock.ExpectQuery(`(?s)FROM PLANNING p`).WillReturnRows(sqlmock.NewRows(cols).AddRow(row...))
 	got, err := WaitlistOriginals(context.Background(), db, []int64{1}, nil)
 	if err != nil {
@@ -85,10 +85,10 @@ func TestAuditWaitlistOriginals_NullDOBNotFatal(t *testing.T) {
 	defer db.Close()
 	cols := []string{
 		"PLANNING_ID", "PATIENTS_ID", "PATIENT_NAME", "PHONE", "DOB", "DATE_START",
-		"CANCELLED", "STATUS", "BRANCH_ID", "DOCTOR_NAME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST",
+		"CANCELLED", "STATUS", "BRANCH_ID", "DOCTOR_NOM", "DOCTOR_PRENOM", "DOCTOR_PATRONYME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST",
 	}
 	mock.ExpectQuery(`(?s)FROM PLANNING p`).WillReturnRows(sqlmock.NewRows(cols).AddRow(
-		int64(1), int64(1), "", "", nil, "2026-10-23 10:00:00", int64(0), int64(0), int64(496), "", "", "", int64(0),
+		int64(1), int64(1), "", "", nil, "2026-10-23 10:00:00", int64(0), int64(0), int64(496), "", "", "", "", "", int64(0),
 	))
 	got, err := WaitlistOriginals(context.Background(), db, []int64{1}, nil)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestWaitlistFutures_DriverGetsStringNotTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cols := []string{"PLANNING_ID", "PATIENTS_ID", "CREATED_AT", "DATE_START", "DOCTOR_NAME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST"}
+	cols := []string{"PLANNING_ID", "PATIENTS_ID", "CREATED_AT", "DATE_START", "BRANCH_ID", "DOCTOR_NOM", "DOCTOR_PRENOM", "DOCTOR_PATRONYME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST"}
 	mock.ExpectQuery(`(?s)CONVERT\(datetime, @now, 126\)`).WithArgs(
 		sqlmock.AnyArg(),
 		sqlmock.AnyArg(),
@@ -196,13 +196,13 @@ func TestWaitlistPageEnrich_OneQueryForThePage(t *testing.T) {
 	defer db.Close()
 	cols := []string{
 		"PLANNING_ID", "PATIENTS_ID", "PATIENT_NAME", "PHONE", "DOB", "DATE_START",
-		"CANCELLED", "STATUS", "BRANCH_ID", "DOCTOR_NAME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST",
-		"FUT_PLANNING_ID", "FUT_CREATED", "FUT_DATE", "FUT_BRANCH", "FUT_DOCTOR", "FUT_WEB", "FUT_EXAM", "FUT_WAITLIST",
+		"CANCELLED", "STATUS", "BRANCH_ID", "DOCTOR_NOM", "DOCTOR_PRENOM", "DOCTOR_PATRONYME", "EXAM_WEB_NAME", "EXAM_NAME", "IS_WAITLIST",
+		"FUT_PLANNING_ID", "FUT_CREATED", "FUT_DATE", "FUT_BRANCH", "FUT_NOM", "FUT_PRENOM", "FUT_PATRONYME", "FUT_WEB", "FUT_EXAM", "FUT_WAITLIST",
 	}
 	row := []driver.Value{
 		int64(1), int64(20), "Иванов", "7900", "1980-01-01", "2026-10-22 10:00:00",
-		nil, nil, int64(106), "Петров", "", "Приём", 0,
-		int64(9), "2026-10-22 03:00:00", "2026-10-23 11:00:00", int64(3), "Врач", "", "Осмотр", 0,
+		nil, nil, int64(106), "Петров", "", "", "", "Приём", 0,
+		int64(9), "2026-10-22 03:00:00", "2026-10-23 11:00:00", int64(3), "Врач", "", "", "", "Осмотр", 0,
 	}
 	mock.ExpectQuery(`(?s)OUTER APPLY`).WillReturnRows(sqlmock.NewRows(cols).AddRow(row...))
 	ids := make([]int64, 25)

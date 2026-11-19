@@ -38,6 +38,7 @@ type OTPPatient struct {
 	PatientID         int64
 	FullName          string
 	Email             string
+	BirthDate         *time.Time
 	NotSendMailingSMS bool
 	SendAutoEmail     bool
 }
