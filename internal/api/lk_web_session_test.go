@@ -721,3 +721,113 @@ func TestWebSession_RefreshRaceWindow(t *testing.T) {
 		t.Fatalf("session must die outside window: %d", dead.Code)
 	}
 }
+
+func accessPhone(t *testing.T, secret, access string) string {
+	t.Helper()
+	claims, err := auth.ParseAccess([]byte(secret), access)
+	if err != nil {
+		t.Fatalf("parse access: %v", err)
+	}
+	return claims.Phone
+}
+
+// TestWebSession_AccessTokenOmitsPhone: web verify / select-patient / refresh must not put the phone in the access JWT.
+func TestWebSession_AccessTokenOmitsPhone(t *testing.T) {
+	e := newWebEnv(t)
+
+	w, c := webLogin(t, e)
+	access, _ := dataOf(t, w)["access"].(string)
+	if access == "" {
+		t.Fatal("verify: no access")
+	}
+	if got := accessPhone(t, e.cfg.JWT.Secret, access); got != "" {
+		t.Fatalf("web verify phone claim=%q", got)
+	}
+
+	w = e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", web: true, origin: webOrigin, cookie: c.Value})
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh %d %s", w.Code, w.Body.String())
+	}
+	access, _ = dataOf(t, w)["access"].(string)
+	if access == "" {
+		t.Fatal("refresh: no access")
+	}
+	if got := accessPhone(t, e.cfg.JWT.Secret, access); got != "" {
+		t.Fatalf("web refresh phone claim=%q", got)
+	}
+
+	rid := e.otpRequest(t, 11, 12)
+	w = e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify", web: true, origin: webOrigin,
+		body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`})
+	if w.Code != http.StatusOK || refreshCookie(t, w) != nil {
+		t.Fatalf("verify candidates %d %s", w.Code, w.Body.String())
+	}
+	w = e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/select-patient", web: true, origin: webOrigin,
+		body: `{"request_id":"` + rid + `","patient_id":12}`})
+	if w.Code != http.StatusOK {
+		t.Fatalf("select %d %s", w.Code, w.Body.String())
+	}
+	access, _ = dataOf(t, w)["access"].(string)
+	if access == "" {
+		t.Fatal("select: no access")
+	}
+	if got := accessPhone(t, e.cfg.JWT.Secret, access); got != "" {
+		t.Fatalf("web select-patient phone claim=%q", got)
+	}
+}
+
+// TestMobileSession_AccessTokenKeepsPhone: without X-LK-Client the access JWT still carries the phone (verify/select).
+func TestMobileSession_AccessTokenKeepsPhone(t *testing.T) {
+	e := newWebEnv(t)
+	const wantPhone = "79990000000"
+
+	rid := e.otpRequest(t, 11)
+	w := e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify",
+		body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`})
+	if w.Code != http.StatusOK {
+		t.Fatalf("verify %d %s", w.Code, w.Body.String())
+	}
+	data := dataOf(t, w)
+	access, _ := data["access"].(string)
+	refresh, _ := data["refresh"].(string)
+	if access == "" || refresh == "" {
+		t.Fatalf("mobile verify body %s", w.Body.String())
+	}
+	if got := accessPhone(t, e.cfg.JWT.Secret, access); got != wantPhone {
+		t.Fatalf("mobile verify phone claim=%q want %q", got, wantPhone)
+	}
+
+	rid = e.otpRequest(t, 11, 12)
+	w = e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/verify",
+		body: `{"request_id":"` + rid + `","code":"` + webCode + `"}`})
+	if w.Code != http.StatusOK {
+		t.Fatalf("verify candidates %d %s", w.Code, w.Body.String())
+	}
+	w = e.do(webReq{method: http.MethodPost, path: "/api/auth/otp/select-patient",
+		body: `{"request_id":"` + rid + `","patient_id":12}`})
+	if w.Code != http.StatusOK {
+		t.Fatalf("select %d %s", w.Code, w.Body.String())
+	}
+	data = dataOf(t, w)
+	access, _ = data["access"].(string)
+	refresh, _ = data["refresh"].(string)
+	if access == "" || refresh == "" {
+		t.Fatalf("mobile select body %s", w.Body.String())
+	}
+	if got := accessPhone(t, e.cfg.JWT.Secret, access); got != wantPhone {
+		t.Fatalf("mobile select phone claim=%q want %q", got, wantPhone)
+	}
+
+	// Mobile refresh already issued with empty phone — keep that behaviour locked.
+	w = e.do(webReq{method: http.MethodPost, path: "/api/auth/refresh", body: `{"refresh":"` + refresh + `"}`})
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh %d %s", w.Code, w.Body.String())
+	}
+	access, _ = dataOf(t, w)["access"].(string)
+	if access == "" {
+		t.Fatal("mobile refresh: no access")
+	}
+	if got := accessPhone(t, e.cfg.JWT.Secret, access); got != "" {
+		t.Fatalf("mobile refresh phone claim=%q", got)
+	}
+}

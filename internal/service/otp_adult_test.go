@@ -28,6 +28,45 @@ func TestOTP_AdultFilter_AdultAndChild(t *testing.T) {
 	}
 }
 
+// TestOTP_AdultFilter_TwoAdultsAndChildSelect: child is dropped from candidates; select by child id refuses, adult id issues tokens.
+func TestOTP_AdultFilter_TwoAdultsAndChildSelect(t *testing.T) {
+	child := time.Date(2015, 5, 1, 0, 0, 0, 0, time.UTC)
+	adult := time.Date(1990, 5, 1, 0, 0, 0, 0, time.UTC)
+	s, lite, sent := otpService(t, []otpRow{
+		{id: 11, email: "family@example.com", birth: adult},
+		{id: 12, email: "family@example.com", birth: adult},
+		{id: 13, email: "family@example.com", birth: child},
+	})
+	res, err := requestOTP(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := s.OTPVerify(context.Background(), res.RequestID, sent["family@example.com"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[int64]bool{}
+	for _, c := range verified.Candidates {
+		ids[c.PatientID] = true
+	}
+	if verified.Access != "" || len(ids) != 2 || !ids[11] || !ids[12] || ids[13] {
+		t.Fatalf("want two adult candidates, got access=%q ids=%v", verified.Access, ids)
+	}
+	if tokenCount(t, lite) != 0 {
+		t.Fatal("token before select")
+	}
+	if _, err := s.OTPSelectPatient(context.Background(), res.RequestID, 13); !isCode(err, 403, "FORBIDDEN") {
+		t.Fatalf("child select err=%v", err)
+	}
+	if tokenCount(t, lite) != 0 {
+		t.Fatal("child select issued a token")
+	}
+	tok, err := s.OTPSelectPatient(context.Background(), res.RequestID, 11)
+	if err != nil || tok.Access == "" || tokenPatient(t, lite) != 11 {
+		t.Fatalf("adult select err=%v patient=%d", err, tokenPatient(t, lite))
+	}
+}
+
 func TestOTP_AdultFilter_OnlyChildLikeUnknown(t *testing.T) {
 	child := time.Date(2015, 5, 1, 0, 0, 0, 0, time.UTC)
 	s, _, _ := otpService(t, []otpRow{{id: 12, email: "a@example.com", birth: child}})

@@ -501,6 +501,10 @@ func (s *Services) issueTokensExec(ctx context.Context, exec auth.Execer, client
 	}
 
 	mode := s.Config.Auth.Mode
+	// Web cabinet returns the access token in the response body; never embed the phone claim.
+	if client == auth.ClientWeb {
+		phone = ""
+	}
 	access, err := auth.IssueAccess(secret, issuer, patientID, phone, mode, accessTTL, now)
 	if err != nil {
 		return handler.Tokens{}, err
